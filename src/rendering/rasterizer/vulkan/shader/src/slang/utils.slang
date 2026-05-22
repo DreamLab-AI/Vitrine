@@ -500,6 +500,18 @@ float3 safe_normalize(float3 v) {
     return l2 > 0.0f ? v * rsqrt(l2) : v;
 }
 
+// Matches CUDA reference: reject near-zero quaternions (would produce NaN
+// after normalize) by falling back to the identity rotation. Identity quat
+// composed with the (already clamped) scale yields an axis-aligned covariance
+// that the downstream extent clamp can bound, instead of NaN-poisoning the
+// whole pixel tile.
+[ForceInline]
+[Differentiable]
+float4 safe_quat_normalize(float4 q) {
+    float l2 = dot(q, q);
+    return l2 > 1e-8f ? q * rsqrt(l2) : float4(1.0f, 0.0f, 0.0f, 0.0f);
+}
+
 struct WorldRay
 {
     float3 origin;
@@ -541,6 +553,13 @@ WorldRay pixel_to_world_ray(float2 pixel, Camera cam) {
 }
 
 [ForceInline]
+float3 camera_origin_ws(Camera cam) {
+    float4x3 world_view_t = transpose(cam.world_view_transform);
+    float3x3 view_to_world_rotation = float3x3(world_view_t);
+    return -mul(view_to_world_rotation, world_view_t[3]);
+}
+
+[ForceInline]
 float3 view_direction_to_point(float3 world_point, Camera cam) {
     float4x3 world_view_t = transpose(cam.world_view_transform);
     float3x3 view_to_world_rotation = float3x3(world_view_t);
@@ -549,6 +568,42 @@ float3 view_direction_to_point(float3 world_point, Camera cam) {
     }
     float3 camera_origin = -mul(view_to_world_rotation, world_view_t[3]);
     return safe_normalize(world_point - camera_origin);
+}
+
+// Matches CUDA reference forward kernel: clamp the projected 2D covariance
+// eigenvalues so the splat extent never exceeds MAX_PIXEL_RADIUS. Without
+// this, splats viewed at oblique angles can collapse into needle-like spikes
+// that streak across many tiles.
+// Forward-only (not [Differentiable]); the backward path reconstructs cov
+// from buffers and uses analytic gradients.
+static const float MAX_PIXEL_RADIUS = 512.0f;
+
+float3 clamp_covariance_2d_extent(float3 cov_vs, float opacity_after_compensation) {
+    const float opac_safe = max(opacity_after_compensation, ALPHA_THRESHOLD + 1e-8f);
+    const float power_threshold = max(MAX_POWER_THRESHOLD, log(opac_safe / ALPHA_THRESHOLD));
+    const float stddev = sqrt(2.0f * power_threshold);
+    const float max_sigma = (MAX_PIXEL_RADIUS + 0.5f) / max(stddev, 1e-6f);
+    const float max_variance = max_sigma * max_sigma;
+
+    const float eigen_avg = 0.5f * (cov_vs.x + cov_vs.z);
+    const float det_cov = cov_vs.x * cov_vs.z - cov_vs.y * cov_vs.y;
+    const float eigen_delta = sqrt(max(0.0f, eigen_avg * eigen_avg - det_cov));
+    const float eigen1 = eigen_avg + eigen_delta;
+    const float eigen2 = max(eigen_avg - eigen_delta, 0.0f);
+    const float eigen1_clamped = min(eigen1, max_variance);
+    const float eigen2_clamped = min(eigen2, max_variance);
+
+    if (eigen1_clamped >= eigen1 && eigen2_clamped >= eigen2)
+        return cov_vs;
+
+    const float2 eigen_vec1 = abs(cov_vs.y) > 1e-6f
+        ? normalize(float2(cov_vs.y, eigen1 - cov_vs.x))
+        : (cov_vs.x >= cov_vs.z ? float2(1.0f, 0.0f) : float2(0.0f, 1.0f));
+    const float2 eigen_vec2 = float2(eigen_vec1.y, -eigen_vec1.x);
+    return float3(
+        eigen1_clamped * eigen_vec1.x * eigen_vec1.x + eigen2_clamped * eigen_vec2.x * eigen_vec2.x,
+        eigen1_clamped * eigen_vec1.x * eigen_vec1.y + eigen2_clamped * eigen_vec2.x * eigen_vec2.y,
+        eigen1_clamped * eigen_vec1.y * eigen_vec1.y + eigen2_clamped * eigen_vec2.y * eigen_vec2.y);
 }
 
 [ForceInline]
@@ -767,7 +822,7 @@ half clipOpacity(half x) {
 
 [ForceInline]
 [Differentiable]
-float4 evaluate_splat(Splat_2D_AlphaBlend g, 
+float4 evaluate_splat(Splat_2D_AlphaBlend g,
                       no_diff float2 pix_coord)
 {
 
@@ -778,13 +833,17 @@ float4 evaluate_splat(Splat_2D_AlphaBlend g,
 
     float2 d = pix_coord - g_xy;
 
-    // evaluate at center
-    float power = -0.5f * (g_inv_cov_vs.x * d.x*d.x + g_inv_cov_vs.z * d.y*d.y + 2.0*g_inv_cov_vs.y * d.x*d.y);
-    float val = exp(power);
+    // Matches CUDA reference forward kernel: skip fragments whose alpha
+    // would fall below ALPHA_THRESHOLD before computing exp(). sigma_over_2
+    // < 0 corresponds to an indefinite projected covariance.
+    float sigma_over_2 = 0.5f * (g_inv_cov_vs.x * d.x*d.x + g_inv_cov_vs.z * d.y*d.y) + g_inv_cov_vs.y * d.x*d.y;
+    float val = (sigma_over_2 < 0.0f || sigma_over_2 > power_threshold_for_opacity(g_opacity))
+        ? 0.0f
+        : exp(-sigma_over_2);
 
     float alpha = float(clipOpacity(g_opacity * val));
-    float3 premult_rgb = g_rgb * alpha;
-    
+    float3 premult_rgb = clamp(g_rgb, float3(0.0f), float3(MAX_BLEND_COLOR)) * alpha;
+
     return float4(premult_rgb, alpha);
 }
 
@@ -798,7 +857,7 @@ float4 evaluate_gut_splat(Splat_3D_GUT_AlphaBlend g, float3 ray_origin, float3 r
     float3 gcrod = cross(grd, gro);
     float power = -0.5f * dot(gcrod, gcrod);
     float alpha = float(clipOpacity(g.opacity * exp(power)));
-    return float4(g.rgb * alpha, alpha);
+    return float4(clamp(g.rgb, float3(0.0f), float3(MAX_BLEND_COLOR)) * alpha, alpha);
 }
 
 [ForceInline]
@@ -812,10 +871,13 @@ float evaluate_splat_alpha(
 
     float2 d = pix_coord - g_xy;
 
-    float power = -0.5f * (g_inv_cov_vs.x * d.x*d.x + g_inv_cov_vs.z * d.y*d.y + 2.0*g_inv_cov_vs.y * d.x*d.y);
+    float sigma_over_2 = 0.5f * (g_inv_cov_vs.x * d.x*d.x + g_inv_cov_vs.z * d.y*d.y) + g_inv_cov_vs.y * d.x*d.y;
+    float val = (sigma_over_2 < 0.0f || sigma_over_2 > power_threshold_for_opacity(g_opacity))
+        ? 0.0f
+        : exp(-sigma_over_2);
 
-    float alpha = clipOpacity(g_opacity * exp(power));
-    
+    float alpha = clipOpacity(g_opacity * val);
+
     return float(alpha);
 }
 
@@ -834,10 +896,16 @@ float3x3 get_covariance_from_quat_scales(float4 q, float3 s) {
 }
 
 
+// Matches CUDA reference power_threshold_for_opacity: floored at
+// MAX_POWER_THRESHOLD so low-opacity splats still get a finite influence
+// radius (the alpha-cutoff distance never collapses to zero).
+float power_threshold_for_opacity(float opacity) {
+    const float safe_opacity = max(opacity, ALPHA_THRESHOLD);
+    return max(MAX_POWER_THRESHOLD, log(safe_opacity / ALPHA_THRESHOLD));
+}
+
 float extend_from_opacity(float opac) {
-    // return min(3.329f, sqrt(2.0*log(opac/ALPHA_THRESHOLD)));
-    // return sqrt(2.0*log(min(opac,1.0f)/ALPHA_THRESHOLD));
-    return sqrt(2.0*log(opac/ALPHA_THRESHOLD));
+    return sqrt(2.0f * power_threshold_for_opacity(opac));
 }
 
 

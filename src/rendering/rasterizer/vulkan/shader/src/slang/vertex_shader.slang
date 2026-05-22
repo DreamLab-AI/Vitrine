@@ -52,7 +52,13 @@ Gaussian_3D load_gaussian_split(
     SpherHarmCoeffs g_sh_coeffs = read_spherical_harmonics_coeffs_split(
         g_idx, sh0, shN, active_sh, shN_layout_slots);
     float4 g_rotations = rotations[g_idx];
-    float3 g_scales = exp(read_t3_float3(g_idx, scaling_raw));
+    // Matches CUDA reference: clamp raw log-scale before activation so a
+    // single broken splat cannot blow up into a screen-spanning haze floater
+    // (exp(50) would otherwise overflow fp32 and the splat would dominate
+    // every tile it touches).
+    float3 g_raw_scaling = read_t3_float3(g_idx, scaling_raw);
+    g_raw_scaling = min(g_raw_scaling, float3(MAX_RAW_SCALE));
+    float3 g_scales = exp(g_raw_scaling);
     float g_opacities = sigmoid_activation(opacity_raw[g_idx]);
 
     return { g_xyz_ws, g_sh_coeffs, g_rotations, g_scales, g_opacities };
@@ -83,7 +89,7 @@ Splat_2D_Vertex project_gaussian_to_camera(Gaussian_3D g, Camera cam, uint activ
     float3 rgb = compute_color_from_sh_coeffs(g.sh_coeffs, dir, active_sh);
 
     float3x3 cov_ws = get_covariance_from_quat_scales(
-        normalize(g.rotations), g.scales
+        safe_quat_normalize(g.rotations), g.scales
     );
     float4 cov_vs = covariance_3d_to_2d(cam, g.xyz_ws, cov_ws);
 
@@ -103,7 +109,13 @@ Splat_2D_Vertex project_gaussian_to_camera_model(
     uint model_transform_base,
     bool model_transform_enabled) {
     float3 xyz_vs = project_point(mean_ws, cam);
-    if (xyz_vs.z <= NEAR_CLIP) {
+    // Reject behind-camera, non-finite, and far off-screen means. The EWA
+    // projection Jacobian degenerates as the mean moves outside the frustum
+    // and produces needle-like splats that streak across the visible tiles.
+    // CUDA reference uses clip_xy=1.4 (20% margin).
+    if (xyz_vs.z <= NEAR_CLIP ||
+        !isfinite(dot(xyz_vs, xyz_vs)) ||
+        !image_point_in_image_bounds_margin(xyz_vs.xy, cam, 0.2f)) {
         return { float3(0.0), float3(0.0), float3(0.0), float4(0.0), 0.0 };
     }
     xyz_vs.xy -= 0.5;  // pixel offset
@@ -118,18 +130,19 @@ Splat_2D_Vertex project_gaussian_to_camera_model(
     float3 rgb = compute_color_from_sh_coeffs(g.sh_coeffs, dir, active_sh);
 
     float3x3 cov_ws = get_covariance_from_quat_scales(
-        normalize(g.rotations), g.scales
+        safe_quat_normalize(g.rotations), g.scales
     );
     if (model_transform_enabled) {
         cov_ws = transform_covariance_rows(model_transform_rows, model_transform_base, cov_ws);
     }
     float4 cov_vs = covariance_3d_to_2d(cam, mean_ws, cov_ws);
 
-    float det = compute_det(cov_vs.xyz);
-    float3 inv_cov_vs = compute_inverse(cov_vs.xyz);
+    float3 cov_clamped = clamp_covariance_2d_extent(cov_vs.xyz, g.opacities * cov_vs.w);
+    float det = compute_det(cov_clamped);
+    float3 inv_cov_vs = compute_inverse(cov_clamped);
     float opac = g.opacities * cov_vs.w;
 
-    return { xyz_vs, rgb, cov_vs.xyz, float4(inv_cov_vs, opac), det };
+    return { xyz_vs, rgb, cov_clamped, float4(inv_cov_vs, opac), det };
 }
 
 [ForceInline]
@@ -174,7 +187,7 @@ Splat_2D_Vertex project_gaussian_to_camera_gut(
 
     // 3DGUT uses the unscented transform for screen-space binning; final alpha
     // is evaluated against the pixel ray in the raster shader.
-    float3x3 rotation = quat_to_rotmat(normalize(g.rotations));
+    float3x3 rotation = quat_to_rotmat(safe_quat_normalize(g.rotations));
     float3 sigma_points[NUM_SIGMA_POINTS];
     sigma_points[0] = mean_ws;
     for (uint i = 0u; i < D; ++i) {
@@ -329,6 +342,9 @@ layout(binding=14) ByteAddressBuffer transform_indices;
 layout(binding=15) ByteAddressBuffer node_mask;
 layout(binding=16) StructuredBuffer<float4> overlay_params;
 layout(binding=17) StructuredBuffer<float4> model_transforms;
+// Two-stage sort: per-primitive depth key written only at the success path.
+// CPU pre-fills with 0xFFFFFFFFu so invisible primitives sort to the tail.
+layout(binding=18) RWStructuredBuffer<uint32_t> out_primitive_depth_keys;
 
 #elif EXPORT_MODE == EXPORT_MODE_VULKAN_BACKWARD
 
@@ -654,6 +670,17 @@ void main(
         out_overlay_flags[g_idx] = overlay_flags;
         return;
     }
+
+    // Two-stage sort: radial distance squared as the depth key, matching the
+    // CUDA reference (`gsplat_fwd/kernels_forward.cuh: primitive_depth_keys[...]
+    // = __float_as_uint(radial_sort_metric)`). Float-as-uint preserves
+    // monotonic order for non-negative values, so the radix sort sees a
+    // canonical front-to-back ordering. Invisible primitives keep the 0xFFFFFFFFu
+    // sentinel pre-filled on the host.
+    float3 cam_origin = no_diff camera_origin_ws(cam);
+    float3 sort_delta = mean_ws - cam_origin;
+    float radial_sort_metric = dot(sort_delta, sort_delta);
+    out_primitive_depth_keys[g_idx] = reinterpret<uint32_t>(radial_sort_metric);
 
 #endif  // EXPORT_MODE != EXPORT_MODE_VULKAN_BACKWARD
 

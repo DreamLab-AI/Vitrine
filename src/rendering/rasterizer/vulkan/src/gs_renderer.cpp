@@ -133,6 +133,8 @@ void VulkanGSRenderer::initializeExternal(const std::map<std::string, std::strin
     createComputePipeline(pipeline_sorting_2.upsweep, spirv_paths.at("radix_sort/upsweep"));
     createComputePipeline(pipeline_sorting_2.spine, spirv_paths.at("radix_sort/spine"));
     createComputePipeline(pipeline_sorting_2.downsweep, spirv_paths.at("radix_sort/downsweep"));
+    createComputePipeline(pipeline_seed_primitive_indices, spirv_paths.at("seed_primitive_indices"));
+    createComputePipeline(pipeline_apply_depth_ordering, spirv_paths.at("apply_depth_ordering"));
 }
 
 void VulkanGSRenderer::executeProjectionForward(
@@ -164,6 +166,21 @@ void VulkanGSRenderer::executeProjectionForward(
                         COMPUTE_SHADER_READ);
 
     size_t alloc_size = std::max(num_splats, alloc_reserve);
+
+    // Two-stage sort: pre-fill primitive_depth_keys with 0xFFFFFFFFu so any
+    // primitive that hits an early-return path inside the projection shader
+    // (z-near reject, opacity below threshold, degenerate covariance, zero
+    // tiles touched) keeps the max-key sentinel and sorts to the tail.
+    auto& primitive_depth_keys =
+        resizeDeviceBuffer(buffers.primitive_depth_keys, alloc_size);
+    bufferMemoryBarrier({{primitive_depth_keys, COMPUTE_SHADER_READ_WRITE}},
+                        TRANSFER_COMPUTE_SHADER_WRITE);
+    vkCmdFillBuffer(command_buffer, primitive_depth_keys.buffer,
+                    primitive_depth_keys.offset, primitive_depth_keys.size,
+                    0xFFFFFFFFu);
+    bufferMemoryBarrier({{primitive_depth_keys, TRANSFER_COMPUTE_SHADER_WRITE}},
+                        COMPUTE_SHADER_READ_WRITE);
+
     executeCompute(
         {{num_splats, SUBGROUP_SIZE}},
         &uniforms, sizeof(uniforms),
@@ -189,6 +206,7 @@ void VulkanGSRenderer::executeProjectionForward(
             node_mask,
             overlay_params,
             model_transforms,
+            primitive_depth_keys,
         });
 }
 
@@ -228,9 +246,9 @@ void VulkanGSRenderer::executeGenerateKeys(
             // inputs
             buffers.xy_vs.deviceBuffer,
             buffers.inv_cov_vs_opacity.deviceBuffer,
-            buffers.depths.deviceBuffer,
             buffers.rect_tile_space.deviceBuffer,
             buffers.index_buffer_offset.deviceBuffer,
+            buffers.primitive_sort_indices.deviceBuffer,
             // outputs
             unsorted_keys,
             unsorted_idx,
@@ -584,10 +602,13 @@ void VulkanGSRenderer::executeCalculateIndexBufferOffset(
         num_indices_estimate_grid_height_ = num_indices_readback_grid_height_;
     }
 
-    // Cumsum populates index_buffer_offset on GPU.
+    // Cumsum on tiles_touched_depth_ordered (output of executeApplyDepthOrdering)
+    // so index_buffer_offset[depth_rank] gives the contiguous offset interval
+    // for the primitive at depth rank `depth_rank`. Matches the gsplat_fwd CUDA
+    // reference (cub::DeviceScan::ExclusiveSum on the reordered offsets array).
     executeCumsum(
         buffers,
-        buffers.tiles_touched,
+        buffers.tiles_touched_depth_ordered,
         buffers.index_buffer_offset);
 
     DEVICE_GUARD;
@@ -656,12 +677,17 @@ void VulkanGSRenderer::executeCalculateIndexBufferOffset(
 void VulkanGSRenderer::executeSort(
     const VulkanGSRendererUniforms& uniforms,
     VulkanGSPipelineBuffers& buffers,
-    int num_bits) {
+    int num_bits,
+    int64_t num_elements_override) {
     PerfTimer::Timer<PerfTimer::SortRTS> timer(this);
 
-    size_t num_elements = buffers.unsorted_keys().deviceSize();
-    if (num_elements != buffers.unsorted_gauss_idx().deviceSize())
+    size_t buffer_capacity = buffers.unsorted_keys().deviceSize();
+    if (buffer_capacity != buffers.unsorted_gauss_idx().deviceSize())
         _THROW_ERROR("number of elements don't match in executeSort");
+    size_t num_elements = num_elements_override < 0
+                              ? buffer_capacity
+                              : std::min<size_t>(buffer_capacity,
+                                                 static_cast<size_t>(num_elements_override));
 
     const int RADIX = 256;
     const int WORKGROUP_SIZE = 512;
@@ -754,4 +780,109 @@ void VulkanGSRenderer::executeSort(
         buffers.is_unsorted_1 = !buffers.is_unsorted_1;
     }
     buffers.is_unsorted_1 = !buffers.is_unsorted_1;
+}
+
+void VulkanGSRenderer::executeSortPrimitivesByDepth(
+    const VulkanGSRendererUniforms& uniforms,
+    VulkanGSPipelineBuffers& buffers) {
+    PerfTimer::Timer<PerfTimer::SortRTS> timer(this);
+
+    const size_t num_splats = buffers.num_splats;
+    if (num_splats == 0)
+        return;
+
+    DEVICE_GUARD;
+
+    // The ping-pong sort buffers must be at least N wide for stage 1. They get
+    // grown to num_indices later by executeGenerateKeys (no_shrink=true keeps
+    // the high-water-mark size for stage 2).
+    auto& unsorted_keys = resizeDeviceBuffer(buffers.unsorted_keys(), num_splats);
+    auto& unsorted_idx = resizeDeviceBuffer(buffers.unsorted_gauss_idx(), num_splats);
+
+    // Stage 1 input: copy float-as-uint depth keys produced by
+    // executeProjectionForward into the radix sort's "unsorted" slot.
+    bufferMemoryBarrier({{buffers.primitive_depth_keys.deviceBuffer, COMPUTE_SHADER_WRITE},
+                         {unsorted_keys, COMPUTE_SHADER_READ_WRITE}},
+                        TRANSFER_COMPUTE_SHADER_READ_WRITE);
+    {
+        VkBufferCopy copy{};
+        copy.srcOffset = buffers.primitive_depth_keys.deviceBuffer.offset;
+        copy.dstOffset = unsorted_keys.offset;
+        copy.size = num_splats * sizeof(uint32_t);
+        vkCmdCopyBuffer(command_buffer,
+                        buffers.primitive_depth_keys.deviceBuffer.buffer,
+                        unsorted_keys.buffer, 1, &copy);
+    }
+    bufferMemoryBarrier({{unsorted_keys, TRANSFER_COMPUTE_SHADER_WRITE}},
+                        COMPUTE_SHADER_READ_WRITE);
+
+    // Stage 1 payload: write identity 0..N-1 into the index ping-pong slot.
+    {
+        struct SeedUniforms {
+            uint32_t num_splats;
+            uint32_t pad0, pad1, pad2;
+        } seed_uniforms{static_cast<uint32_t>(num_splats), 0, 0, 0};
+        executeCompute(
+            {{num_splats, 64}},
+            &seed_uniforms, sizeof(seed_uniforms),
+            pipeline_seed_primitive_indices,
+            {unsorted_idx});
+    }
+
+    // Stage 1 sort: full 32-bit (depth keys carry no monotonic structure beyond
+    // the raw float bit pattern; max_power_threshold style truncation would
+    // bias the ordering).
+    executeSort(uniforms, buffers, 32, static_cast<int64_t>(num_splats));
+
+    // Snapshot depth-ranked primitive indices into a stable buffer so stage 2
+    // is free to reuse the ping-pong without clobbering the ordering. Matches
+    // the CUDA reference's `primitive_indices_sorted` view.
+    auto& sort_indices = resizeDeviceBuffer(buffers.primitive_sort_indices, num_splats);
+    bufferMemoryBarrier({{buffers.sorted_gauss_idx().deviceBuffer, COMPUTE_SHADER_WRITE},
+                         {sort_indices, COMPUTE_SHADER_READ_WRITE}},
+                        TRANSFER_COMPUTE_SHADER_READ_WRITE);
+    {
+        VkBufferCopy copy{};
+        copy.srcOffset = buffers.sorted_gauss_idx().deviceBuffer.offset;
+        copy.dstOffset = sort_indices.offset;
+        copy.size = num_splats * sizeof(int32_t);
+        vkCmdCopyBuffer(command_buffer,
+                        buffers.sorted_gauss_idx().deviceBuffer.buffer,
+                        sort_indices.buffer, 1, &copy);
+    }
+    bufferMemoryBarrier({{sort_indices, TRANSFER_COMPUTE_SHADER_WRITE}},
+                        COMPUTE_SHADER_READ);
+}
+
+void VulkanGSRenderer::executeApplyDepthOrdering(
+    const VulkanGSRendererUniforms& uniforms,
+    VulkanGSPipelineBuffers& buffers) {
+    PerfTimer::Timer<PerfTimer::CalculateIndexBufferOffset> timer(this);
+    DEVICE_GUARD;
+
+    const size_t num_splats = buffers.num_splats;
+    if (num_splats == 0)
+        return;
+
+    auto& tiles_touched_ordered =
+        resizeDeviceBuffer(buffers.tiles_touched_depth_ordered, num_splats);
+
+    bufferMemoryBarrier({{buffers.primitive_sort_indices.deviceBuffer, COMPUTE_SHADER_WRITE},
+                         {buffers.tiles_touched.deviceBuffer, COMPUTE_SHADER_WRITE}},
+                        COMPUTE_SHADER_READ);
+
+    struct ApplyUniforms {
+        uint32_t num_splats;
+        uint32_t pad0, pad1, pad2;
+    } apply_uniforms{static_cast<uint32_t>(num_splats), 0, 0, 0};
+
+    executeCompute(
+        {{num_splats, 64}},
+        &apply_uniforms, sizeof(apply_uniforms),
+        pipeline_apply_depth_ordering,
+        {
+            buffers.primitive_sort_indices.deviceBuffer,
+            buffers.tiles_touched.deviceBuffer,
+            tiles_touched_ordered,
+        });
 }

@@ -103,6 +103,8 @@ namespace lfs::vis {
                 {"radix_sort/upsweep", (root / "radix_sort/upsweep.spv").string()},
                 {"radix_sort/spine", (root / "radix_sort/spine.spv").string()},
                 {"radix_sort/downsweep", (root / "radix_sort/downsweep.spv").string()},
+                {"seed_primitive_indices", (root / "generated/seed_primitive_indices.spv").string()},
+                {"apply_depth_ordering", (root / "generated/apply_depth_ordering.spv").string()},
             };
         }
 
@@ -2371,13 +2373,30 @@ namespace lfs::vis {
                                                overlay_bindings->model_transforms,
                                                0,
                                                request.gut);
+            // Two-stage sort (Splatshop, matches gsplat_fwd reference):
+            //   1. Depth-sort N primitives by radial distance (full 32-bit key).
+            //   2. Reorder tiles_touched into depth-rank order so the cumsum
+            //      offsets match a depth-ordered emission walk.
+            //   3. Stable-sort tile instances by tile id only (no depth bits
+            //      packed in), which preserves depth order within each tile.
+            renderer_.executeSortPrimitivesByDepth(uniforms, buffers_);
+            renderer_.executeApplyDepthOrdering(uniforms, buffers_);
             renderer_.executeCalculateIndexBufferOffset(uniforms, buffers_);
             uniforms.sort_capacity = static_cast<uint32_t>(
                 std::min<std::size_t>(buffers_.num_indices,
                                       static_cast<std::size_t>(std::numeric_limits<uint32_t>::max())));
             if (buffers_.num_indices > 0) {
                 renderer_.executeGenerateKeys(uniforms, buffers_);
-                renderer_.executeSort(uniforms, buffers_, -1);
+                // Stage-2 sort bits: ceil(log2(grid_w*grid_h + 1)) rounded up to
+                // the next byte. Real tile ids fit in this range; the sentinel
+                // (grid_w*grid_h) sorts to the end.
+                int tile_bits = 0;
+                uint32_t tile_max = uniforms.grid_width * uniforms.grid_height;
+                while (tile_max) {
+                    tile_max >>= 1;
+                    ++tile_bits;
+                }
+                renderer_.executeSort(uniforms, buffers_, tile_bits);
                 renderer_.executeComputeTileRanges(uniforms, buffers_);
                 renderer_.executeRasterizeForward(uniforms,
                                                   buffers_,

@@ -28,15 +28,27 @@ static const uint32_t FLOAT32_FRACTION_BITS = 23;
 
 #if ENTRY == _ENTRY_generate_keys
 
+// Two-stage sort: this dispatch walks primitives in depth-rank order
+// (output of stage-1 sort over per-primitive depth keys). For each depth_rank
+// we look up the original primitive index via `primitive_sort_indices`, read
+// per-primitive metadata at that index, and emit one key per touched tile.
+//
+// Keys are tile-id only (no depth bits packed in). The stage-2 radix sort is
+// stable per digit, so the write order produced by this dispatch — depth
+// ascending across primitives, then binning order within a primitive — is
+// preserved within each tile bucket after the sort.
+//
+// Matches gsplat_fwd/kernels_forward.cuh::create_instances_cu.
+
 layout(binding=0) StructuredBuffer<float> xy_vs;
 layout(binding=1) StructuredBuffer<float> inv_cov_vs_opacity;
-layout(binding=2) StructuredBuffer<float> depths;
 #if USE_EMULATED_INT64
-layout(binding=3) StructuredBuffer<int32_t> rect_tile_space;
+layout(binding=2) StructuredBuffer<int32_t> rect_tile_space;
 #else
-layout(binding=3) StructuredBuffer<int64_t> rect_tile_space;
+layout(binding=2) StructuredBuffer<int64_t> rect_tile_space;
 #endif
-layout(binding=4) StructuredBuffer<int32_t> index_buffer_offset;
+layout(binding=3) StructuredBuffer<int32_t> index_buffer_offset;
+layout(binding=4) StructuredBuffer<int32_t> primitive_sort_indices;
 
 layout(binding=5) RWStructuredBuffer<sortingKey_t> out_unsorted_keys;
 layout(binding=6) RWStructuredBuffer<int32_t> out_unsorted_gauss_idx;
@@ -57,37 +69,35 @@ void main(
     const uint grid_width = uniforms.grid_width;
     const bool wrap_x = base_camera_model(uniforms.camera_model) == uint(CameraModel::EQUIRECTANGULAR);
 
-    int32_t globalIdx = dispatchThreadID.x;
-    
-    if (globalIdx >= uniforms.num_splats)
+    int32_t depth_rank = dispatchThreadID.x;
+
+    if (depth_rank >= uniforms.num_splats)
         return;
 
-    uint32_t DEPTH_BITS = min(uint32_t(31.99-log2(grid_height*grid_width)), FLOAT32_FRACTION_BITS);
+    int32_t primitive_idx = primitive_sort_indices[depth_rank];
 
 #if TILE_CULLING_MODE > 0
-    float2 xy = read_t2_float2(globalIdx, xy_vs);
-    float4 inv_cov_opac = read_t4_float4(globalIdx, inv_cov_vs_opacity);
+    float2 xy = read_t2_float2(primitive_idx, xy_vs);
+    float4 inv_cov_opac = read_t4_float4(primitive_idx, inv_cov_vs_opacity);
 
     float extend = extend_from_opacity(inv_cov_opac.w);
     float3 inv_cov = inv_cov_opac.xyz / (extend*extend);
 #endif  // TILE_CULLING_MODE > 0
 
-    float zf = read_t1_float(globalIdx, depths);
-    zf = (2.0*zf+1.0)/(zf+1.0);  // between 1 and 2, make float bits easier
-    uint32_t z = (reinterpret<uint32_t>(zf) & ((1u<<FLOAT32_FRACTION_BITS)-1u)) >> (FLOAT32_FRACTION_BITS-DEPTH_BITS);
-
   #if USE_EMULATED_INT64
     rectangle rect;
-    rect.min_x = (uint16_t)rect_tile_space[2*globalIdx+0];
-    rect.min_y = (uint16_t)(rect_tile_space[2*globalIdx+0] >> 16);
-    rect.max_x = (uint16_t)rect_tile_space[2*globalIdx+1];
-    rect.max_y = (uint16_t)(rect_tile_space[2*globalIdx+1] >> 16);
+    rect.min_x = (uint16_t)rect_tile_space[2*primitive_idx+0];
+    rect.min_y = (uint16_t)(rect_tile_space[2*primitive_idx+0] >> 16);
+    rect.max_x = (uint16_t)rect_tile_space[2*primitive_idx+1];
+    rect.max_y = (uint16_t)(rect_tile_space[2*primitive_idx+1] >> 16);
   #else
-    rectangle rect = reinterpret<rectangle>(rect_tile_space[globalIdx]);
+    rectangle rect = reinterpret<rectangle>(rect_tile_space[primitive_idx]);
   #endif
 
-    int offset = globalIdx == 0 ? 0 : index_buffer_offset[globalIdx-1];
-    int offset_max = index_buffer_offset[globalIdx];
+    // index_buffer_offset is cumsum'd over the depth-ordered tiles_touched
+    // array, so the offset interval for this depth_rank is contiguous.
+    int offset = depth_rank == 0 ? 0 : index_buffer_offset[depth_rank-1];
+    int offset_max = index_buffer_offset[depth_rank];
     const int sort_capacity = int(uniforms.sort_capacity);
     if (sort_capacity <= 0 || offset >= sort_capacity)
         return;
@@ -101,8 +111,8 @@ void main(
                 return;
             uint32_t key_x = wrap_x ? uint32_t(x) % grid_width : uint32_t(x);
             uint32_t key = uint32_t(y) * grid_width + key_x;
-            out_unsorted_keys[offset] = sortingKey_t((key << DEPTH_BITS) | z);
-            out_unsorted_gauss_idx[offset] = globalIdx;
+            out_unsorted_keys[offset] = sortingKey_t(key);
+            out_unsorted_gauss_idx[offset] = primitive_idx;
             offset++;
         }
     }
@@ -115,8 +125,8 @@ void main(
         for (uint16_t y = rect.min_y; y < rect.max_y; y++) {
             for (uint16_t x = rect.min_x; x < rect.max_x && offset < offset_max; x++) {
                 uint32_t key = uint32_t(y) * grid_width + (uint32_t(x) % grid_width);
-                out_unsorted_keys[offset] = sortingKey_t((key << DEPTH_BITS) | z);
-                out_unsorted_gauss_idx[offset] = globalIdx;
+                out_unsorted_keys[offset] = sortingKey_t(key);
+                out_unsorted_gauss_idx[offset] = primitive_idx;
                 offset++;
             }
         }
@@ -139,8 +149,8 @@ void main(
             ));
             for (uint16_t x = min_x; x < max_x && offset < offset_max; x++) {
                 uint32_t key = uint32_t(y) * grid_width + uint32_t(x);
-                out_unsorted_keys[offset] = sortingKey_t((key << DEPTH_BITS) | z);
-                out_unsorted_gauss_idx[offset] = globalIdx;
+                out_unsorted_keys[offset] = sortingKey_t(key);
+                out_unsorted_gauss_idx[offset] = primitive_idx;
                 offset++;
             }
         }
@@ -161,18 +171,18 @@ void main(
             ));
             for (uint16_t y = min_y; y < max_y && offset < offset_max; y++) {
                 uint32_t key = uint32_t(y) * grid_width + uint32_t(x);
-                out_unsorted_keys[offset] = sortingKey_t((key << DEPTH_BITS) | z);
-                out_unsorted_gauss_idx[offset] = globalIdx;
+                out_unsorted_keys[offset] = sortingKey_t(key);
+                out_unsorted_gauss_idx[offset] = primitive_idx;
                 offset++;
             }
         }
     }
 
+    // Pad over-estimated tail with max-tile sentinel so excess slots sort to
+    // the end (where they fall outside the per-tile range scan).
     for (; offset < offset_max; offset++) {
-        // out_unsorted_keys[offset] = sortingKey_t(-1);
-        out_unsorted_keys[offset] = sortingKey_t(
-            (uint32_t(offset%(grid_width*grid_height)) << DEPTH_BITS) | ((1u << DEPTH_BITS) - 1u));
-        out_unsorted_gauss_idx[offset] = globalIdx;
+        out_unsorted_keys[offset] = sortingKey_t(grid_width * grid_height);
+        out_unsorted_gauss_idx[offset] = primitive_idx;
     }
 
 #endif  // TILE_CULLING_MODE == 2
@@ -199,7 +209,6 @@ void main(
     const uint grid_height = uniforms.grid_height;
     const uint grid_width = uniforms.grid_width;
     const uint32_t num_tiles = grid_height*grid_width;
-    uint32_t DEPTH_BITS = min(uint32_t(31.99-log2(grid_height*grid_width)), FLOAT32_FRACTION_BITS);
 
     // num_isects (= num_indices) is read directly from the GPU-resident cumsum
     // tail, then clamped to the CPU-chosen sort capacity so stale estimates from
@@ -212,12 +221,13 @@ void main(
     if (globalIdx > num_isects)
         return;
 
-    // Read tile ID from key. Update start/end of tile range if at limit.
+    // Two-stage sort: keys are tile-id-only (no depth packed), so the tile
+    // id is the key value clamped to [0, num_tiles].
     sortingKey_t key = sorted_keys[globalIdx];
     uint32_t currtile = globalIdx == num_isects ?
-        num_tiles : min((uint32_t)(key) >> DEPTH_BITS, num_tiles);
+        num_tiles : min((uint32_t)key, num_tiles);
     uint32_t prevtile = globalIdx == 0 ? (uint32_t)-1 :
-        min((uint32_t)sorted_keys[globalIdx-1] >> DEPTH_BITS, num_tiles);
+        min((uint32_t)sorted_keys[globalIdx-1], num_tiles);
     for (uint32_t i = prevtile+1; i <= currtile; ++i) {
         out_tile_ranges[i] = globalIdx;
     }

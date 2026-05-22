@@ -132,6 +132,10 @@ _vulkan_add_slang_shader(cumsum_single_pass        cumsum.slang CUMSUM_PHASE=0)
 _vulkan_add_slang_shader(generate_keys             tile_shader.slang EXPORT_MODE=0 ENTRY=1)
 _vulkan_add_slang_shader(compute_tile_ranges       tile_shader.slang EXPORT_MODE=0 ENTRY=2)
 
+# Two-stage sort helper shaders
+_vulkan_add_slang_shader(seed_primitive_indices    seed_primitive_indices.slang)
+_vulkan_add_slang_shader(apply_depth_ordering      apply_depth_ordering.slang)
+
 # vertex_shader.slang → projection_forward variants
 _vulkan_add_slang_shader(projection_forward        vertex_shader.slang EXPORT_MODE=0)
 _vulkan_add_slang_shader(projection_forward_3dgut  vertex_shader.slang EXPORT_MODE=0 LFS_3DGUT_PROJECTION=1)

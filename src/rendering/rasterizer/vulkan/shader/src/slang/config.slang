@@ -2,7 +2,11 @@
 #define SUBGROUP_SIZE 32
 #endif
 
-#define ALPHA_THRESHOLD (1.f/255.f)
+// Matches the CUDA reference forward kernel (min_alpha_threshold = 0.5/255).
+// At 1/255 the per-splat extent (extend_from_opacity) shrinks ~7%, which leaves
+// uncovered sub-pixel gaps at object boundaries that show as small black
+// triangles against the background.
+#define ALPHA_THRESHOLD (0.5f/255.f)
 
 // 0: vanilla 3DGS
 // 1: Mip-splatting
@@ -43,6 +47,23 @@
 
 // 0.99 for Inria, 0.999 for GSplat
 #define ALPHA_BLEND_MAX_OPACITY 0.999f
+
+// Matches CUDA reference (config::max_blend_color). SH evaluation can produce
+// per-channel values well above 1.0; clipping caps blow-ups while leaving
+// typical HDR-ish values (<= ~2) untouched.
+#define MAX_BLEND_COLOR 4.0f
+
+// Matches CUDA reference (config::max_power_threshold = 0.5 * max_stddev^2,
+// max_stddev = sqrt(8)). Floors power_threshold_for_opacity so low-opacity
+// splats still get a finite extent for the covariance clamp.
+#define MAX_POWER_THRESHOLD 4.0f
+
+// Matches CUDA reference (config::max_raw_scale = 20.0f). Clamps log-scale
+// before activation so a misbehaving splat with raw_scale >> 20 cannot
+// explode into a screen-spanning haze floater (exp(2*20) ≈ 2.4e17, the
+// largest variance that stays finite in fp32 with margin). This is the
+// primary haze-floater killer at the projection stage.
+#define MAX_RAW_SCALE 20.0f
 
 // subtile culling in rasterization
 #if TILE_HEIGHT >= 16 && TILE_WIDTH >= 16

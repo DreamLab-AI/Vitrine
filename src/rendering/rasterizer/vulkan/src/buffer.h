@@ -108,6 +108,15 @@ struct VulkanGSPipelineBuffers {
     Buffer<float> rgb;                // (N, 3)
     Buffer<int32_t> overlay_flags;    // (N, 1), selection/filter classification
 
+    // Two-stage sort (Splatshop): N primitives are first sorted by radial
+    // distance (depth), then tile instances are emitted in depth order and
+    // sorted by tile id with a stable radix. Matches the gsplat_fwd CUDA
+    // reference (kernels_forward.cuh: primitive_depth_keys → SortPairs →
+    // apply_depth_ordering → create_instances → SortPairs).
+    Buffer<uint32_t> primitive_depth_keys;       // (N,) float-as-uint of ‖mean − cam‖²
+    Buffer<int32_t> primitive_sort_indices;      // (N,) depth-ranked primitive idx
+    Buffer<int32_t> tiles_touched_depth_ordered; // (N,) reordered tiles_touched
+
     // tiles
     Buffer<int32_t> index_buffer_offset; // N
     Buffer<sortingKey_t> sorting_keys_1; // NInt [no_shrink]

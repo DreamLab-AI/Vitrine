@@ -96,7 +96,20 @@ public:
 
     void executeCalculateIndexBufferOffset(const VulkanGSRendererUniforms& uniforms,
                                            VulkanGSPipelineBuffers& buffers);
-    void executeSort(const VulkanGSRendererUniforms& uniforms, VulkanGSPipelineBuffers& buffers, int num_bits);
+    // num_elements_override < 0 → use buffers.unsorted_keys().deviceSize().
+    void executeSort(const VulkanGSRendererUniforms& uniforms, VulkanGSPipelineBuffers& buffers,
+                     int num_bits, int64_t num_elements_override = -1);
+
+    // Two-stage sort stage 1: sort the N primitives by depth (radial distance
+    // squared, written into buffers.primitive_depth_keys by projection_forward).
+    // Writes the depth-ranked primitive indices into buffers.primitive_sort_indices.
+    void executeSortPrimitivesByDepth(const VulkanGSRendererUniforms& uniforms,
+                                      VulkanGSPipelineBuffers& buffers);
+
+    // Reorder tiles_touched into depth-rank order so the subsequent cumsum
+    // produces offsets matching the depth-ordered walk in generate_keys.
+    void executeApplyDepthOrdering(const VulkanGSRendererUniforms& uniforms,
+                                   VulkanGSPipelineBuffers& buffers);
 
 protected:
     void executeCumsum(
@@ -104,10 +117,12 @@ protected:
         Buffer<int32_t>& input_buffer,
         Buffer<int32_t>& output_buffer);
 
-    _ComputePipeline pipeline_projection_forward = _ComputePipeline(18);
-    _ComputePipeline pipeline_projection_forward_3dgut = _ComputePipeline(18);
+    _ComputePipeline pipeline_projection_forward = _ComputePipeline(19);
+    _ComputePipeline pipeline_projection_forward_3dgut = _ComputePipeline(19);
     _ComputePipeline pipeline_selection_mask = _ComputePipeline(8);
     _ComputePipeline pipeline_generate_keys = _ComputePipeline(7);
+    _ComputePipeline pipeline_seed_primitive_indices = _ComputePipeline(1);
+    _ComputePipeline pipeline_apply_depth_ordering = _ComputePipeline(3);
     // 3 bindings: sorted_keys, out_tile_ranges, index_buffer_offset (for num_isects).
     _ComputePipeline pipeline_compute_tile_ranges[2] = {
         _ComputePipeline(3),
