@@ -1565,7 +1565,7 @@ namespace lfs::vis {
                 publishCameraMove(&activeKeyboardViewport());
                 return;
 
-                case input::Action::CAMERA_RESET_HOME:
+            case input::Action::CAMERA_RESET_HOME:
                 activeKeyboardViewport().camera.resetToHome();
                 publishCameraMove(&activeKeyboardViewport());
                 return;
