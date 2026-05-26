@@ -21,6 +21,11 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - SAM3_BPE_PATH=/opt/sam3-repo/sam3/assets/bpe_simple_vocab_16e6.txt.gz
       - MILO_CONTAINER=milo
+      # Bulk capture ingestion (drive_ingestor.py). The remote is an rclone
+      # remote+base path; each sub-folder is one capture session. Auth comes
+      # from the mounted rclone config secret below — never an env-var token.
+      - DRIVE_INGEST_REMOTE=${DRIVE_INGEST_REMOTE:-}
+      - RCLONE_CONFIG=/run/secrets/rclone_conf
 
     deploy:
       resources:
@@ -60,6 +65,19 @@ services:
       - ./src/pipeline:/opt/gaussian-toolkit/src/pipeline
       - ./src/web:/opt/gaussian-toolkit/src/web
       - ./CLAUDE_CONTAINER.md:/opt/gaussian-toolkit/CLAUDE.md:ro
+      # Bulk ingestion scratch (drive_ingestor.py). Active session's raw videos
+      # are pulled to /data/raw and the working set (frames, COLMAP, model) to
+      # /data/scratch; both are purged after a verified upload. Point these at a
+      # large NVMe path on the host (250-500 GB recommended — see plan §4).
+      - ${DRIVE_RAW_HOST_DIR:-./data/raw}:/data/raw
+      - ${DRIVE_SCRATCH_HOST_DIR:-./data/scratch}:/data/scratch
+
+    secrets:
+      # rclone config holding the service-account-authenticated remote. Provide
+      # ./secrets/rclone.conf with a [remote] block referencing the GC service
+      # account JSON (service_account_file). Mounted read-only at
+      # /run/secrets/rclone_conf (RCLONE_CONFIG env points here).
+      - rclone_conf
 
     restart: unless-stopped
 
@@ -139,3 +157,17 @@ volumes:
     driver: local
   claude-session:
     driver: local
+
+secrets:
+  # Create ./secrets/rclone.conf locally (gitignored). Example:
+  #   [captures]
+  #   type = drive            # or: type = google cloud storage
+  #   service_account_file = /run/secrets/gdrive_sa.json
+  #   root_folder_id = <shared folder id>
+  # The service account needs WRITE scope on the capture folder so outputs can
+  # be pushed back to <session>/outputs/ (see video-ingestion-plan §8 decisions).
+  rclone_conf:
+    # Defaults to the committed placeholder so `docker compose up` works without
+    # Drive creds; set RCLONE_CONF_FILE=./secrets/rclone.conf (gitignored) when
+    # ready to ingest. The worker only runs when DRIVE_INGEST_REMOTE is set.
+    file: ${RCLONE_CONF_FILE:-./secrets/rclone.conf.example}

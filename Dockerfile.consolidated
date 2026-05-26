@@ -43,6 +43,18 @@ RUN curl -fsSL https://nodejs.org/dist/v23.11.1/node-v23.11.1-linux-x64.tar.xz \
 # splat_optimizer.py invokes this exact package name via npx.
 RUN npm install -g @playcanvas/splat-transform@2.3.2
 
+# rclone — bulk capture ingestion from Google Cloud / Drive (drive_ingestor.py).
+# Pinned release (not the unpinned install.sh) for supply-chain safety. The
+# remote is configured at runtime via a mounted rclone config holding a
+# service-account file (see docker-compose secrets + video-ingestion-plan §3);
+# no credentials are baked into the image.
+ARG RCLONE_VERSION=1.69.1
+RUN curl -fsSL "https://downloads.rclone.org/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-amd64.zip" -o /tmp/rclone.zip \
+    && unzip -j /tmp/rclone.zip "rclone-v${RCLONE_VERSION}-linux-amd64/rclone" -d /usr/local/bin/ \
+    && chmod +x /usr/local/bin/rclone \
+    && rm /tmp/rclone.zip \
+    && rclone version
+
 # ttyd — web terminal over HTTP
 RUN curl -fsSL https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 \
         -o /usr/local/bin/ttyd && chmod +x /usr/local/bin/ttyd

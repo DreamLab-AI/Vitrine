@@ -143,10 +143,39 @@ Phases 1–2 are low-risk and prove the approach before any automation is built.
 
 ---
 
-## 8. Open Questions
+## 8. Decisions (resolved 2026-05-26)
 
-1. **Set grouping**: how are sets organized on Drive — one folder per room, or filename prefixes? Determines the discovery logic.
-2. **Same lens across sets?** If yes, `single_camera=True`; if mixed devices, per-set camera models.
-3. **Output destination**: back to Google Drive, or a separate bucket/NAS? Affects the write-credential scope.
-4. **Throughput target**: process all sessions once (batch), or an ongoing pipeline as new captures land (watch + queue)?
-5. **Retention**: delete raw local copies only, or also archive/cold-store the raw after successful processing?
+1. **Set grouping** → **flat folder per capture**. Each folder under the base path *is* one session; every video file inside it is a "set" of that session. Discovery = `rclone lsjson <base> --dirs-only`; no filename-prefix parsing.
+2. **Same lens across sets** → **yes**. `reconstruct.single_camera = True` for the combined COLMAP run.
+3. **Output destination** → **back to the same capture folder, in an `outputs/` sub-folder**, pushed via the Google Cloud service-account creds. Implication: the service account needs **write** scope on the capture folder (not read-only raw + separate writable folder). Dest = `<remote>:<base>/<session>/outputs/`.
+4. **Throughput** → **one-time batch**. Point the worker at the base folder, process every capture sequentially (pull → process → push → purge), then exit. No watcher/daemon; a skip-completed ledger still makes the batch resumable if interrupted.
+5. **Retention** → **delete local NVMe copy only**. The raw is already preserved on Drive (source of truth) and outputs are pushed back beside it, so after a verified upload the worker purges `/data/raw/<session>` + heavy scratch and keeps only a small per-session log + the ledger.
+
+Implemented in `src/pipeline/drive_ingestor.py` (one-time batch worker). The heavy COLMAP/CUDA stages still run on the GPU host; the worker only orchestrates pull/extract/stage-run/push/purge around the existing `PipelineStages`.
+
+---
+
+## 9. How to run (GPU host)
+
+**One-time setup**
+1. `cp secrets/rclone.conf.example secrets/rclone.conf` and fill in the remote (Drive or GCS) + path to the service-account JSON. Drop the JSON at `secrets/gdrive_sa.json`.
+2. In `.env` set `DRIVE_INGEST_REMOTE=captures:` (Drive, with `root_folder_id`) or `captures:<bucket>/captures` (GCS), `RCLONE_CONF_FILE=./secrets/rclone.conf`, and optionally `DRIVE_RAW_HOST_DIR` / `DRIVE_SCRATCH_HOST_DIR` to point at a 250–500 GB NVMe path.
+3. `docker compose -f docker-compose.consolidated.yml build gaussian-toolkit` (installs rclone), then `up -d`.
+
+**Dry run (discovery only — no copy, no compute)**
+```bash
+docker exec gaussian-toolkit python -m pipeline.drive_ingestor list --remote "$DRIVE_INGEST_REMOTE" --rclone-config /run/secrets/rclone_conf
+docker exec gaussian-toolkit python -m pipeline.drive_ingestor run  --remote "$DRIVE_INGEST_REMOTE" --rclone-config /run/secrets/rclone_conf --dry-run
+```
+
+**Full batch**
+```bash
+docker exec gaussian-toolkit python -m pipeline.drive_ingestor run \
+  --remote "$DRIVE_INGEST_REMOTE" --rclone-config /run/secrets/rclone_conf \
+  --scratch /data/scratch --raw /data/raw \
+  --ledger /data/output/drive_ingest_ledger.sqlite \
+  --mesh-method auto --scene-preset indoor_reflective --target-frames 600
+```
+Or from the web UI: `GET /api/ingest/drive/sessions` to preview, `POST /api/ingest/drive` (optional `dry_run=true`) to launch detached. Re-running skips sessions already marked `done` in the ledger.
+
+**Caveats**: validate quality on ONE session first (plan Phase 2) before trusting the batch. CoMe/GaussianWrapping CLI flags are still inferred (ADR-004/005) — `--mesh-method milo` is the safest verified backend until those sidecars are built and checked. rclone version (`RCLONE_VERSION` build arg) and the service-account write scope must be confirmed on the host.

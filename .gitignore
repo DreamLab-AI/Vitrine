@@ -61,3 +61,11 @@ research/come-paper/
 # ruflo / ruvector local database (not source)
 ruvector.db
 *.ruvector.db
+
+# Bulk-ingestion secrets and scratch (drive_ingestor.py)
+# Ignore secret contents but keep the dir + committed .example template.
+secrets/*
+!secrets/*.example
+data/raw/
+data/scratch/
+*.sqlite

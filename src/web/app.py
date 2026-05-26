@@ -201,6 +201,128 @@ def upload() -> tuple[Response, int]:
     }), 201
 
 
+# ---------------------------------------------------------------------------
+# Bulk capture ingestion from a cloud remote (Google Cloud / Drive)
+#
+# Replaces drag-and-drop as the primary path for the ~70 GB room-orbit
+# captures. Credentials come from a mounted rclone config (service account),
+# never an env-var token. See src/pipeline/drive_ingestor.py and
+# research/decisions/video-ingestion-plan.md.
+# ---------------------------------------------------------------------------
+
+DRIVE_INGEST_REMOTE = os.environ.get("DRIVE_INGEST_REMOTE", "")
+RCLONE_CONFIG = os.environ.get("RCLONE_CONFIG") or None
+
+
+@app.route("/api/ingest/drive/sessions")
+def drive_sessions() -> tuple[Response, int]:
+    """List capture sessions discovered under the configured remote.
+
+    Query param ``remote`` overrides ``DRIVE_INGEST_REMOTE``.
+    """
+    remote = request.args.get("remote") or DRIVE_INGEST_REMOTE
+    if not remote:
+        return jsonify({"error": "No remote configured (set DRIVE_INGEST_REMOTE)"}), 400
+
+    try:
+        from pipeline.drive_ingestor import (
+            DriveIngestConfig,
+            list_sessions,
+            count_sets,
+            rclone_available,
+        )
+    except Exception as exc:  # pragma: no cover - runtime dep guard
+        return jsonify({"error": f"ingestor unavailable: {exc}"}), 500
+
+    cfg = DriveIngestConfig(remote=remote, rclone_config=RCLONE_CONFIG)
+    if not rclone_available(cfg):
+        return jsonify({"error": "rclone not installed in container"}), 503
+
+    try:
+        sessions = list_sessions(cfg)
+        for s in sessions:
+            s["n_sets"] = count_sets(cfg, s["remote_path"])
+    except Exception as exc:
+        return jsonify({"error": f"discovery failed: {exc}"}), 502
+
+    return jsonify({"remote": remote, "sessions": sessions}), 200
+
+
+@app.route("/api/ingest/drive", methods=["POST"])
+def drive_ingest() -> tuple[Response, int]:
+    """Launch the one-time bulk ingestion batch as a detached background run.
+
+    Form/JSON params (all optional):
+        remote: rclone remote+base path (defaults to DRIVE_INGEST_REMOTE)
+        dry_run: "true" to list-only without copy/compute
+        mesh_method, scene_preset, target_frames, fps: pipeline overrides
+
+    Returns the log path; progress is written there and to the ledger. Long
+    runs are intentionally detached (one-time batch over many sessions).
+    """
+    data = request.get_json(silent=True) or request.form
+    remote = data.get("remote") or DRIVE_INGEST_REMOTE
+    if not remote:
+        return jsonify({"error": "No remote configured (set DRIVE_INGEST_REMOTE)"}), 400
+
+    dry_run = str(data.get("dry_run", "")).lower() in ("1", "true", "yes", "on")
+
+    cmd = [
+        sys.executable, "-m", "pipeline.drive_ingestor", "run",
+        "--remote", remote,
+        "--scratch", os.environ.get("DRIVE_SCRATCH_DIR", "/data/scratch"),
+        "--raw", os.environ.get("DRIVE_RAW_DIR", "/data/raw"),
+        "--ledger", "/data/output/drive_ingest_ledger.sqlite",
+    ]
+    if RCLONE_CONFIG:
+        cmd += ["--rclone-config", RCLONE_CONFIG]
+    if dry_run:
+        cmd.append("--dry-run")
+    for key, flag in (
+        ("mesh_method", "--mesh-method"),
+        ("scene_preset", "--scene-preset"),
+    ):
+        val = data.get(key)
+        if val:
+            cmd += [flag, str(val)]
+    for key, flag in (("target_frames", "--target-frames"), ("fps", "--fps")):
+        val = data.get(key)
+        if val:
+            cmd += [flag, str(val)]
+
+    log_dir = Path(os.environ.get("LFS_OUTPUT_DIR", "/data/output"))
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"drive_ingest_{int(time.time())}.log"
+
+    env = {
+        **os.environ,
+        "PYTHONPATH": _src_dir + os.pathsep + os.environ.get("PYTHONPATH", ""),
+    }
+    try:
+        log_file = open(log_path, "w")
+        proc = subprocess.Popen(
+            cmd,
+            cwd=_src_dir,
+            env=env,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    except Exception as exc:
+        logger.error("Failed to launch drive ingestor: %s", exc)
+        return jsonify({"error": f"launch failed: {exc}"}), 500
+
+    logger.info("Launched drive ingestor (pid=%d) remote=%s dry_run=%s log=%s",
+                proc.pid, remote, dry_run, log_path)
+    return jsonify({
+        "started": True,
+        "pid": proc.pid,
+        "remote": remote,
+        "dry_run": dry_run,
+        "log": str(log_path),
+    }), 202
+
+
 @app.route("/status/<job_id>")
 def status(job_id: str) -> tuple[Response, int]:
     """Return full job status as JSON."""
