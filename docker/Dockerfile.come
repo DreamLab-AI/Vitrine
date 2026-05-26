@@ -1,0 +1,49 @@
+# CoMe (Confidence-based Mesh Extraction) — Dedicated build container
+# Ubuntu 22.04 + CUDA 12.1 for compatible CUDA extension compilation
+# Python 3.10 required by CoMe's SOF-based extensions.
+#
+# LICENSING GATE: CoMe has no LICENSE file as of 2026-05-26 (SPDX: NOASSERTION).
+# The underlying SOF method carries a custom academic licence. This container
+# MUST NOT be included in commercial distribution images until a permissive
+# licence is published and reviewed. Build is gated behind INSTALL_COME=0 by
+# default to prevent accidental inclusion. See ADR-004.
+FROM nvidia/cuda:12.1.1-devel-ubuntu22.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+# Ubuntu 22.04 ships Python 3.10 — use it directly (CoMe requires 3.10)
+# Include Mesa EGL/GL/GLES dev libs for nvdiffrast/rasterisation context.
+# ninja-build for torch JIT compilation, libcgal-dev for tetra-triangulation.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential cmake git wget curl \
+        python3 python3-dev python3-pip \
+        libgl1 libglib2.0-0 libcgal-dev libgmp-dev \
+        libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev \
+        ninja-build \
+    && rm -rf /var/lib/apt/lists/*
+
+# FindTorch.cmake expects 'python' on PATH
+RUN ln -sf /usr/bin/python3 /usr/bin/python
+
+# Install PyTorch 2.1.2 + CUDA 12.1 (closest stable cu121 wheel)
+RUN pip3 install \
+    torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 \
+    --index-url https://download.pytorch.org/whl/cu121
+
+# Gate the CoMe clone + build behind INSTALL_COME.
+# Set to 1 only when commercial licence has been reviewed (see ADR-004).
+ARG INSTALL_COME=0
+
+COPY install_come.sh /tmp/install_come.sh
+RUN if [ "$INSTALL_COME" = "1" ]; then bash /tmp/install_come.sh; fi
+
+# Environment variables — set even when INSTALL_COME=0 so that
+# come_extractor.py can probe the container environment correctly.
+ENV CUDA_HOME=/usr/local/cuda
+ENV TORCH_CUDA_ARCH_LIST="8.9"
+ENV COME_DIR=/opt/come
+ENV COME_ENV=come
+
+VOLUME ["/data"]
+WORKDIR /opt/come
+ENTRYPOINT ["sleep", "infinity"]

@@ -75,3 +75,19 @@ RUN python3 -c "import diff_gaussian_rasterization_gof; print('diff-gaussian-ras
 VOLUME ["/data"]
 WORKDIR /opt/milo
 ENTRYPOINT ["python3"]
+
+# ---------------------------------------------------------------------------
+# GaussianWrapping — optional thin-structure mesh extraction backend
+# Shares this container's CUDA 11.8 / Python 3.9 environment (exact match).
+# Build with: docker build --build-arg INSTALL_GAUSSIANWRAPPING=1
+#
+# LICENSING GATE: GaussianWrapping has no LICENSE file as of 2026-05-26.
+# Do not include in commercial images until a permissive licence is reviewed.
+# See ADR-005.
+# ---------------------------------------------------------------------------
+ARG INSTALL_GAUSSIANWRAPPING=0
+COPY install_gaussianwrapping.sh /tmp/install_gaussianwrapping.sh
+RUN if [ "$INSTALL_GAUSSIANWRAPPING" = "1" ]; then \
+        INSTALL_GAUSSIANWRAPPING=1 bash /tmp/install_gaussianwrapping.sh || \
+        echo "WARNING: GaussianWrapping build failed — backend unavailable"; \
+    fi

@@ -71,14 +71,53 @@ services:
       start_period: 120s
 
   # MILo sidecar — high-quality mesh extraction (Ubuntu 22.04 + CUDA 11.8)
+  # Also hosts GaussianWrapping (thin-structure backend) when built with
+  # INSTALL_GAUSSIANWRAPPING=1 (see ADR-005).
   # Build: docker compose build milo
+  # Build with GaussianWrapping: docker compose build --build-arg INSTALL_GAUSSIANWRAPPING=1 milo
   # The main container calls MILo via: docker exec milo python3 train.py ...
   milo:
     build:
       context: .
       dockerfile: docker/Dockerfile.milo
+      args:
+        # Gate: set to 1 to include GaussianWrapping (no-licence — dev only).
+        # See ADR-005 and docker/install_gaussianwrapping.sh.
+        INSTALL_GAUSSIANWRAPPING: ${INSTALL_GAUSSIANWRAPPING:-0}
     image: gaussian-toolkit-milo:latest
     container_name: milo
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['1']
+              capabilities: [gpu, compute, utility]
+    volumes:
+      - ./output:/data/output
+      - hf-cache:/opt/hf-cache
+    entrypoint: ["sleep", "infinity"]
+    restart: unless-stopped
+
+  # CoMe sidecar — confidence-based mesh extraction (Ubuntu 22.04 + CUDA 12.1)
+  # 3x faster than MILo (~25 min vs ~69 min on RTX 4090) at comparable F1.
+  # Build: docker compose build come
+  # Build with CoMe enabled: docker compose build --build-arg INSTALL_COME=1 come
+  #
+  # LICENSING GATE: CoMe has no LICENSE file as of 2026-05-26 (SPDX: NOASSERTION).
+  # Set INSTALL_COME=1 only after a permissive licence is reviewed. See ADR-004.
+  #
+  # The main container calls CoMe via: docker exec come python3 /opt/come/extract.py ...
+  come:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.come
+      args:
+        # Gate: set to 1 to include CoMe (no-licence — dev only). See ADR-004.
+        INSTALL_COME: ${INSTALL_COME:-0}
+    image: gaussian-toolkit-come:latest
+    container_name: come
     runtime: nvidia
     deploy:
       resources:

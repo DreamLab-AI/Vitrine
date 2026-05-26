@@ -38,6 +38,11 @@ RUN curl -fsSL https://nodejs.org/dist/v23.11.1/node-v23.11.1-linux-x64.tar.xz \
         | tar -xJ -C /usr/local --strip-components=1 \
     && npm install -g @anthropic-ai/claude-code
 
+# splat-transform — compress/crop/filter/sort trained Gaussian splats for web delivery
+# Official PlayCanvas package (see ADR-006). Pinned for supply-chain safety;
+# splat_optimizer.py invokes this exact package name via npx.
+RUN npm install -g @playcanvas/splat-transform@2.3.2
+
 # ttyd — web terminal over HTTP
 RUN curl -fsSL https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 \
         -o /usr/local/bin/ttyd && chmod +x /usr/local/bin/ttyd

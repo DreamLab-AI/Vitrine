@@ -57,3 +57,7 @@ research/gap-analysis-local/
 !docs/renders/*.jpg
 .env
 research/come-paper/
+
+# ruflo / ruvector local database (not source)
+ruvector.db
+*.ruvector.db
