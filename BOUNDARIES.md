@@ -37,19 +37,21 @@ LichtFeld Studio is the upstream product. It is a native C++23/CUDA workstation 
 
 Everything below is written and maintained by us on the `gaussian-toolkit` branch. Upstream does not contain these directories.
 
-### Pipeline (`src/pipeline/`) -- 28 modules
+### Pipeline (`src/pipeline/`) -- 32 modules
 
-The video-to-structured-3D pipeline. Takes a video file and produces a USD scene with per-object Gaussian and mesh representations.
+The video-to-structured-3D pipeline. Takes a video file and produces a USD scene with per-object Gaussian and mesh representations, plus a compressed `.ksplat` for web delivery.
 
 | Category | Modules |
 |----------|---------|
 | Core | `stages.py`, `orchestrator.py`, `cli.py`, `__main__.py`, `config.py`, `preflight.py`, `__init__.py` |
 | Reconstruction | `colmap_parser.py`, `coordinate_transform.py`, `frame_selector.py`, `frame_quality.py` |
+| Ingestion | `fibonacci_sampler.py` (Fibonacci-sphere viewpoint coverage scoring — added v2) |
 | Segmentation | `sam2_segmentor.py`, `sam3_segmentor.py`, `sam3d_client.py`, `mask_projector.py` |
-| Mesh extraction | `mesh_extractor.py` (TSDF), `milo_extractor.py` (MILo sidecar), `mesh_cleaner.py` |
+| Mesh extraction | `mesh_extractor.py` (TSDF), `milo_extractor.py` (MILo sidecar), `come_extractor.py` (CoMe sidecar — added v2), `gaussianwrapping_extractor.py` (GaussianWrapping in milo sidecar — added v2), `mesh_cleaner.py` |
+| Delivery | `splat_optimizer.py` (splat-transform CLI wrapper — added v2) |
 | Texturing | `texture_baker.py`, `material_assigner.py` |
 | Scene assembly | `blender_assembler.py` (Blender + Cycles), `usd_assembler.py` (OpenUSD) |
-| Rendering | `multiview_renderer.py`, `hunyuan3d_client.py`, `comfyui_inpainter.py` |
+| Rendering | `multiview_renderer.py`, `gsplat_trainer.py`, `hunyuan3d_client.py`, `comfyui_inpainter.py` |
 | Utilities | `mcp_client.py`, `quality_gates.py`, `person_remover.py` |
 
 ### Web Interface (`src/web/`)
@@ -61,16 +63,19 @@ Flask application (port 7860) for video upload, job tracking, log streaming (SSE
 | File | Purpose |
 |------|---------|
 | `Dockerfile.consolidated` | Main container (Ubuntu 24.04, CUDA 12.8, Python 3.12) |
-| `docker/Dockerfile.milo` | MILo sidecar container (Ubuntu 22.04, CUDA 11.8, Python 3.10) |
-| `docker-compose.consolidated.yml` | Two-container compose: main + MILo sidecar |
+| `docker/Dockerfile.milo` | MILo + optional GaussianWrapping sidecar (Ubuntu 22.04, CUDA 11.8, Python 3.10) |
+| `docker/Dockerfile.come` | CoMe sidecar (Ubuntu 22.04, CUDA 12.1, Python 3.10) — added v2 |
+| `docker-compose.consolidated.yml` | Three-container compose: main + milo sidecar + come sidecar |
 | `docker/Dockerfile` | Base container (older, superseded) |
 | `docker/docker-compose.yml` | Base compose (older, superseded) |
 | `docker/entrypoint.sh` | Container entry script |
 | `docker/supervisord.conf` | Process manager configuration |
 | `docker/install_milo.sh` | MILo dependency installer |
+| `docker/install_gaussianwrapping.sh` | GaussianWrapping installer (gated: `INSTALL_GAUSSIANWRAPPING=1`) |
+| `docker/install_come.sh` | CoMe installer (gated: `INSTALL_COME=1`) |
 | `docker/run_docker.sh` | Launch helper |
 
-**The default deployment story is:** `docker compose -f docker-compose.consolidated.yml up -d`. Two containers (main + MILo sidecar), one command. The MILo sidecar is optional -- if not present, mesh extraction falls back to TSDF.
+**The default deployment story is:** `docker compose -f docker-compose.consolidated.yml up -d`. Three containers (main + milo sidecar + come sidecar), one command. The milo sidecar is optional -- if not present, mesh extraction falls back to TSDF. The come sidecar starts but CoMe is not installed unless `INSTALL_COME=1` is passed at build time (ADR-004; licence pending). GaussianWrapping in the milo sidecar similarly requires `INSTALL_GAUSSIANWRAPPING=1` (ADR-005; licence pending).
 
 ### Scripts (`scripts/`)
 
@@ -131,4 +136,6 @@ When deciding where new code goes:
 4. **Does it change container configuration?** -- Put it in `docker/` or update `Dockerfile.consolidated`.
 5. **Is it a research exploration or literature review?** -- Put it in `research/`.
 6. **Is it a one-off script or test harness?** -- Put it in `scripts/`.
-7. **Does it require CUDA 11.8 or older Python?** -- Put it in the MILo sidecar (`docker/Dockerfile.milo`).
+7. **Does it require CUDA 11.8 or older Python (3.9)?** -- Put it in the MILo sidecar (`docker/Dockerfile.milo`).
+8. **Does it require Python 3.10 and CUDA 12.1?** -- Put it in the CoMe sidecar (`docker/Dockerfile.come`).
+9. **Is it a new mesh extraction backend?** -- Follow the ADR-003 uniform interface: `XConfig` dataclass, `is_X_available() -> bool`, `run_X(colmap_dir, output_dir, config) -> dict`. Name the module `{name}_extractor.py` in `src/pipeline/`. Add dispatch in `stages._select_mesh_backend()`.

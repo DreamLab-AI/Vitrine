@@ -182,3 +182,68 @@ Primary quality limiter remains the input video. High-quality results require:
 - Good, even lighting
 
 The mesh extraction backend (TSDF vs MILo) matters less than the quality of the trained gaussians, which in turn depends almost entirely on the quality of the input video and COLMAP reconstruction.
+
+---
+
+## v2 Upgrade — 2026-05-26
+
+### Overview
+
+This entry records the v2 pipeline upgrade, which was designed by a managed mesh swarm (multi-agent parallel development) and covers the decisions, new modules, and architecture changes introduced on branch `feat/v2-upgrade-swarm`.
+
+### Upstream Sync to v0.5.2 (ADR-002)
+
+The fork had diverged from upstream LichtFeld Studio by approximately 410 commits spanning two stable releases (v0.5.1 and v0.5.2). The high-value features in v0.5.2 were:
+
+- **Native USD import/export** (#1032) — eliminates the need for our custom `usd_assembler.py` as the sole USD path
+- **Native mesh support** (#876, #879, #889) — mesh loading, mesh-to-splat conversion, mesh picking inside LichtFeld
+- **MRNF densification** (#1031) — new default densification strategy; renamed from LFS
+- **Enhanced MCP server** (#984) — additional tools for agentic pipeline control
+- **VRAM optimisations** — reduced peak VRAM during evaluation and image loading
+
+We chose to sync to the **v0.5.2 stable tag** (released 2026-04-21) and explicitly deferred the v0.5.3 Vulkan-only rendering migration to ADR-008. The rationale: v0.5.3 is unreleased; the Vulkan migration removed the CUDA and OpenGL renderers entirely (#1170, #1234); and a known coordinate-system regression (issue #1104, from PR #1066) could break `coordinate_transform.py`. The v0.5.2 baseline delivers all capability we need without any of those risks.
+
+**Isolation policy confirmed**: this fork is one-way pull only. We never push to or open PRs against the upstream repository (origin/MrNeRF/LichtFeld-Studio).
+
+### Four Mesh Extraction Backends (ADR-003, ADR-004, ADR-005)
+
+The v1 pipeline supported two mesh extraction backends: TSDF (fast, lower quality) and MILo (high quality, ~69 min). v2 adds two more:
+
+**CoMe** (`come_extractor.py`, ADR-004): Confidence-based Mesh Extraction from github.com/r4dl/CoMe. CoMe trains 3DGS with per-Gaussian confidence values, then extracts a mesh via marching tetrahedra. Benchmarks: ~25 min total on RTX 4090 vs. MILo's ~69 min, at comparable F1 scores (0.521 Tanks & Temples, 0.662 ScanNet++). CoMe requires Python 3.10 and CUDA 12.1, which is incompatible with both the main container (CUDA 12.8, Python 3.12) and the MILo sidecar (CUDA 11.8). It therefore runs in a new dedicated `come` sidecar (`docker/Dockerfile.come`). The sidecar is present in `docker-compose.consolidated.yml` but gated behind `--build-arg INSTALL_COME=1` because CoMe carries no LICENSE file as of 2026-05-26 (SPDX: NOASSERTION). It must not be used in commercial distribution until a permissive licence is published and reviewed.
+
+**GaussianWrapping** (`gaussianwrapping_extractor.py`, ADR-005): From github.com/diego1401/GaussianWrapping. Reinterprets 3D Gaussians as stochastic oriented surface elements and extracts watertight, textured meshes that capture thin structures (bicycle spokes, wires, fences, railings) where TSDF and marching cubes fail. GaussianWrapping requires exactly CUDA 11.8 and Python 3.9 -- matching the MILo sidecar environment -- so it is installed into the existing `milo` container at `/opt/gaussianwrapping` rather than requiring a new container. It is gated behind `--build-arg INSTALL_GAUSSIANWRAPPING=1` for the same licensing reason (no formal LICENSE file).
+
+**Pluggable backend architecture** (ADR-003): All four backends expose the same three-symbol interface (`XConfig` dataclass, `is_X_available() -> bool`, `run_X(colmap_dir, output_dir, config) -> dict`). Backend selection is centralised in `stages._select_mesh_backend()`. When `config.training.mesh_method = "auto"`, the function applies the heuristic: thin-structure hint → GaussianWrapping; CoMe available → CoMe; MILo available → MILo; fallback → TSDF. Explicit values (`"tsdf"`, `"milo"`, `"come"`, `"gaussianwrapping"`) bypass auto-selection for reproducible runs.
+
+**CLI flag notice**: The CoMe and GaussianWrapping CLI flags are inferred from their upstream repositories (the SOF codebase for CoMe; the GaussianWrapping repository structure for GW). They have not been verified against the actual released source. All script names and flag constants are defined as module-level constants in `come_extractor.py` and `gaussianwrapping_extractor.py` so that corrections can be made in one place once the code is reviewed.
+
+### Splat-Transform Delivery Stage (ADR-006)
+
+Added `splat_optimizer.py`, which wraps the PlayCanvas `@playcanvas/splat-transform` npm CLI. The module is invoked as a `SPLAT_OPTIMIZE` stage after 3DGS training and before web delivery. It applies crop, filter, sort, and compress operations to produce a `.ksplat` file targeting under 20 MB from a raw PLY of 100+ MB. Node.js and npx must be present in the main container. The original `.ply` is always kept alongside the compressed form for downstream mesh extraction backends. The stage is opt-in via `config.delivery.enable_splat_optimize = True`.
+
+### Fibonacci-Sphere Frame Selection (ADR-007)
+
+Added `fibonacci_sampler.py`, which provides `fibonacci_sphere()`, `fibonacci_coverage_score()`, and `select_frames_by_coverage()`. The module is imported by `frame_selector.py` when `config.ingest.use_fibonacci_coverage = True`. After COLMAP SfM, camera positions are scored by their coverage of a Fibonacci-sphere distribution (a near-optimal low-discrepancy point set on the unit sphere). The combined frame score is:
+
+```
+score = 0.6 * quality_score + 0.4 * fibonacci_coverage_score
+```
+
+The weights are configurable via `config.ingest.coverage_weight`. The Fibonacci scoring falls back silently to the v1 quality-only path if COLMAP positions are unavailable (pre-SfM pass or degenerate reconstruction). No new runtime dependencies beyond NumPy.
+
+### Architecture and DDD Model
+
+The v2 upgrade produced eight Architecture Decision Records (`research/decisions/adr-001` through `adr-008`) and a full DDD domain model (`research/ddd/bounded-contexts.md`, `research/ddd/aggregates.md`). The domain model identifies seven bounded contexts (Ingestion, Reconstruction, Training, Segmentation, MeshExtraction, SceneAssembly, Delivery) and four aggregate roots (`ReconstructionJob`, `GaussianModel`, `MeshAsset`, `SceneGraph`, `DeliveryArtifact`).
+
+The MeshExtraction context is architecturally the most complex in v2 because it spans all three containers and four backends. The physical container boundary is treated as infrastructure, not a bounded-context boundary; the sidecar ACL (`milo_extractor.py`, `come_extractor.py`, `gaussianwrapping_extractor.py`) translates domain commands into container-specific CLI invocations.
+
+### What Was Deferred (ADR-008)
+
+The v0.5.3 Vulkan migration is explicitly deferred. Trigger conditions for revisiting:
+1. v0.5.3 released as a stable tagged version
+2. Coordinate-system regression (issue #1104) resolved upstream
+3. Headless Vulkan validated in a Docker container on our GPU model
+4. MCP API compatibility verified for `mcp_client.py`
+5. Python API audit complete
+
+No v0.5.3-dev commits are merged until all five conditions are met. The `upstream/master-watch` branch tracks upstream progress monthly.
