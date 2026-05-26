@@ -339,8 +339,24 @@ class PipelineStages:
     # Stage 3: Select frames
     # ------------------------------------------------------------------
 
-    def select_frames(self, frames_dir: str, target: int = 150) -> StageResult:
+    def select_frames(
+        self,
+        frames_dir: str,
+        target: int = 150,
+        camera_positions: "Optional[np.ndarray]" = None,
+    ) -> StageResult:
         """Select best frames for COLMAP.
+
+        Args:
+            frames_dir: Directory of extracted frames to score and curate.
+            target: Desired number of selected frames.
+            camera_positions: Optional ``(N, 3)`` array of camera centres
+                aligned to the scored frames, for Fibonacci-coverage selection
+                (ADR-007). Normally ``None`` on the first (pre-COLMAP) pass —
+                poses do not exist yet — so callers may run a second selection
+                pass after ``reconstruct`` to activate coverage. If ``None`` and
+                ``ingest.use_fibonacci_coverage`` is set, this stage tries to
+                load centres from an existing COLMAP text model in the job dir.
 
         Returns: {selected_dir, count}
         """
@@ -358,6 +374,9 @@ class PipelineStages:
             min_frames=self.config.ingest.min_frames,
             max_frames=self.config.ingest.max_frames,
             blur_threshold=self.config.ingest.blur_threshold,
+            # ADR-007 Fibonacci-sphere coverage selection (off by default).
+            use_fibonacci_coverage=self.config.ingest.use_fibonacci_coverage,
+            coverage_weight=self.config.ingest.coverage_weight,
         )
         selector = FrameSelector(config=sel_cfg)
 
@@ -377,7 +396,24 @@ class PipelineStages:
                 error=f"No frames found in {frames_dir}",
             )
 
-        selected = selector.select(scores)
+        # Fibonacci coverage (ADR-007) needs camera poses. They do not exist on
+        # the first pass (before COLMAP); if enabled and not supplied, try to
+        # load centres from an existing COLMAP model (two-pass re-selection),
+        # else fall back to quality-only selection below.
+        coverage_used = False
+        if self.config.ingest.use_fibonacci_coverage and camera_positions is None:
+            camera_positions = self._load_colmap_camera_centers(scores)
+            if camera_positions is None:
+                logger.info(
+                    "Fibonacci coverage enabled but no camera poses available yet "
+                    "(no COLMAP text model in job dir); using quality-only selection. "
+                    "Run a second select_frames pass after reconstruct to apply coverage."
+                )
+        coverage_used = (
+            self.config.ingest.use_fibonacci_coverage and camera_positions is not None
+        )
+
+        selected = selector.select(scores, camera_positions=camera_positions)
 
         if len(selected) < self.config.ingest.min_frames:
             return StageResult(
@@ -391,9 +427,91 @@ class PipelineStages:
 
         return StageResult(
             success=True, stage="select_frames",
-            metrics={"scored": len(scores), "selected": len(selected), "target": sel_cfg.target_frames},
+            metrics={
+                "scored": len(scores),
+                "selected": len(selected),
+                "target": sel_cfg.target_frames,
+                "fibonacci_coverage": coverage_used,
+            },
             artifacts={"selected_frames_dir": str(selected_dir), "count": str(len(selected))},
         )
+
+    def _load_colmap_camera_centers(self, scores: list) -> "Optional[np.ndarray]":
+        """Best-effort load of per-frame camera centres from an existing COLMAP
+        text model in the job dir, aligned to ``scores`` order (row i ↔ scores[i]).
+
+        Returns an ``(N, 3)`` float array, or ``None`` when no usable text model
+        is found or too few frames are registered. COLMAP *binary* models are not
+        parsed (``colmap_parser`` handles ``.txt`` only); callers then fall back
+        to quality-only selection. Never raises.
+        """
+        try:
+            import numpy as np
+            from pipeline.colmap_parser import parse_images_txt
+        except Exception as exc:  # pragma: no cover - import guard
+            logger.debug("camera-centre load skipped (import failed): %s", exc)
+            return None
+
+        candidates = [
+            self.job_dir / "colmap" / "sparse" / "0" / "images.txt",
+            self.job_dir / "colmap" / "sparse" / "images.txt",
+            self.job_dir / "colmap" / "undistorted" / "sparse" / "0" / "images.txt",
+            self.job_dir / "colmap" / "undistorted" / "sparse" / "images.txt",
+        ]
+        images_txt = next((c for c in candidates if c.exists()), None)
+        if images_txt is None:
+            return None
+
+        try:
+            images = parse_images_txt(images_txt)
+            name_to_center: dict[str, Any] = {}
+            for img in images:
+                name = getattr(img, "name", None)
+                if not name:
+                    continue
+                q = np.array(img.quaternion(), dtype=np.float64)  # wxyz
+                norm = float(np.linalg.norm(q))
+                if norm == 0.0:
+                    continue
+                w, x, y, z = q / norm
+                R = np.array([
+                    [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+                    [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+                    [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
+                ], dtype=np.float64)
+                t = np.array(img.translation(), dtype=np.float64)
+                name_to_center[name] = -R.T @ t
+
+            if not name_to_center:
+                return None
+
+            positions = np.full((len(scores), 3), np.nan, dtype=np.float64)
+            matched = 0
+            for i, s in enumerate(scores):
+                center = name_to_center.get(Path(s.path).name)
+                if center is not None:
+                    positions[i] = center
+                    matched += 1
+
+            if matched < max(2, int(0.5 * len(scores))):
+                logger.info(
+                    "Only %d/%d frames registered in COLMAP model; skipping coverage",
+                    matched, len(scores),
+                )
+                return None
+
+            # Replace any unmatched rows with the centroid so they read as
+            # low-coverage rather than producing NaNs downstream.
+            nan_rows = np.isnan(positions).any(axis=1)
+            if nan_rows.any():
+                centroid = positions[~nan_rows].mean(axis=0)
+                positions[nan_rows] = centroid
+
+            logger.info("Loaded %d/%d camera centres for Fibonacci coverage", matched, len(scores))
+            return positions
+        except Exception as exc:
+            logger.debug("camera-centre load failed: %s", exc)
+            return None
 
     # ------------------------------------------------------------------
     # Stage 4: Reconstruct (COLMAP SfM)
@@ -579,9 +697,25 @@ class PipelineStages:
                 error=f"COLMAP directory not found: {colmap_dir}",
             )
 
+        # -- Resolve effective backend (auto-selection per ADR-003) -----------
+        effective_method = self.config.training.mesh_method
+        if (
+            effective_method == "auto"
+            or (effective_method == "tsdf" and self.config.training.mesh_backend_auto)
+        ):
+            effective_method = self._select_mesh_backend()
+
         # -- MILo backend ----------------------------------------------------
-        if self.config.training.mesh_method == "milo":
+        if effective_method == "milo":
             return self._train_milo(colmap_dir, dataset_dir)
+
+        # -- CoMe backend ----------------------------------------------------
+        if effective_method == "come":
+            return self._train_come(colmap_dir, dataset_dir)
+
+        # -- GaussianWrapping backend ----------------------------------------
+        if effective_method == "gaussianwrapping":
+            return self._train_gaussianwrapping(colmap_dir, dataset_dir)
 
         # -- Default LichtFeld backend ---------------------------------------
         model_dir = self.job_dir / "model"
@@ -668,7 +802,7 @@ class PipelineStages:
         ply_path = ply_files[-1]
         ply_size_mb = _get_file_size_mb(ply_path)
 
-        return StageResult(
+        result = StageResult(
             success=True, stage="train",
             metrics={
                 "ply_path": str(ply_path),
@@ -680,6 +814,8 @@ class PipelineStages:
             },
             artifacts={"ply_path": str(ply_path), "model_dir": str(model_dir)},
         )
+        self._optimize_splat(ply_path, result)
+        return result
 
     def _train_milo(self, colmap_dir: str, dataset_dir: Path) -> StageResult:
         """Run MILo training + mesh extraction in the isolated conda env.
@@ -746,11 +882,278 @@ class PipelineStages:
             artifacts["scene_mesh_glb"] = str(dest)
             logger.info("MILo mesh copied to %s", dest)
 
-        return StageResult(
+        stage_result = StageResult(
             success=True, stage="train",
             metrics=metrics,
             artifacts=artifacts,
         )
+        ply_for_opt = Path(artifacts["ply_path"]) if "ply_path" in artifacts else None
+        if ply_for_opt:
+            self._optimize_splat(ply_for_opt, stage_result)
+        return stage_result
+
+    def _select_mesh_backend(self) -> str:
+        """Apply the ADR-003 auto-selection policy and return a concrete backend name.
+
+        Precedence (highest → lowest), per the ADR-003 decision table:
+        1. thin-structure hint → gaussianwrapping (when available)
+        2. speed priority AND come available → come (~25 min vs MILo's ~69 min)
+        3. milo available → milo  (the DEFAULT high-quality path)
+        4. come available → come  (fallback when MILo's sidecar is down)
+        5. fallback → tsdf
+
+        Note CoMe does NOT override MILo by default — MILo is the default
+        high-quality path and CoMe is chosen only when speed is prioritised
+        (``training.mesh_speed_priority``). The thin-structure hint is carried
+        as ``LICHTFELD_THIN_STRUCTURE=1`` for now (full SAM-label integration
+        is a Phase-2c item per ADR-003).
+        """
+        import os as _os
+        from pipeline.come_extractor import is_come_available
+        from pipeline.milo_extractor import is_milo_available
+        from pipeline.gaussianwrapping_extractor import is_gaussianwrapping_available
+
+        thin_hint = _os.environ.get("LICHTFELD_THIN_STRUCTURE", "0").strip().lower() in ("1", "true", "yes")
+        speed_priority = bool(getattr(self.config.training, "mesh_speed_priority", False))
+
+        # 1. Thin structures → GaussianWrapping
+        if thin_hint and is_gaussianwrapping_available():
+            logger.info("Auto backend: gaussianwrapping (thin-structure hint)")
+            return "gaussianwrapping"
+
+        # 2. Speed priority → CoMe (only when explicitly prioritised)
+        if speed_priority and is_come_available():
+            logger.info("Auto backend: come (speed priority)")
+            return "come"
+
+        # 3. Default high-quality path → MILo
+        if is_milo_available():
+            logger.info("Auto backend: milo (default high-quality)")
+            return "milo"
+
+        # 4. MILo unavailable → CoMe as the next-best quality/speed option
+        if is_come_available():
+            logger.info("Auto backend: come (milo unavailable)")
+            return "come"
+
+        # 5. Nothing available → TSDF fallback
+        logger.info("Auto backend: tsdf (fallback)")
+        return "tsdf"
+
+    def _optimize_splat(self, ply_path: Path, stage_result: StageResult) -> None:
+        """Optionally run splat-transform on *ply_path* (ADR-006).
+
+        Non-fatal: on any error the stage_result is annotated but not failed.
+        Only runs when delivery.enable_splat_optimize is True and the CLI is
+        available.  The original PLY is never modified.
+        """
+        if not self.config.delivery.enable_splat_optimize:
+            return
+
+        try:
+            from pipeline.splat_optimizer import (
+                is_splat_transform_available,
+                optimize,
+                SplatOptConfig,
+            )
+        except ImportError:
+            logger.warning("splat_optimizer not importable; skipping splat optimisation")
+            return
+
+        if not is_splat_transform_available():
+            logger.warning("splat-transform CLI not available; skipping splat optimisation")
+            return
+
+        d = self.config.delivery
+        opt_cfg = SplatOptConfig(
+            opacity_min_threshold=d.opacity_min_threshold,
+            max_scale=d.max_scale,
+            sort=d.sort,
+            output_format=d.output_format,
+            generate_html_viewer=d.generate_html_viewer,
+        )
+
+        delivery_dir = self.job_dir / "delivery"
+        logger.info("Running splat optimisation: %s -> %s", ply_path, delivery_dir)
+        opt_result = optimize(str(ply_path), str(delivery_dir), opt_cfg)
+
+        if opt_result["success"]:
+            stage_result.artifacts["delivery_splat"] = opt_result["output_path"]
+            stage_result.metrics["splat_compression_ratio"] = round(
+                opt_result["compression_ratio"], 2
+            )
+            stage_result.metrics["splat_output_size_mb"] = round(
+                opt_result["output_size_mb"], 1
+            )
+            logger.info(
+                "Splat optimisation complete: %s (%.1fx compression)",
+                opt_result["output_path"],
+                opt_result["compression_ratio"],
+            )
+        else:
+            logger.warning(
+                "Splat optimisation failed (non-fatal): %s", opt_result["error"]
+            )
+            stage_result.metrics["splat_optimize_error"] = opt_result["error"]
+
+    def _train_come(self, colmap_dir: str, dataset_dir: Path) -> StageResult:
+        """Run CoMe training + mesh extraction in the dedicated sidecar.
+
+        CoMe produces both gaussian splats AND a high-quality mesh in a
+        single pipeline pass (confidence-based marching tetrahedra), so when
+        this succeeds the ``mesh_objects`` stage can be skipped for the
+        scene-level mesh.  Falls back to tsdf on availability failure.
+
+        See ADR-004 for the licensing gate and sidecar requirements.
+        """
+        from pipeline.come_extractor import run_come, is_come_available, CoMeConfig
+
+        if not is_come_available():
+            logger.warning("CoMe requested but not available, falling back to LichtFeld")
+            original_method = self.config.training.mesh_method
+            self.config.training.mesh_method = "tsdf"
+            result = self.train(colmap_dir, self.config.training.iterations)
+            self.config.training.mesh_method = original_method
+            if result.success:
+                result.metrics["fallback"] = "lichtfeld (come unavailable)"
+            return result
+
+        come_output = self.job_dir / "model_come"
+
+        come_cfg = CoMeConfig(
+            iterations=self.config.training.iterations
+            if self.config.training.iterations <= 30000
+            else 30000,
+        )
+
+        logger.info("Running CoMe training on %s -> %s", colmap_dir, come_output)
+        come_result = run_come(str(dataset_dir), str(come_output), config=come_cfg)
+
+        if not come_result["success"]:
+            return StageResult(
+                success=False, stage="train",
+                error=f"CoMe failed: {come_result['error']}",
+                metrics={"backend": "come", "duration": come_result["duration"]},
+            )
+
+        artifacts: dict[str, str] = {"model_dir": str(come_output)}
+        metrics: dict[str, Any] = {
+            "backend": "come",
+            "duration": round(come_result["duration"], 1),
+            "come_mesh_path": come_result["mesh_path"],
+        }
+
+        if come_result["ply_path"]:
+            ply_path = Path(come_result["ply_path"])
+            artifacts["ply_path"] = str(ply_path)
+            metrics["ply_path"] = str(ply_path)
+            metrics["ply_size_mb"] = round(_get_file_size_mb(ply_path), 1)
+
+        if come_result["mesh_path"]:
+            artifacts["come_mesh_path"] = come_result["mesh_path"]
+
+        # Copy CoMe mesh to standard viewer location
+        come_mesh = Path(come_result.get("glb_path") or come_result.get("mesh_path", ""))
+        if come_mesh.exists():
+            std_mesh_dir = self.job_dir / "objects" / "meshes" / "full_scene"
+            std_mesh_dir.mkdir(parents=True, exist_ok=True)
+            dest = std_mesh_dir / "full_scene.glb"
+            shutil.copy2(str(come_mesh), str(dest))
+            artifacts["scene_mesh_glb"] = str(dest)
+            logger.info("CoMe mesh copied to %s", dest)
+
+        stage_result = StageResult(
+            success=True, stage="train",
+            metrics=metrics,
+            artifacts=artifacts,
+        )
+        ply_for_opt = Path(artifacts["ply_path"]) if "ply_path" in artifacts else None
+        if ply_for_opt:
+            self._optimize_splat(ply_for_opt, stage_result)
+        return stage_result
+
+    def _train_gaussianwrapping(self, colmap_dir: str, dataset_dir: Path) -> StageResult:
+        """Run GaussianWrapping training + mesh extraction in the MILo sidecar.
+
+        GaussianWrapping specialises in thin-structure scenes (bicycle spokes,
+        wires, fences, railings) and shares the MILo sidecar container.
+        Falls back to tsdf on availability failure.
+
+        See ADR-005 for the licensing gate and sidecar requirements.
+        """
+        from pipeline.gaussianwrapping_extractor import (
+            run_gaussianwrapping,
+            is_gaussianwrapping_available,
+            GWConfig,
+        )
+
+        if not is_gaussianwrapping_available():
+            logger.warning(
+                "GaussianWrapping requested but not available, falling back to LichtFeld"
+            )
+            original_method = self.config.training.mesh_method
+            self.config.training.mesh_method = "tsdf"
+            result = self.train(colmap_dir, self.config.training.iterations)
+            self.config.training.mesh_method = original_method
+            if result.success:
+                result.metrics["fallback"] = "lichtfeld (gaussianwrapping unavailable)"
+            return result
+
+        gw_output = self.job_dir / "model_gaussianwrapping"
+
+        gw_cfg = GWConfig(
+            iterations=self.config.training.iterations
+            if self.config.training.iterations <= 30000
+            else 30000,
+        )
+
+        logger.info(
+            "Running GaussianWrapping training on %s -> %s", colmap_dir, gw_output
+        )
+        gw_result = run_gaussianwrapping(str(dataset_dir), str(gw_output), config=gw_cfg)
+
+        if not gw_result["success"]:
+            return StageResult(
+                success=False, stage="train",
+                error=f"GaussianWrapping failed: {gw_result['error']}",
+                metrics={"backend": "gaussianwrapping", "duration": gw_result["duration"]},
+            )
+
+        artifacts: dict[str, str] = {"model_dir": str(gw_output)}
+        metrics: dict[str, Any] = {
+            "backend": "gaussianwrapping",
+            "duration": round(gw_result["duration"], 1),
+            "gaussianwrapping_mesh_path": gw_result["mesh_path"],
+        }
+
+        if gw_result["ply_path"]:
+            ply_path = Path(gw_result["ply_path"])
+            artifacts["ply_path"] = str(ply_path)
+            metrics["ply_path"] = str(ply_path)
+            metrics["ply_size_mb"] = round(_get_file_size_mb(ply_path), 1)
+
+        if gw_result["mesh_path"]:
+            artifacts["gaussianwrapping_mesh_path"] = gw_result["mesh_path"]
+
+        # Copy GaussianWrapping mesh to standard viewer location
+        gw_mesh = Path(gw_result.get("glb_path") or gw_result.get("mesh_path", ""))
+        if gw_mesh.exists():
+            std_mesh_dir = self.job_dir / "objects" / "meshes" / "full_scene"
+            std_mesh_dir.mkdir(parents=True, exist_ok=True)
+            dest = std_mesh_dir / "full_scene.glb"
+            shutil.copy2(str(gw_mesh), str(dest))
+            artifacts["scene_mesh_glb"] = str(dest)
+            logger.info("GaussianWrapping mesh copied to %s", dest)
+
+        stage_result = StageResult(
+            success=True, stage="train",
+            metrics=metrics,
+            artifacts=artifacts,
+        )
+        ply_for_opt = Path(artifacts["ply_path"]) if "ply_path" in artifacts else None
+        if ply_for_opt:
+            self._optimize_splat(ply_for_opt, stage_result)
+        return stage_result
 
     # ------------------------------------------------------------------
     # Stage 5b: Render previews

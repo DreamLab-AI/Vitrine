@@ -7,6 +7,13 @@ Oversamples at high FPS (4-6fps), then curates the best subset by:
 4. Selecting optimal coverage subset for COLMAP
 
 Typical flow: 360 raw frames → person filter → quality score → 120-180 curated frames.
+
+Optional Fibonacci-sphere coverage scoring (ADR-007): when
+``SelectionConfig.use_fibonacci_coverage`` is True and camera positions are
+supplied to ``FrameSelector.select()``, the quality composite score is blended
+with a Fibonacci-sphere coverage score using ``coverage_weight`` (default 0.4).
+When disabled or camera positions are unavailable, existing behaviour is
+unchanged.
 """
 
 from __future__ import annotations
@@ -50,6 +57,9 @@ class SelectionConfig:
     blur_weight: float = 0.4
     exposure_weight: float = 0.2
     diversity_weight: float = 0.4
+    # Fibonacci-sphere coverage scoring (ADR-007).  Off by default.
+    use_fibonacci_coverage: bool = False
+    coverage_weight: float = 0.4  # ADR-007 default: 0.4 coverage / 0.6 quality
 
 
 class FrameSelector:
@@ -135,8 +145,20 @@ class FrameSelector:
         self,
         scores: List[FrameScore],
         person_manifest: Optional[dict] = None,
+        camera_positions: Optional[np.ndarray] = None,
     ) -> List[FrameScore]:
-        """Select optimal subset of frames."""
+        """Select optimal subset of frames.
+
+        Args:
+            scores: Per-frame quality scores from :meth:`score_frames`.
+            person_manifest: Optional person-removal manifest dict.
+            camera_positions: Optional ``(N, 3)`` float array of camera
+                centres in COLMAP world space, indexed parallel to *scores*.
+                When provided and ``config.use_fibonacci_coverage`` is True,
+                Fibonacci-sphere coverage scores are blended with the quality
+                composite score (ADR-007).  When ``None`` or the feature is
+                disabled, the existing quality-only path is used unchanged.
+        """
         cfg = self.config
 
         if person_manifest:
@@ -171,8 +193,23 @@ class FrameSelector:
                 s for s in scores if not s.is_duplicate and s.blur_score > 20
             ]
 
-        # Sort by composite score (best first)
-        candidates.sort(key=lambda s: s.composite_score, reverse=True)
+        # -- Optional Fibonacci-coverage blending (ADR-007) ------------------
+        if (
+            cfg.use_fibonacci_coverage
+            and camera_positions is not None
+            and len(camera_positions) == len(scores)
+        ):
+            candidates = self._apply_fibonacci_coverage(
+                scores, candidates, camera_positions, cfg
+            )
+        else:
+            if cfg.use_fibonacci_coverage and camera_positions is None:
+                logger.debug(
+                    "Fibonacci coverage enabled but camera_positions not provided; "
+                    "using quality-only selection"
+                )
+            # Sort by quality composite score (existing behaviour)
+            candidates.sort(key=lambda s: s.composite_score, reverse=True)
 
         # Greedy diversity selection: pick top frames ensuring temporal spread
         selected = self._greedy_diverse_select(candidates, cfg.target_frames)
@@ -182,6 +219,75 @@ class FrameSelector:
 
         logger.info("Selected %d frames from %d candidates", len(selected), len(candidates))
         return selected
+
+    def _apply_fibonacci_coverage(
+        self,
+        all_scores: List[FrameScore],
+        candidates: List[FrameScore],
+        camera_positions: np.ndarray,
+        cfg: "SelectionConfig",
+    ) -> List[FrameScore]:
+        """Blend Fibonacci-sphere coverage with quality scores and re-rank candidates.
+
+        Imports fibonacci_sampler lazily to avoid hard numpy-path issues on
+        systems where the module is not yet installed.
+
+        Returns *candidates* sorted descending by the blended score.
+        """
+        try:
+            from pipeline.fibonacci_sampler import select_frames_by_coverage
+        except ImportError:
+            logger.warning(
+                "fibonacci_sampler not importable; falling back to quality-only selection"
+            )
+            candidates.sort(key=lambda s: s.composite_score, reverse=True)
+            return candidates
+
+        # Build index map from FrameScore.index → position in all_scores
+        index_to_pos = {s.index: i for i, s in enumerate(all_scores)}
+
+        # Extract positions and quality scores for candidates only
+        candidate_positions = []
+        candidate_quality = []
+        valid_candidates: List[FrameScore] = []
+        for s in candidates:
+            pos_idx = index_to_pos.get(s.index)
+            if pos_idx is not None and pos_idx < len(camera_positions):
+                candidate_positions.append(camera_positions[pos_idx])
+                candidate_quality.append(s.composite_score)
+                valid_candidates.append(s)
+
+        if len(valid_candidates) < 2:
+            logger.debug("Too few candidates for Fibonacci scoring; using quality sort")
+            candidates.sort(key=lambda s: s.composite_score, reverse=True)
+            return candidates
+
+        cam_pos_arr = np.array(candidate_positions, dtype=np.float64)
+        quality_arr = np.array(candidate_quality, dtype=np.float64)
+
+        try:
+            selected_indices = select_frames_by_coverage(
+                cam_pos_arr,
+                quality_arr,
+                n_select=len(valid_candidates),
+                coverage_weight=cfg.coverage_weight,
+            )
+            # Reorder valid_candidates by the combined-score ranking
+            reordered = [valid_candidates[i] for i in selected_indices]
+            logger.info(
+                "Fibonacci coverage applied: coverage_weight=%.2f, "
+                "%d candidates re-ranked",
+                cfg.coverage_weight,
+                len(reordered),
+            )
+            return reordered
+        except Exception as exc:
+            logger.warning(
+                "Fibonacci coverage scoring failed (%s); using quality-only sort",
+                exc,
+            )
+            candidates.sort(key=lambda s: s.composite_score, reverse=True)
+            return candidates
 
     def _greedy_diverse_select(
         self, candidates: List[FrameScore], target: int

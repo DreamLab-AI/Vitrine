@@ -22,6 +22,13 @@ class IngestConfig:
     exposure_range: tuple[float, float] = (0.1, 0.9)
     target_frames: int = 120  # more frames = better COLMAP coverage
 
+    # Fibonacci-sphere frame selection (ADR-007). Requires camera positions
+    # from COLMAP (post-SfM second pass). Off by default for backward
+    # compatibility; when enabled the existing quality-only path is unchanged
+    # if camera positions are unavailable.
+    use_fibonacci_coverage: bool = False
+    coverage_weight: float = 0.4  # ADR-007 default: 0.4 coverage / 0.6 quality
+
 
 @dataclass
 class ReconstructConfig:
@@ -48,7 +55,19 @@ class TrainingConfig:
     convergence_window: int = 500
     convergence_threshold: float = 0.001
     checkpoint_interval: int = 5000
-    mesh_method: str = "tsdf"  # "tsdf" (default), "milo", or "sugar"
+    # Mesh backend: "tsdf" (default), "milo", "come", "gaussianwrapping", or "auto".
+    # "auto" triggers the ADR-003 heuristic in stages._select_mesh_backend().
+    mesh_method: str = "tsdf"
+
+    # When True the ADR-003 auto-selection policy is applied regardless of the
+    # mesh_method value, unless mesh_method is set to a concrete backend name.
+    # False by default for backward compatibility.
+    mesh_backend_auto: bool = False
+
+    # ADR-003: when True, the "auto" policy prefers the faster CoMe backend
+    # (~25 min) over MILo (~69 min) when the CoMe sidecar is available. When
+    # False (default), MILo is the default high-quality path. See ADR-003.
+    mesh_speed_priority: bool = False
 
     # Scene type preset: "default" or "indoor_reflective"
     scene_preset: str = "default"
@@ -159,6 +178,24 @@ class PersonRemovalConfig:
 
 
 @dataclass
+class DeliveryConfig:
+    """Web-delivery optimisation via PlayCanvas splat-transform (ADR-006).
+
+    All options default to off/conservative values so existing pipeline runs
+    are unaffected until explicitly enabled.
+    """
+    # Enable the post-training splat optimisation step. When True and
+    # is_splat_transform_available() returns True, stages._optimize_splat()
+    # is called after a successful train; failure is non-fatal.
+    enable_splat_optimize: bool = False
+    output_format: str = "ksplat"  # "ksplat" | "sog" | "glb" | "ply" | "compressed-ply"
+    opacity_min_threshold: float = 0.05  # discard floaters below this opacity
+    max_scale: float | None = None  # discard oversized Gaussians (None = no limit)
+    sort: bool = True  # Morton-order sort for front-to-back rendering
+    generate_html_viewer: bool = False
+
+
+@dataclass
 class ExportConfig:
     """USD / final export parameters."""
     format: str = "usd"
@@ -207,6 +244,7 @@ class PipelineConfig:
     mesh: MeshConfig = field(default_factory=MeshConfig)
     hunyuan3d: Hunyuan3DConfig = field(default_factory=Hunyuan3DConfig)
     inpaint: InpaintConfig = field(default_factory=InpaintConfig)
+    delivery: DeliveryConfig = field(default_factory=DeliveryConfig)
     export: ExportConfig = field(default_factory=ExportConfig)
     quality: QualityConfig = field(default_factory=QualityConfig)
     retry: RetryConfig = field(default_factory=RetryConfig)
@@ -244,6 +282,7 @@ class PipelineConfig:
             "mesh": MeshConfig,
             "hunyuan3d": Hunyuan3DConfig,
             "inpaint": InpaintConfig,
+            "delivery": DeliveryConfig,
             "export": ExportConfig,
             "quality": QualityConfig,
             "retry": RetryConfig,
@@ -268,10 +307,26 @@ class PipelineConfig:
             errors.append("ingest.min_frames must be >= 3")
         if self.ingest.min_frames > self.ingest.max_frames:
             errors.append("ingest.min_frames must be <= max_frames")
+        if not (0.0 <= self.ingest.coverage_weight <= 1.0):
+            errors.append("ingest.coverage_weight must be in [0, 1]")
         if self.training.max_iterations < 1000:
             errors.append("training.max_iterations must be >= 1000")
         if self.training.target_psnr < 10:
             errors.append("training.target_psnr must be >= 10")
+        _valid_mesh_methods = {"tsdf", "milo", "come", "gaussianwrapping", "auto"}
+        if self.training.mesh_method not in _valid_mesh_methods:
+            errors.append(
+                f"training.mesh_method must be one of {sorted(_valid_mesh_methods)}, "
+                f"got '{self.training.mesh_method}'"
+            )
+        _valid_delivery_formats = {"ksplat", "sog", "glb", "ply", "compressed-ply"}
+        if self.delivery.output_format not in _valid_delivery_formats:
+            errors.append(
+                f"delivery.output_format must be one of {sorted(_valid_delivery_formats)}, "
+                f"got '{self.delivery.output_format}'"
+            )
+        if not (0.0 <= self.delivery.opacity_min_threshold <= 1.0):
+            errors.append("delivery.opacity_min_threshold must be in [0, 1]")
         if self.quality.gate1_min_psnr < 5:
             errors.append("quality.gate1_min_psnr must be >= 5")
         if self.retry.max_retries < 0:

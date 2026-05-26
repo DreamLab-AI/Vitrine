@@ -73,7 +73,9 @@ def _milo_exec_prefix() -> list[str]:
             capture_output=True, text=True, timeout=10,
         )
         if result.returncode == 0:
-            return ["docker", "exec", "milo", "python3"]
+            # ``-w`` sets the in-container working dir; host cwd stays None for
+            # docker (see _run_cwd) so /opt/milo need not exist on the host.
+            return ["docker", "exec", "-w", "/opt/milo", "milo", "python3"]
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
 
@@ -90,6 +92,18 @@ def _milo_exec_prefix() -> list[str]:
         pass
 
     return []
+
+
+def _run_cwd(exec_prefix: list[str]) -> Optional[str]:
+    """Host-side cwd for subprocess.run.
+
+    None under docker-exec (working dir is set in-container via ``-w``; a
+    container path passed as host cwd raises FileNotFoundError before the
+    process starts); the local MILo dir under conda.
+    """
+    if exec_prefix and exec_prefix[0] == "docker":
+        return None
+    return str(MILO_DIR)
 
 
 def is_milo_available() -> bool:
@@ -205,7 +219,7 @@ def run_milo(
             train_cmd,
             capture_output=True, text=True,
             timeout=cfg.train_timeout,
-            cwd=str(MILO_DIR),
+            cwd=_run_cwd(exec_prefix),
         )
         if proc.returncode != 0:
             result["error"] = f"MILo training failed (rc={proc.returncode}): {proc.stderr[-1000:]}"
@@ -213,6 +227,10 @@ def run_milo(
             return result
     except subprocess.TimeoutExpired:
         result["error"] = f"MILo training timed out ({cfg.train_timeout}s)"
+        return result
+    except (FileNotFoundError, OSError) as exc:
+        result["error"] = f"MILo training could not launch: {exc}"
+        logger.error(result["error"])
         return result
 
     train_duration = time.time() - t_start
@@ -243,7 +261,7 @@ def run_milo(
             extract_cmd,
             capture_output=True, text=True,
             timeout=cfg.extract_timeout,
-            cwd=str(MILO_DIR),
+            cwd=_run_cwd(exec_prefix),
         )
         if proc.returncode != 0:
             result["error"] = f"MILo mesh extraction failed (rc={proc.returncode}): {proc.stderr[-1000:]}"
@@ -251,6 +269,10 @@ def run_milo(
             return result
     except subprocess.TimeoutExpired:
         result["error"] = f"MILo mesh extraction timed out ({cfg.extract_timeout}s)"
+        return result
+    except (FileNotFoundError, OSError) as exc:
+        result["error"] = f"MILo mesh extraction could not launch: {exc}"
+        logger.error(result["error"])
         return result
 
     total_duration = time.time() - t_start
