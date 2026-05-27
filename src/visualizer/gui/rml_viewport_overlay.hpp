@@ -5,10 +5,12 @@
 #pragma once
 
 #include "gui/rmlui/rml_tooltip.hpp"
+#include "gui/vram_hud_overlay.hpp"
 
 #include <chrono>
 #include <cstddef>
 #include <glm/glm.hpp>
+#include <memory>
 #include <string>
 
 namespace Rml {
@@ -36,6 +38,13 @@ namespace lfs::vis::gui {
             std::string ssim_text;
         };
 
+        using VramHudOverlayState = VramHudOverlay::State;
+
+        RmlViewportOverlay();
+        ~RmlViewportOverlay();
+        RmlViewportOverlay(const RmlViewportOverlay&) = delete;
+        RmlViewportOverlay& operator=(const RmlViewportOverlay&) = delete;
+
         void init(RmlUIManager* mgr);
         void shutdown();
         void setViewportBounds(glm::vec2 pos, glm::vec2 size, glm::vec2 screen_origin);
@@ -44,12 +53,17 @@ namespace lfs::vis::gui {
                               float secondary_x = 0.0f,
                               float secondary_width = 0.0f);
         void setGTMetricsOverlay(GTMetricsOverlayState state);
+        void setVramHudOverlay(VramHudOverlayState state);
+        bool isDueForVramProcessSample(std::chrono::milliseconds interval);
         void reloadResources();
         void render();
         void renderCached();
         void processInput(const PanelInputState& input);
         bool wantsInput() const { return wants_input_; }
-        bool needsAnimationFrame() const { return render_needed_ || animation_active_ || tooltip_.needsFrame(); }
+        [[nodiscard]] bool needsAnimationFrame() const {
+            return render_needed_ || animation_active_ || tooltip_.needsFrame() ||
+                   (vram_hud_ && vram_hud_->needsAnimationFrame());
+        }
         [[nodiscard]] bool blocksPointer(double screen_x, double screen_y) const;
 
     private:
@@ -90,12 +104,15 @@ namespace lfs::vis::gui {
         bool render_needed_ = true;
         bool data_model_binding_dirty_ = true;
         bool animation_active_ = false;
+        bool hovered_interactive_ = false;
+        Rml::Element* last_hover_element_ = nullptr;
         bool mouse_pos_valid_ = false;
         int last_mouse_x_ = 0;
         int last_mouse_y_ = 0;
         int last_render_w_ = 0;
         int last_render_h_ = 0;
         GTMetricsOverlayState gt_metrics_overlay_;
+        std::unique_ptr<VramHudOverlay> vram_hud_;
         RmlTooltipController tooltip_;
         std::chrono::steady_clock::time_point last_document_hook_run_{};
         static constexpr auto kDocumentHookPollInterval = std::chrono::milliseconds(100);

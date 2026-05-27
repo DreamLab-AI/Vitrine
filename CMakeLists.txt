@@ -387,6 +387,7 @@ add_subdirectory(external EXCLUDE_FROM_ALL)
 # =============================================================================
 # LIBRARY MODULES
 # =============================================================================
+add_subdirectory(src/diagnostics) # Shared diagnostics/profiling module
 add_subdirectory(src/core)       # Core module (lfs::core namespace)
 add_subdirectory(src/training)   # Training module (lfs::training namespace)
 add_subdirectory(src/io)         # I/O module (lfs::io namespace)
@@ -464,6 +465,7 @@ target_link_libraries(${PROJECT_NAME}
         ${LFS_APP_INTERNAL_LINK_LIBS}
 
         CUDA::cudart
+        CUDA::curand
         spdlog::spdlog
         taywee::args
         OpenImageIO::OpenImageIO
@@ -1026,6 +1028,10 @@ include(InstallRequiredSystemLibraries)
 
 install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(TARGETS lfs_core
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+install(TARGETS lfs_diagnostics
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )

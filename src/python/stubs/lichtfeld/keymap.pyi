@@ -236,6 +236,9 @@ def get_key_for_action(action: Action, mode: ToolMode = ToolMode.GLOBAL) -> int:
 def get_trigger_description(action: Action, mode: ToolMode = ToolMode.GLOBAL) -> str:
     """Get human-readable description of action's trigger"""
 
+def is_bound(action: Action, mode: ToolMode = ToolMode.GLOBAL) -> bool:
+    """Check whether an action has an effective binding"""
+
 def get_trigger(action: Action, mode: ToolMode = ToolMode.GLOBAL) -> object:
     """Get action's trigger as a serializable dict"""
 
@@ -270,6 +273,9 @@ def get_available_profiles() -> list[str]:
 
 def get_current_profile() -> str:
     """Get name of active keymap profile"""
+
+def bindings_revision() -> int:
+    """Get a monotonic revision for key binding changes"""
 
 def load_profile(name: str) -> None:
     """Load a keymap profile by name"""

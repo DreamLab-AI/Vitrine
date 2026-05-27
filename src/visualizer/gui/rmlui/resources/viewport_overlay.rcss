@@ -445,6 +445,510 @@ body {
     font-weight: bold;
 }
 
+.vram-hud-overlay {
+    position: absolute;
+    right: 16dp;
+    top: 16dp;
+    width: 620dp;
+    height: 72%;
+    pointer-events: auto;
+    z-index: 21;
+}
+
+.vram-hud-card {
+    position: relative;
+    height: 100%;
+    box-sizing: border-box;
+    padding: 10dp 12dp;
+    border-width: 1dp;
+    border-radius: 8dp;
+    display: flex;
+    flex-direction: column;
+    gap: 8dp;
+}
+
+.vram-hud-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    drag: drag;
+    cursor: move;
+}
+
+.vram-hud-tabs {
+    display: flex;
+    gap: 0dp;
+    border-bottom-width: 1dp;
+}
+
+.vram-hud-tab {
+    flex: 1;
+    height: 24dp;
+    font-size: 11dp;
+    text-align: center;
+    cursor: pointer;
+    border-width: 0dp;
+    border-radius: 0dp;
+}
+
+.vram-hud-panel {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6dp;
+    overflow-y: auto;
+}
+
+.vram-hud-panel.hidden {
+    display: none;
+}
+
+.vram-hud-counters-header,
+.vram-hud-breakdown-header {
+    font-size: 11dp;
+    font-weight: bold;
+    padding-top: 4dp;
+}
+
+.vram-hud-breakdown {
+    display: flex;
+    flex-direction: column;
+    gap: 1dp;
+}
+
+.vram-hud-breakdown-row {
+    display: flex;
+    gap: 8dp;
+    align-items: baseline;
+    padding: 1dp 3dp;
+}
+
+.vram-hud-breakdown-row.total {
+    padding-top: 4dp;
+    border-top-width: 1dp;
+}
+
+
+.vram-hud-breakdown-name {
+    flex: 1;
+    font-size: 11dp;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.vram-hud-breakdown-bytes {
+    font-size: 11dp;
+    font-weight: bold;
+    width: 90dp;
+    text-align: right;
+}
+
+.vram-hud-breakdown-pct {
+    font-size: 11dp;
+    width: 52dp;
+    text-align: right;
+}
+
+.vram-hud-counters-empty {
+    font-size: 11dp;
+}
+
+.vram-hud-allocs-summary {
+    display: flex;
+    justify-content: space-between;
+    padding: 2dp 3dp;
+    font-size: 11dp;
+    font-weight: bold;
+}
+
+.vram-hud-allocs-rows {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1dp;
+}
+
+.vram-hud-allocs-row {
+    display: flex;
+    gap: 8dp;
+    align-items: baseline;
+    padding: 1dp 3dp;
+}
+
+.vram-hud-allocs-name {
+    flex: 1;
+    font-size: 11dp;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.vram-hud-allocs-bytes {
+    font-size: 11dp;
+    font-weight: bold;
+    width: 90dp;
+    text-align: right;
+}
+
+.vram-hud-allocs-pct {
+    font-size: 11dp;
+    width: 52dp;
+    text-align: right;
+}
+
+.vram-hud-anno-summary {
+    display: flex;
+    justify-content: space-between;
+    padding: 2dp 3dp;
+    font-size: 11dp;
+    font-weight: bold;
+}
+
+.vram-hud-anno-row {
+    display: flex;
+    gap: 6dp;
+    align-items: baseline;
+    padding: 1dp 3dp;
+}
+
+.vram-hud-anno-row-header {
+    height: 18dp;
+    min-height: 18dp;
+    max-height: 18dp;
+    font-weight: bold;
+}
+
+.vram-hud-anno-row-header span {
+    font-size: 10dp;
+}
+
+.vram-hud-anno-cat {
+    width: 32dp;
+    font-size: 10dp;
+    text-align: center;
+}
+
+.vram-hud-anno-name {
+    flex: 1;
+    font-size: 11dp;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.vram-hud-anno-bytes,
+.vram-hud-anno-peak {
+    width: 72dp;
+    font-size: 11dp;
+    font-weight: bold;
+    text-align: right;
+}
+
+.vram-hud-anno-wall,
+.vram-hud-anno-gpu {
+    width: 60dp;
+    font-size: 11dp;
+    text-align: right;
+}
+
+.vram-hud-anno-calls {
+    width: 56dp;
+    font-size: 11dp;
+    text-align: right;
+}
+
+.vram-hud-anno-rows {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1dp;
+}
+
+.vram-hud-filter-row {
+    display: flex;
+    align-items: center;
+    gap: 4dp;
+    padding-bottom: 4dp;
+}
+
+#vram-hud-filter {
+    flex: 1;
+    height: 22dp;
+    font-size: 11dp;
+    padding: 2dp 6dp;
+    border-width: 1dp;
+    border-radius: 4dp;
+}
+
+.vram-hud-filter-clear {
+    width: 22dp;
+    height: 22dp;
+    font-size: 10dp;
+    text-align: center;
+    border-width: 1dp;
+    border-radius: 4dp;
+    cursor: pointer;
+}
+
+.vram-hud-filter-clear.hidden {
+    display: none;
+}
+
+.vram-hud-resize {
+    position: absolute;
+    right: 0dp;
+    bottom: 0dp;
+    width: 14dp;
+    height: 14dp;
+    drag: drag;
+    cursor: nwse-resize;
+}
+
+.vram-hud-title {
+    font-size: 13dp;
+    font-weight: bold;
+}
+
+.vram-hud-iteration {
+    font-size: 11dp;
+}
+
+.vram-hud-summary {
+    display: flex;
+    flex-direction: column;
+    gap: 3dp;
+    padding-bottom: 6dp;
+}
+
+.vram-hud-summary-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12dp;
+}
+
+.vram-hud-summary-label,
+.vram-hud-device,
+.vram-hud-empty {
+    font-size: 12dp;
+}
+
+.vram-hud-summary-value {
+    font-size: 12dp;
+    font-weight: bold;
+}
+
+.vram-hud-device {
+    margin-top: 2dp;
+}
+
+.vram-hud-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 2dp;
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+.vram-hud-tree-row {
+    display: flex;
+    gap: 8dp;
+    align-items: baseline;
+    height: 28dp;
+    min-height: 28dp;
+    max-height: 28dp;
+    padding: 2dp 3dp;
+    overflow: hidden;
+}
+
+.vram-hud-tree-row.has-children {
+    cursor: pointer;
+}
+
+.vram-hud-tree-row span {
+    font-size: 10dp;
+}
+
+.vram-hud-row-name,
+.vram-hud-col-source {
+    width: 240dp;
+}
+
+.vram-hud-row-name {
+    display: flex;
+    gap: 4dp;
+    align-items: baseline;
+    min-width: 0;
+}
+
+.vram-hud-col-live {
+    width: 78dp;
+}
+
+.vram-hud-col-peak {
+    width: 78dp;
+}
+
+.vram-hud-col-delta {
+    width: 82dp;
+}
+
+.vram-hud-col-time {
+    width: 68dp;
+}
+
+.vram-hud-col-gpu {
+    width: 68dp;
+}
+
+.vram-hud-header-meta {
+    display: flex;
+    gap: 8dp;
+    align-items: baseline;
+}
+
+.vram-hud-throughput {
+    font-size: 11dp;
+}
+
+.vram-hud-throughput.hidden {
+    display: none;
+}
+
+.vram-hud-counters {
+    display: flex;
+    flex-direction: column;
+    gap: 2dp;
+    padding-bottom: 6dp;
+}
+
+.vram-hud-counters.hidden {
+    display: none;
+}
+
+.vram-hud-counter-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12dp;
+}
+
+.vram-hud-counter-label {
+    font-size: 12dp;
+}
+
+.vram-hud-counter-value {
+    font-size: 12dp;
+    font-weight: bold;
+}
+
+.vram-hud-topn {
+    display: flex;
+    flex-direction: column;
+    gap: 2dp;
+    padding-bottom: 6dp;
+}
+
+.vram-hud-topn.hidden {
+    display: none;
+}
+
+.vram-hud-topn-header {
+    font-size: 11dp;
+    font-weight: bold;
+    padding: 2dp 3dp;
+}
+
+.vram-hud-topn-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 1dp;
+}
+
+.vram-hud-topn-row {
+    display: flex;
+    gap: 8dp;
+    align-items: baseline;
+    padding: 1dp 3dp;
+}
+
+.vram-hud-topn-name {
+    flex: 1;
+    font-size: 11dp;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.vram-hud-topn-bytes {
+    font-size: 11dp;
+    font-weight: bold;
+    width: 90dp;
+    text-align: right;
+}
+
+.vram-hud-topn-pct {
+    font-size: 11dp;
+}
+
+.vram-hud-topn-pct {
+    width: 52dp;
+    text-align: right;
+}
+
+
+.vram-hud-node-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.vram-hud-row-header span {
+    font-size: 10dp;
+    font-weight: bold;
+}
+
+.vram-hud-row-header {
+    height: 18dp;
+    min-height: 18dp;
+    max-height: 18dp;
+}
+
+.vram-hud-tree-row em {
+    display: block;
+    font-style: normal;
+    font-size: 9dp;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.vram-hud-expand-toggle {
+    display: inline-block;
+    width: 12dp;
+    font-size: 12dp;
+    text-align: center;
+    cursor: pointer;
+}
+
+.vram-hud-row-badges {
+    display: inline;
+    font-size: 9dp;
+}
+
+.vram-hud-empty {
+    padding: 4dp 6dp;
+    font-size: 11dp;
+}
+
 .viewport-status-backdrop {
     position: absolute;
     left: 0;

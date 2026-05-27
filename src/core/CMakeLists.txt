@@ -60,6 +60,7 @@ set(CORE_SOURCES
         splat_data.cpp
         splat_data_mirror.cpp
         splat_data_transform.cpp
+        splat_exportable_storage.cpp
         tensor_debug.cpp
         training_snapshot.cpp
         mesh_data.cpp
@@ -85,6 +86,7 @@ target_include_directories(lfs_core SYSTEM PRIVATE
 target_link_libraries(lfs_core
     PUBLIC
         lfs_logger
+        lfs_diagnostics
         lfs_event_bridge
         lfs_geometry
         TBB::tbb

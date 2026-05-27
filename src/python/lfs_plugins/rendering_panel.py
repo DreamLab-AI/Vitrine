@@ -737,8 +737,13 @@ class RenderingPanel(Panel):
 
     def on_scene_changed(self, doc):
         del doc
-        if self._handle:
-            self._handle.dirty_all()
+        if not self._handle:
+            return False
+
+        dirty = False
+        dirty |= self._refresh_simplify_source(force=False)
+        dirty |= self._sync_simplify_task_state(force=False)
+        return dirty
 
     def on_unmount(self, doc):
         self._unsubscribe_reactive_state()

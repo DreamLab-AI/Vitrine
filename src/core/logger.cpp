@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "core/logger.hpp"
+#include "diagnostics/vram_profiler.hpp"
 #include <array>
 #include <cstdio>
 #include <deque>
@@ -269,7 +270,9 @@ namespace lfs::core {
                              color, level_str, ANSI_RESET,
                              static_cast<int>(filename.size()), filename.data(), msg.source.line,
                              output_msg.c_str());
-                std::fflush(target_);
+                if (!is_perf) {
+                    std::fflush(target_);
+                }
             }
 
             void flush_() override { std::fflush(target_); }
@@ -577,11 +580,26 @@ namespace lfs::core {
         : start_(std::chrono::high_resolution_clock::now()),
           name_(std::move(name)),
           level_(level),
-          loc_(loc) {}
+          loc_(loc) {
+        try {
+            diagnostics_scope_active_ = lfs::diagnostics::VramProfiler::instance().enabled();
+            if (diagnostics_scope_active_) {
+                lfs::diagnostics::VramProfiler::instance().pushTimerScope(name_);
+            }
+        } catch (...) {
+            diagnostics_scope_active_ = false;
+        }
+    }
 
     ScopedTimer::~ScopedTimer() {
         const auto duration = std::chrono::high_resolution_clock::now() - start_;
         const auto ms = std::chrono::duration<double, std::milli>(duration).count();
+        if (diagnostics_scope_active_) {
+            try {
+                lfs::diagnostics::VramProfiler::instance().popTimerScope(ms);
+            } catch (...) {
+            }
+        }
         Logger::get().log(level_, loc_, std::format("{} took {:.2f}ms", name_, ms));
     }
 

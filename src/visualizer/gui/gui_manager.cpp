@@ -11,6 +11,7 @@
 #include "core/image_io.hpp"
 #include "core/logger.hpp"
 #include "core/path_utils.hpp"
+#include "diagnostics/vram_profiler.hpp"
 #include <ft2build.h>
 #include FT_FREETYPE_H
 #include "core/tensor.hpp"
@@ -36,6 +37,7 @@
 #include "gui/vulkan_ui_texture.hpp"
 #include <implot.h>
 
+#include "gui/gpu_memory_query.hpp"
 #include "gui/gui_focus_state.hpp"
 #include "input/frame_input_buffer.hpp"
 #include "input/input_controller.hpp"
@@ -3655,7 +3657,9 @@ namespace lfs::vis::gui {
     void GuiManager::setVulkanSceneImage(std::shared_ptr<const lfs::core::Tensor> image,
                                          const glm::ivec2 size,
                                          const bool flip_y,
-                                         const std::uint64_t generation) {
+                                         const std::uint64_t generation,
+                                         const VkSemaphore completion_semaphore,
+                                         const std::uint64_t completion_value) {
         const bool target_changed =
             vulkan_scene_image_.get() != image.get() ||
             vulkan_scene_image_size_ != size;
@@ -3666,6 +3670,8 @@ namespace lfs::vis::gui {
         vulkan_external_scene_image_view_ = VK_NULL_HANDLE;
         vulkan_external_scene_image_layout_ = VK_IMAGE_LAYOUT_UNDEFINED;
         vulkan_external_scene_image_size_ = {0, 0};
+        vulkan_frame_completion_semaphore_ = completion_semaphore;
+        vulkan_frame_completion_value_ = completion_value;
         vulkan_scene_image_ = std::move(image);
         vulkan_scene_image_generation_ = generation;
         vulkan_scene_image_size_ = size;
@@ -3677,7 +3683,9 @@ namespace lfs::vis::gui {
                                                  const VkImageLayout layout,
                                                  const glm::ivec2 size,
                                                  const bool flip_y,
-                                                 const std::uint64_t generation) {
+                                                 const std::uint64_t generation,
+                                                 const VkSemaphore completion_semaphore,
+                                                 const std::uint64_t completion_value) {
         vulkan_scene_image_.reset();
         vulkan_scene_image_size_ = size;
         vulkan_scene_image_flip_y_ = flip_y;
@@ -3687,6 +3695,8 @@ namespace lfs::vis::gui {
         vulkan_external_scene_image_size_ = size;
         vulkan_external_scene_image_flip_y_ = flip_y;
         vulkan_external_scene_image_generation_ = generation;
+        vulkan_frame_completion_semaphore_ = completion_semaphore;
+        vulkan_frame_completion_value_ = completion_value;
     }
 
     void GuiManager::setVulkanSplitRightImage(std::shared_ptr<const lfs::core::Tensor> image,
@@ -3871,7 +3881,11 @@ namespace lfs::vis::gui {
                 static_cast<std::uint32_t>(target_size.x),
                 static_cast<std::uint32_t>(target_size.y),
             };
-            if (!context.createExternalImage(extent, VK_FORMAT_R8G8B8A8_UNORM, target->image) ||
+            if (!context.createExternalImage(extent,
+                                             VK_FORMAT_R8G8B8A8_UNORM,
+                                             target->image,
+                                             "vulkan.gui.interop_image",
+                                             std::format("scene.frame{}", frame_slot)) ||
                 !context.createExternalTimelineSemaphore(0, target->semaphore)) {
                 const std::string error = std::format("target creation failed: {}", context.lastError());
                 if (target->image.image != VK_NULL_HANDLE || target->semaphore.semaphore != VK_NULL_HANDLE) {
@@ -4089,7 +4103,11 @@ namespace lfs::vis::gui {
                 static_cast<std::uint32_t>(target_size.x),
                 static_cast<std::uint32_t>(target_size.y),
             };
-            if (!context.createExternalImage(extent, VK_FORMAT_R8G8B8A8_UNORM, target->image) ||
+            if (!context.createExternalImage(extent,
+                                             VK_FORMAT_R8G8B8A8_UNORM,
+                                             target->image,
+                                             "vulkan.gui.interop_image",
+                                             std::format("split_right.frame{}", frame_slot)) ||
                 !context.createExternalTimelineSemaphore(0, target->semaphore)) {
                 const std::string error = std::format("target creation failed: {}", context.lastError());
                 if (target->image.image != VK_NULL_HANDLE || target->semaphore.semaphore != VK_NULL_HANDLE) {
@@ -4299,7 +4317,11 @@ namespace lfs::vis::gui {
                 static_cast<std::uint32_t>(target_size.x),
                 static_cast<std::uint32_t>(target_size.y),
             };
-            if (!context.createExternalImage(extent, VK_FORMAT_R32_SFLOAT, target->image) ||
+            if (!context.createExternalImage(extent,
+                                             VK_FORMAT_R32_SFLOAT,
+                                             target->image,
+                                             "vulkan.gui.interop_image",
+                                             std::format("depth_blit.frame{}", frame_slot)) ||
                 !context.createExternalTimelineSemaphore(0, target->semaphore)) {
                 const std::string error = std::format("target creation failed: {}", context.lastError());
                 if (target->image.image != VK_NULL_HANDLE || target->semaphore.semaphore != VK_NULL_HANDLE) {
@@ -4577,23 +4599,76 @@ namespace lfs::vis::gui {
                 float gy = 0.0f;
                 SDL_GetGlobalMouseState(&gx, &gy);
                 const glm::vec2 mp{gx - static_cast<float>(win_x), gy - static_cast<float>(win_y)};
-                auto* const rm = viewer_->getRenderingManager();
-                const auto mode = rm ? rm->getSelectionPreviewMode()
-                                     : lfs::vis::SelectionPreviewMode::Centers;
-                const auto& palette = lfs::vis::theme().palette;
-                const glm::vec4 color{palette.primary.x * 0.85f, palette.primary.y * 0.85f,
-                                      palette.primary.z * 0.85f, 0.85f};
-                if (mode == lfs::vis::SelectionPreviewMode::Centers) {
-                    appendShapeOverlayCircleOutline(params.ui_shape_overlay_triangles, params,
-                                                    mp, sel->getBrushRadius(), color, 2.0f);
-                    appendShapeOverlayCircle(params.ui_shape_overlay_triangles, params,
-                                             mp, 3.0f, color);
-                } else {
-                    constexpr float CROSS = 8.0f;
-                    appendShapeOverlayLine(params.ui_shape_overlay_triangles, params,
-                                           {mp.x - CROSS, mp.y}, {mp.x + CROSS, mp.y}, color, 2.0f);
-                    appendShapeOverlayLine(params.ui_shape_overlay_triangles, params,
-                                           {mp.x, mp.y - CROSS}, {mp.x, mp.y + CROSS}, color, 2.0f);
+                if (isPositionInViewport(mp.x, mp.y)) {
+                    auto* const rm = viewer_->getRenderingManager();
+                    const auto mode = rm ? rm->getSelectionPreviewMode()
+                                         : lfs::vis::SelectionPreviewMode::Centers;
+                    const auto& palette = lfs::vis::theme().palette;
+                    const auto& base = (SDL_GetModState() & SDL_KMOD_CTRL) ? palette.error : palette.primary;
+                    const glm::vec4 color{base.x * 0.85f, base.y * 0.85f, base.z * 0.85f, 0.85f};
+                    auto line = [&](const glm::vec2 a, const glm::vec2 b, const float thickness = 2.0f) {
+                        appendShapeOverlayLine(params.ui_shape_overlay_triangles, params, a, b, color, thickness);
+                    };
+                    auto rect = [&](const glm::vec2 mn, const glm::vec2 mx, const float thickness = 2.0f) {
+                        line({mn.x, mn.y}, {mx.x, mn.y}, thickness);
+                        line({mx.x, mn.y}, {mx.x, mx.y}, thickness);
+                        line({mx.x, mx.y}, {mn.x, mx.y}, thickness);
+                        line({mn.x, mx.y}, {mn.x, mn.y}, thickness);
+                    };
+                    auto polyline = [&](const auto& pts, const bool closed, const float thickness = 2.0f) {
+                        for (std::size_t i = 1; i < pts.size(); ++i) {
+                            line(pts[i - 1], pts[i], thickness);
+                        }
+                        if (closed && pts.size() > 1) {
+                            line(pts.back(), pts.front(), thickness);
+                        }
+                    };
+
+                    switch (mode) {
+                    case lfs::vis::SelectionPreviewMode::Centers:
+                        appendShapeOverlayCircleOutline(params.ui_shape_overlay_triangles, params,
+                                                        mp, sel->getBrushRadius(), color, 2.0f);
+                        appendShapeOverlayCircle(params.ui_shape_overlay_triangles, params,
+                                                 mp, 3.0f, color);
+                        break;
+                    case lfs::vis::SelectionPreviewMode::Rings:
+                        appendShapeOverlayCircleOutline(params.ui_shape_overlay_triangles, params,
+                                                        mp, 10.0f, color, 2.0f);
+                        line({mp.x - 14.0f, mp.y}, {mp.x - 5.0f, mp.y}, 1.5f);
+                        line({mp.x + 5.0f, mp.y}, {mp.x + 14.0f, mp.y}, 1.5f);
+                        line({mp.x, mp.y - 14.0f}, {mp.x, mp.y - 5.0f}, 1.5f);
+                        line({mp.x, mp.y + 5.0f}, {mp.x, mp.y + 14.0f}, 1.5f);
+                        break;
+                    case lfs::vis::SelectionPreviewMode::Rectangle:
+                        rect({mp.x - 12.0f, mp.y - 9.0f}, {mp.x + 12.0f, mp.y + 9.0f});
+                        break;
+                    case lfs::vis::SelectionPreviewMode::Polygon: {
+                        const std::array<glm::vec2, 3> pts{{
+                            {mp.x, mp.y - 13.0f},
+                            {mp.x + 12.0f, mp.y + 8.0f},
+                            {mp.x - 12.0f, mp.y + 8.0f},
+                        }};
+                        polyline(pts, true);
+                        break;
+                    }
+                    case lfs::vis::SelectionPreviewMode::Lasso: {
+                        const std::array<glm::vec2, 6> pts{{
+                            {mp.x - 13.0f, mp.y - 2.0f},
+                            {mp.x - 8.0f, mp.y - 11.0f},
+                            {mp.x + 5.0f, mp.y - 12.0f},
+                            {mp.x + 13.0f, mp.y - 3.0f},
+                            {mp.x + 9.0f, mp.y + 9.0f},
+                            {mp.x - 7.0f, mp.y + 11.0f},
+                        }};
+                        polyline(pts, true);
+                        break;
+                    }
+                    case lfs::vis::SelectionPreviewMode::Color:
+                        appendShapeOverlayCircleOutline(params.ui_shape_overlay_triangles, params,
+                                                        mp, 8.0f, color, 2.0f);
+                        line({mp.x - 10.0f, mp.y + 10.0f}, {mp.x + 10.0f, mp.y - 10.0f});
+                        break;
+                    }
                 }
             }
         }
@@ -5103,6 +5178,28 @@ namespace lfs::vis::gui {
             }
         }
         rml_viewport_overlay_.setGTMetricsOverlay(std::move(gt_metrics_overlay));
+        const auto publish_vram_hud_overlay = [&]() {
+            RmlViewportOverlay::VramHudOverlayState vram_hud_overlay;
+            if (auto& profiler = lfs::diagnostics::VramProfiler::instance();
+                show_vram_hud_ && profiler.enabled()) {
+                if (rml_viewport_overlay_.isDueForVramProcessSample(std::chrono::milliseconds(250))) {
+                    profiler.sampleCudaMemory();
+                    const auto memory = queryGpuMemory();
+                    profiler.updateProcessMemory(memory.process_used,
+                                                 memory.total_used,
+                                                 memory.total,
+                                                 memory.device_name);
+                    if (auto* const wm = viewer_ ? viewer_->getWindowManager() : nullptr) {
+                        if (auto* const vk = wm->getVulkanContext()) {
+                            profiler.setVulkanVmaUsed(vk->queryVmaUsedBytes());
+                        }
+                    }
+                }
+                vram_hud_overlay.visible = true;
+                vram_hud_overlay.snapshot = profiler.snapshot();
+            }
+            rml_viewport_overlay_.setVramHudOverlay(std::move(vram_hud_overlay));
+        };
         startup_overlay_.setInput(&panel_input);
         if (startup_overlay_.isVisible()) {
             auto& focus = guiFocusState();
@@ -5155,12 +5252,10 @@ namespace lfs::vis::gui {
             overlay_renderer->endFrame();
         }
 
+        publish_vram_hud_overlay();
         {
             LOG_TIMER("gui_render.rml_viewport_overlay.render");
-            if (block_underlay_input)
-                rml_viewport_overlay_.renderCached();
-            else
-                rml_viewport_overlay_.render();
+            rml_viewport_overlay_.renderCached();
         }
 
         applyFrameInputCapture();
@@ -5271,6 +5366,13 @@ namespace lfs::vis::gui {
                 begin_ok = vulkan_context && vulkan_context->beginFrame(clear_value, frame);
             }
             if (begin_ok) {
+                if (vulkan_frame_completion_semaphore_ != VK_NULL_HANDLE &&
+                    vulkan_frame_completion_value_ != 0) {
+                    LOG_TIMER("gui_render.vksplat_completion_wait_submit");
+                    vulkan_context->addFrameTimelineWait(vulkan_frame_completion_semaphore_,
+                                                         vulkan_frame_completion_value_,
+                                                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+                }
                 VulkanViewportPassParams viewport_params{};
                 {
                     LOG_TIMER("gui_render.buildVulkanViewportParams");
@@ -5485,7 +5587,10 @@ namespace lfs::vis::gui {
                 const auto panel_ctx = resolve_preview_panel(rm->getRectPreviewPanel());
 
                 const glm::vec2 p0 = render_to_screen(panel_ctx, rx0, ry0);
-                const glm::vec2 p1 = render_to_screen(panel_ctx, rx1, ry1);
+                glm::vec2 p1 = render_to_screen(panel_ctx, rx1, ry1);
+                if (rm->rectPreviewTracksCursor() && s_frame_input) {
+                    p1 = {s_frame_input->mouse_x, s_frame_input->mouse_y};
+                }
 
                 const auto fill_color = add_mode ? toCol(t.palette.success, 0.15f)
                                                  : toCol(t.palette.error, 0.15f);
@@ -5668,6 +5773,10 @@ namespace lfs::vis::gui {
                             const glm::vec2 curr = render_to_screen(panel_ctx, points[i].first, points[i].second);
                             overlay->addLine(prev, curr, line_color, 2.0f);
                             prev = curr;
+                        }
+                        if (rm->lassoPreviewTracksCursor() && s_frame_input) {
+                            overlay->addLine(prev, {s_frame_input->mouse_x, s_frame_input->mouse_y},
+                                             line_color, 2.0f);
                         }
                         overlay->popClipRect();
                     }
@@ -5905,6 +6014,10 @@ namespace lfs::vis::gui {
             ui_hidden_ = !ui_hidden_;
         });
 
+        ui::ToggleVramHud::when([this](const auto&) {
+            show_vram_hud_ = !show_vram_hud_;
+        });
+
         ui::ToggleFullscreen::when([this](const auto&) {
             if (auto* wm = viewer_->getWindowManager()) {
                 wm->toggleFullscreen();
@@ -6071,6 +6184,12 @@ namespace lfs::vis::gui {
             ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
         if (isCapturingInput() || imgui_popup_open || startup_overlay_.isVisible() || drag_drop_hovering_) {
             return true;
+        }
+
+        if (!guiFocusState().want_capture_mouse && isPositionInViewport(mouse_x, mouse_y)) {
+            if (auto* const sel = viewer_ ? viewer_->getSelectionTool() : nullptr; sel && sel->isEnabled()) {
+                return true;
+            }
         }
 
         return rmlui_manager_.passiveMouseMoveNeedsRender(mouse_x, mouse_y);

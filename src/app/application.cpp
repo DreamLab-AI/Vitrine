@@ -14,6 +14,7 @@
 #include "core/pinned_memory_allocator.hpp"
 #include "core/scene.hpp"
 #include "core/tensor.hpp"
+#include "diagnostics/vram_profiler.hpp"
 #include "io/cache_image_loader.hpp"
 #include "tcp/include/tcp_publisher.hpp"
 #include "tcp/include/tcp_responder.hpp"
@@ -345,6 +346,7 @@ namespace lfs::app {
 
             LOG_INFO("Initializing CUDA...");
             fast_lfs::rasterization::warmup_kernels();
+            lfs::diagnostics::VramProfiler::instance().captureCudaWarmupDelta();
         }
 
         void warmupCudaAsync() {
@@ -359,6 +361,7 @@ namespace lfs::app {
             LOG_INFO("Initializing CUDA (async)...");
             cudaWarmupFuture() = std::async(std::launch::async, [] {
                 fast_lfs::rasterization::warmup_kernels();
+                lfs::diagnostics::VramProfiler::instance().captureCudaWarmupDelta();
             });
         }
 

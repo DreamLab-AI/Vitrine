@@ -311,6 +311,12 @@ def trainer_total_iterations() -> int:
 def trainer_current_loss() -> float:
     """Get current loss"""
 
+def set_vram_profiler_enabled(enabled: bool) -> None:
+    """Enable or disable the live VRAM diagnostics profiler"""
+
+def get_vram_profiler_enabled() -> bool:
+    """Return whether the live VRAM diagnostics profiler is enabled"""
+
 def set_node_visibility(name: str, visible: bool) -> None:
     """Set visibility of a scene node by name"""
 
@@ -436,6 +442,11 @@ def is_fullscreen() -> bool:
 
 def toggle_ui() -> None:
     """Toggle UI overlay visibility"""
+
+def toggle_vram_hud() -> None:
+    """
+    Toggle the VRAM diagnostics HUD overlay (requires vram profiler enabled)
+    """
 
 def toggle_independent_split_view() -> None:
     """Toggle independent split view"""

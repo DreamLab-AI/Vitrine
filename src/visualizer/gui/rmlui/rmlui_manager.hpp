@@ -6,6 +6,8 @@
 
 #include "config.h"
 
+#include <RmlUi/Core/Types.h>
+
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -32,6 +34,34 @@ namespace lfs::vis::gui {
     class RmlSystemInterface;
     class RmlTextInputHandler;
     enum class RmlCursorRequest : uint8_t;
+
+    struct CachedVulkanContextRender {
+        Rml::TextureHandle texture = {};
+        int width = 0;
+        int height = 0;
+    };
+
+    struct RmlRect {
+        float x1 = 0.0f;
+        float y1 = 0.0f;
+        float x2 = 0.0f;
+        float y2 = 0.0f;
+    };
+
+    struct CachedVulkanContextDraw {
+        Rml::Context* context = nullptr;
+        CachedVulkanContextRender* cache = nullptr;
+        int cache_width = 0;
+        int cache_height = 0;
+        float offset_x = 0.0f;
+        float offset_y = 0.0f;
+        float draw_width = 0.0f;
+        float draw_height = 0.0f;
+        bool refresh = false;
+        bool foreground = false;
+        bool clip_enabled = false;
+        RmlRect clip;
+    };
 
     class RmlUIManager {
     public:
@@ -70,6 +100,8 @@ namespace lfs::vis::gui {
                                 float clip_y1 = 0.0f,
                                 float clip_x2 = 0.0f,
                                 float clip_y2 = 0.0f);
+        void queueCachedVulkanContext(const CachedVulkanContextDraw& draw);
+        void releaseCachedVulkanContext(CachedVulkanContextRender& cache);
         void clearVulkanQueue();
         [[nodiscard]] bool beginVulkanFrame(VkCommandBuffer command_buffer,
                                             VkExtent2D extent,
@@ -105,6 +137,12 @@ namespace lfs::vis::gui {
             float clip_y1 = 0.0f;
             float clip_x2 = 0.0f;
             float clip_y2 = 0.0f;
+            CachedVulkanContextRender* cache = nullptr;
+            int cache_width = 0;
+            int cache_height = 0;
+            float draw_width = 0.0f;
+            float draw_height = 0.0f;
+            bool refresh_cache = false;
         };
 
         struct TrackedContextFrame {

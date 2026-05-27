@@ -145,13 +145,17 @@ namespace lfs::vis {
             void setVulkanSceneImage(std::shared_ptr<const lfs::core::Tensor> image,
                                      glm::ivec2 size,
                                      bool flip_y,
-                                     std::uint64_t generation);
+                                     std::uint64_t generation,
+                                     VkSemaphore completion_semaphore = VK_NULL_HANDLE,
+                                     std::uint64_t completion_value = 0);
             void setVulkanExternalSceneImage(VkImage image,
                                              VkImageView image_view,
                                              VkImageLayout layout,
                                              glm::ivec2 size,
                                              bool flip_y,
-                                             std::uint64_t generation);
+                                             std::uint64_t generation,
+                                             VkSemaphore completion_semaphore = VK_NULL_HANDLE,
+                                             std::uint64_t completion_value = 0);
 
             // Split-view's right panel routes through a parallel CUDA/Vulkan interop
             // slot so we don't pay PCIe staging cost for it; the left panel reuses the
@@ -229,6 +233,7 @@ namespace lfs::vis {
             // UI state only
             std::unordered_map<std::string, bool> window_states_;
             bool show_main_panel_ = true;
+            bool show_vram_hud_ = true;
 
             // Panel layout and viewport
             PanelLayoutManager panel_layout_;
@@ -296,6 +301,8 @@ namespace lfs::vis {
             glm::ivec2 vulkan_external_scene_image_size_{0, 0};
             bool vulkan_external_scene_image_flip_y_ = false;
             std::uint64_t vulkan_external_scene_image_generation_ = 0;
+            VkSemaphore vulkan_frame_completion_semaphore_ = VK_NULL_HANDLE;
+            std::uint64_t vulkan_frame_completion_value_ = 0;
             bool vulkan_scene_interop_disabled_ = false;
 
             // Parallel slot for split-view's right panel.

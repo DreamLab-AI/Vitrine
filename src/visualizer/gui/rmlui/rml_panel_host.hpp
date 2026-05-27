@@ -7,6 +7,7 @@
 #include "gui/panel_height_mode.hpp"
 #include "gui/panel_registry.hpp"
 #include "gui/rmlui/rml_tooltip.hpp"
+#include "gui/rmlui/rmlui_manager.hpp"
 #include <core/export.hpp>
 #include <cstddef>
 #include <mutex>
@@ -58,7 +59,10 @@ namespace lfs::vis::gui {
         PanelHeightMode getHeightMode() const { return height_mode_; }
         float getContentHeight() const { return last_content_height_; }
         void setForcedHeight(float h) { forced_height_ = h; }
-        void markContentDirty() { content_dirty_ = true; }
+        void markContentDirty() {
+            content_dirty_ = true;
+            direct_cache_dirty_ = true;
+        }
         void setForeground(bool fg) { foreground_ = fg; }
         void setInputClipY(float y_min, float y_max) {
             clip_y_min_ = y_min;
@@ -96,7 +100,7 @@ namespace lfs::vis::gui {
         void resolveDirectRenderHeight(float requested_h, int& ph, float& display_h) const;
         bool updateContextLayout(int pw, int ph);
         void renderIfDirty(int pw, int ph, float& display_h);
-        void compositeDirectToScreen(float x, float y, float w, float h) const;
+        void compositeDirectToScreen(float x, float y, float w, float h);
 
         RmlUIManager* manager_;
         std::string context_name_;
@@ -130,6 +134,8 @@ namespace lfs::vis::gui {
 
         bool render_needed_ = true;
         bool animation_active_ = false;
+        bool direct_cache_dirty_ = true;
+        CachedVulkanContextRender direct_cache_;
         int last_fbo_w_ = 0;
         int last_fbo_h_ = 0;
         int last_layout_w_ = 0;

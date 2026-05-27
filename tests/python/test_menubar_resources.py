@@ -92,7 +92,8 @@ def test_rml_tooltips_request_only_pending_animation_frames():
     assert "bool needsFrame() const" in tooltip_header
     assert "&& !visible_" in tooltip_header
     assert "tooltip_.needsFrame()" in viewport_header
-    assert "tooltip_.hasActiveState() && applyFrameTooltip()" in viewport_cpp
+    assert "tooltip_.hasActiveState()" in viewport_cpp
+    assert "applyFrameTooltip()" in viewport_cpp
     assert "setContextNeedsPassiveMouseMoveFrames(rml_context_, tooltip_.needsFrame())" in viewport_cpp
     assert "rml_viewport_overlay_.needsAnimationFrame()" in gui_manager_cpp
 
