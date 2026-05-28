@@ -11,7 +11,8 @@ from . import (
     mouse as mouse,
     ops as ops,
     rml as rml,
-    signals as signals
+    signals as signals,
+    store as store
 )
 import lichtfeld
 
@@ -954,7 +955,7 @@ def unregister_menu(cls: object) -> None:
 def unregister_all_menus() -> None:
     """Unregister all Python menus"""
 
-def show_context_menu(items: list, screen_x: float, screen_y: float) -> None: ...
+def show_context_menu(items: list, screen_x: float, screen_y: float, on_action: object | None = None) -> None: ...
 
 def poll_context_menu() -> str: ...
 
