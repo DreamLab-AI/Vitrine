@@ -7,6 +7,7 @@
 #include "gui/layout_state.hpp"
 
 #include <RmlUi/Core/Element.h>
+#include <RmlUi/Core/Context.h>
 #include <RmlUi/Core/ElementDocument.h>
 #include <RmlUi/Core/Elements/ElementFormControlInput.h>
 #include <RmlUi/Core/Event.h>
@@ -31,6 +32,7 @@ namespace lfs::vis::gui {
         constexpr std::size_t kMaxAnnotationRows = 512;
         constexpr float kMinHudWidthPx = 360.0f;
         constexpr float kMinHudHeightPx = 200.0f;
+        constexpr float kHudViewportPaddingPx = 16.0f;
 
         struct SummaryRowSpec {
             std::string_view key;
@@ -172,6 +174,94 @@ namespace lfs::vis::gui {
             return out;
         }
 
+        [[nodiscard]] std::string_view lastTrainScopeComponent(std::string_view scope) {
+            std::string_view best;
+            std::size_t pos = 0;
+            while (pos < scope.size()) {
+                const std::size_t end = scope.find('/', pos);
+                const auto part = scope.substr(pos, end == std::string_view::npos ? scope.size() - pos : end - pos);
+                if (part.rfind("train.", 0) == 0 || part == "train") {
+                    best = part;
+                }
+                if (end == std::string_view::npos) {
+                    break;
+                }
+                pos = end + 1;
+            }
+            return best.empty() ? scope : best;
+        }
+
+        [[nodiscard]] std::string firstScopeSegments(std::string_view scope, const std::size_t count) {
+            if (count == 0) {
+                return {};
+            }
+
+            std::size_t segments = 1;
+            for (std::size_t i = 0; i < scope.size(); ++i) {
+                if (scope[i] != '.' && scope[i] != '/') {
+                    continue;
+                }
+                if (segments == count) {
+                    return std::string(scope.substr(0, i));
+                }
+                ++segments;
+            }
+            return std::string(scope);
+        }
+
+        [[nodiscard]] Rml::Vector2f contextSize(Rml::ElementDocument* document) {
+            if (!document)
+                return {};
+            auto* context = document->GetContext();
+            if (!context)
+                return {};
+            const auto dimensions = context->GetDimensions();
+            return {
+                static_cast<float>(dimensions.x),
+                static_cast<float>(dimensions.y),
+            };
+        }
+
+        [[nodiscard]] float finiteOr(float value, float fallback) {
+            return std::isfinite(value) ? value : fallback;
+        }
+
+        [[nodiscard]] float maxHudExtent(float viewport_extent, float origin) {
+            if (!std::isfinite(viewport_extent) || viewport_extent <= 0.0f)
+                return std::numeric_limits<float>::infinity();
+            const float leading_padding = origin >= 0.0f ? origin : kHudViewportPaddingPx;
+            return std::max(1.0f, viewport_extent - leading_padding - kHudViewportPaddingPx);
+        }
+
+        [[nodiscard]] float clampHudExtent(float requested,
+                                           float min_extent,
+                                           float viewport_extent,
+                                           float origin) {
+            requested = finiteOr(requested, min_extent);
+            if (requested <= 0.0f)
+                requested = min_extent;
+
+            const float max_extent = maxHudExtent(viewport_extent, origin);
+            if (!std::isfinite(max_extent))
+                return std::max(min_extent, requested);
+
+            const float effective_min = std::min(min_extent, max_extent);
+            return std::clamp(requested, effective_min, max_extent);
+        }
+
+        [[nodiscard]] float clampHudPosition(float requested,
+                                             float extent,
+                                             float viewport_extent) {
+            if (!std::isfinite(requested) || requested < 0.0f)
+                return -1.0f;
+            if (!std::isfinite(viewport_extent) || viewport_extent <= 0.0f)
+                return std::max(0.0f, requested);
+
+            const float safe_extent = std::max(1.0f, finiteOr(extent, 1.0f));
+            const float max_pos = std::max(0.0f, viewport_extent - safe_extent - kHudViewportPaddingPx);
+            return std::clamp(requested, 0.0f, max_pos);
+        }
+
     } // namespace
 
     VramHudOverlay::VramHudOverlay() {
@@ -212,6 +302,7 @@ namespace lfs::vis::gui {
     void VramHudOverlay::persistNow() {
         if (!persistence_dirty_)
             return;
+        (void)sanitizeGeometry();
         LayoutState ls;
         ls.load();
         ls.vram_hud_x = pos_x_;
@@ -530,6 +621,8 @@ namespace lfs::vis::gui {
     void VramHudOverlay::applyPersistedGeometry() {
         if (!root_)
             return;
+        if (sanitizeGeometry())
+            schedulePersistSave();
         if (pos_x_ >= 0.0f && pos_y_ >= 0.0f) {
             root_->SetProperty("right", "auto");
             root_->SetProperty("left", std::format("{:.1f}px", pos_x_));
@@ -539,6 +632,24 @@ namespace lfs::vis::gui {
             root_->SetProperty("width", std::format("{:.1f}px", size_w_));
         if (size_h_ > 0.0f)
             root_->SetProperty("height", std::format("{:.1f}px", size_h_));
+    }
+
+    bool VramHudOverlay::sanitizeGeometry() {
+        const float old_pos_x = pos_x_;
+        const float old_pos_y = pos_y_;
+        const float old_size_w = size_w_;
+        const float old_size_h = size_h_;
+
+        const auto bounds = contextSize(document_);
+        if (size_w_ > 0.0f || !std::isfinite(size_w_))
+            size_w_ = clampHudExtent(size_w_, kMinHudWidthPx, bounds.x, pos_x_);
+        if (size_h_ > 0.0f || !std::isfinite(size_h_))
+            size_h_ = clampHudExtent(size_h_, kMinHudHeightPx, bounds.y, pos_y_);
+        pos_x_ = clampHudPosition(pos_x_, size_w_ > 0.0f ? size_w_ : kMinHudWidthPx, bounds.x);
+        pos_y_ = clampHudPosition(pos_y_, size_h_ > 0.0f ? size_h_ : kMinHudHeightPx, bounds.y);
+
+        return old_pos_x != pos_x_ || old_pos_y != pos_y_ ||
+               old_size_w != size_w_ || old_size_h != size_h_;
     }
 
     void VramHudOverlay::setState(State state) {
@@ -678,6 +789,9 @@ namespace lfs::vis::gui {
             }
             if (scope.rfind("vulkan.", 0) == 0) {
                 return first_dot_segments(scope, 3);
+            }
+            if (scope.rfind("train.", 0) == 0 || scope.find("/train.") != std::string_view::npos) {
+                return firstScopeSegments(lastTrainScopeComponent(scope), 2);
             }
             return top_segment(scope);
         };
@@ -1466,8 +1580,15 @@ namespace lfs::vis::gui {
         } else if (type == Rml::EventId::Drag && dragging_header_) {
             const float dx = mx - drag_start_mouse_x_;
             const float dy = my - drag_start_mouse_y_;
-            pos_x_ = std::max(0.0f, drag_start_pos_x_ + dx);
-            pos_y_ = std::max(0.0f, drag_start_pos_y_ + dy);
+            const auto bounds = contextSize(document_);
+            pos_x_ = std::max(0.0f,
+                              clampHudPosition(drag_start_pos_x_ + dx,
+                                               size_w_ > 0.0f ? size_w_ : root_->GetBox().GetSize().x,
+                                               bounds.x));
+            pos_y_ = std::max(0.0f,
+                              clampHudPosition(drag_start_pos_y_ + dy,
+                                               size_h_ > 0.0f ? size_h_ : root_->GetBox().GetSize().y,
+                                               bounds.y));
             root_->SetProperty("right", "auto");
             root_->SetProperty("left", std::format("{:.1f}px", pos_x_));
             root_->SetProperty("top", std::format("{:.1f}px", pos_y_));
@@ -1499,8 +1620,9 @@ namespace lfs::vis::gui {
         } else if (type == Rml::EventId::Drag && dragging_resize_) {
             const float dx = mx - drag_start_mouse_x_;
             const float dy = my - drag_start_mouse_y_;
-            size_w_ = std::max(kMinHudWidthPx, drag_start_size_w_ + dx);
-            size_h_ = std::max(kMinHudHeightPx, drag_start_size_h_ + dy);
+            const auto bounds = contextSize(document_);
+            size_w_ = clampHudExtent(drag_start_size_w_ + dx, kMinHudWidthPx, bounds.x, pos_x_);
+            size_h_ = clampHudExtent(drag_start_size_h_ + dy, kMinHudHeightPx, bounds.y, pos_y_);
             root_->SetProperty("width", std::format("{:.1f}px", size_w_));
             root_->SetProperty("height", std::format("{:.1f}px", size_h_));
             event.StopPropagation();

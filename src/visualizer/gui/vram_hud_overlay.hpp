@@ -97,6 +97,7 @@ namespace lfs::vis::gui {
         void schedulePersistSave();
         void persistNow();
         void applyPersistedGeometry();
+        [[nodiscard]] bool sanitizeGeometry();
         void onHeaderDrag(Rml::Event& event);
         void onResizeDrag(Rml::Event& event);
         void onFilterChange(Rml::Event& event);
