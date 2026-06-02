@@ -1089,6 +1089,58 @@ namespace lfs::vis {
         reset();
     }
 
+    void VksplatViewportRenderer::releaseOutputSlot(const OutputSlot output_slot) {
+        if (!context_) {
+            return;
+        }
+
+        const std::size_t output_index = outputSlotIndex(output_slot);
+        for (auto& slot : output_slots_[output_index]) {
+            if (slot.image.image != VK_NULL_HANDLE) {
+                context_->imageBarriers().forgetImage(slot.image.image);
+            }
+            if (slot.depth_image.image != VK_NULL_HANDLE) {
+                context_->imageBarriers().forgetImage(slot.depth_image.image);
+            }
+            context_->destroyExternalImage(slot.image);
+            context_->destroyExternalImage(slot.depth_image);
+            slot = {};
+        }
+        latest_output_ring_slot_[output_index] = 0;
+        output_generations_[output_index] = 0;
+    }
+
+    void VksplatViewportRenderer::releasePreviewResources() {
+        std::lock_guard<std::mutex> readback_lock(readback_mutex_);
+        if (!context_) {
+            return;
+        }
+
+        try {
+            renderer_.waitForPendingBatch();
+        } catch (const std::exception& e) {
+            LOG_WARN("VkSplat preview resource release skipped while render batch is pending: {}", e.what());
+            return;
+        }
+        if (!context_->waitForSubmittedFrames()) {
+            LOG_WARN("VkSplat preview resource release skipped while submitted frames are pending: {}",
+                     context_->lastError());
+            return;
+        }
+        for (std::size_t ring_slot = 0; ring_slot < ring_completion_values_.size(); ++ring_slot) {
+            if (auto ok = waitForRingSlot(ring_slot, "preview resource release"); !ok) {
+                LOG_WARN("VkSplat preview resource release skipped: {}", ok.error());
+                return;
+            }
+        }
+
+        releaseOutputSlot(OutputSlot::Preview);
+        releasePrivateScratchBuffers();
+        releaseSharedScratchArena();
+        drainRetiredScratchBuffers(false);
+        logVramBreakdownIfChanged("preview_release");
+    }
+
     void VksplatViewportRenderer::reset() {
         std::lock_guard<std::mutex> readback_lock(readback_mutex_);
         if (context_ && context_->device() != VK_NULL_HANDLE) {

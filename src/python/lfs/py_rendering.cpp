@@ -490,6 +490,9 @@ namespace lfs::python {
                                    lfs::rendering::vFovToFocalLength(fov_degrees),
                                    width,
                                    height);
+            if (rgb8_output) {
+                rendering_manager->releasePreviewImageResources();
+            }
             if (!image || !image->is_valid()) {
                 return std::nullopt;
             }

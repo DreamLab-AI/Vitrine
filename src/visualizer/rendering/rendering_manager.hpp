@@ -144,6 +144,7 @@ namespace lfs::vis {
                                                                   const glm::vec3& camera_position,
                                                                   float focal_length_mm,
                                                                   int width, int height);
+        void releasePreviewImageResources();
 
         void markDirty();
         void markDirty(DirtyMask flags);

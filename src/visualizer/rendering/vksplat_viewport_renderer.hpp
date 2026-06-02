@@ -137,6 +137,7 @@ namespace lfs::vis {
             const SelectionMaskRequest& request,
             bool force_input_upload);
 
+        void releasePreviewResources();
         void reset();
 
     private:
@@ -287,6 +288,7 @@ namespace lfs::vis {
         void detachSharedScratchBuffers();
         void releaseSharedScratchImportOnly();
         void releaseSharedScratchArena();
+        void releaseOutputSlot(OutputSlot output_slot);
         // Queues a no-longer-current shared-scratch import for destruction once
         // the GPU submission that last referenced it has retired. The old VkBuffer
         // may still be read by in-flight graphics/compute submissions (the resize

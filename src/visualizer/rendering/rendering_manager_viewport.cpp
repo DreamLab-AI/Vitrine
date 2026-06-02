@@ -445,6 +445,12 @@ namespace lfs::vis {
             lfs::core::DataType::UInt8);
     }
 
+    void RenderingManager::releasePreviewImageResources() {
+        if (vksplat_viewport_renderer_) {
+            vksplat_viewport_renderer_->releasePreviewResources();
+        }
+    }
+
     std::shared_ptr<lfs::core::Tensor> RenderingManager::renderPreviewImageWithState(
         SceneManager* const scene_manager,
         const lfs::core::SplatData& model,

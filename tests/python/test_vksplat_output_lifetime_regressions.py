@@ -95,7 +95,21 @@ def test_python_render_view_has_uint8_export_path():
     assert "render_view_u8" in source
     assert "renderPreviewImageRgb8" in source
     assert "core::DataType::UInt8" in source
+    assert "releasePreviewImageResources" in source
     assert "def render_view_u8" in stub
+
+
+def test_vksplat_preview_export_releases_transient_resources():
+    header = _read("src/visualizer/rendering/vksplat_viewport_renderer.hpp")
+    source = _read("src/visualizer/rendering/vksplat_viewport_renderer.cpp")
+    manager = _read("src/visualizer/rendering/rendering_manager_viewport.cpp")
+
+    assert "releasePreviewResources" in header
+    assert "releaseOutputSlot(OutputSlot::Preview)" in source
+    assert "releasePrivateScratchBuffers()" in source
+    assert "releaseSharedScratchArena()" in source
+    assert "logVramBreakdownIfChanged(\"preview_release\")" in source
+    assert "releasePreviewImageResources" in manager
 
 
 def test_gaussian_video_export_uses_vulkan_preview_renderer():
