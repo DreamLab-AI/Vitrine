@@ -17,19 +17,24 @@ Falls back to a conda environment (COME_CONDA_ENV, default "come") if the
 sidecar is not available.
 
 LICENSING NOTE (ADR-004):
-    As of 2026-05-26 the CoMe repository carries no LICENSE file (SPDX:
-    NOASSERTION).  This backend must NOT be used in commercial-distribution
-    builds until a permissive or clearly-scoped licence is published and
-    reviewed by the project lead.  ``is_come_available()`` emits a WARNING
-    when the container is reachable in a non-development environment.
+    Verified 2026-05-26 against the live repo: CoMe ships ``LICENSE.md`` — the
+    **Inria/MPII "Gaussian-Splatting License"** (plus ``NOTICE.md`` covering
+    SOF and StopThePop).  This is a **non-commercial research** licence, NOT a
+    permissive one: it permits research/evaluation use only and prohibits
+    commercial use/distribution without a separate agreement with Inria.
+    ``INSTALL_COME`` therefore remains an explicit opt-in build arg, and
+    ``is_come_available()`` emits a WARNING reminding callers of the
+    non-commercial restriction (suppress with ``COME_DEV_ENVIRONMENT=1``).
 
-CLI FLAG NOTICE:
-    The exact script names and CLI flags below are *inferred* from the SOF
-    codebase (github.com/r4dl/SOF) on which CoMe is built, plus the paper
-    description.  They have NOT been verified against the released CoMe
-    source.  All script names and flag names are defined as module-level
-    constants (``COME_TRAIN_SCRIPT``, ``COME_EXTRACT_TETS_SCRIPT``, etc.) so
-    they can be corrected in one place once verified against the repo.
+CLI (verified 2026-05-26 against github.com/r4dl/CoMe):
+    Train:        ``train.py --splatting_config configs/hierarchical.json
+                  -s <dataset> -m <output>``  (``-s``/``-m`` are the standard
+                  3DGS ParamGroup short flags; iterations etc. come from the
+                  splatting-config JSON).
+    Extract real: ``extract_mesh_tets.py -m <output>``   (marching tetrahedra)
+    Extract synth:``extract_mesh_tsdf.py -m <output>``   (TSDF)
+    Only ``configs/hierarchical.json`` ships in the repo.  Script names and
+    flags are module-level constants below so they live in one place.
 """
 
 from __future__ import annotations
@@ -112,7 +117,7 @@ class CoMeConfig:
             -- 10 min; paper reports ~7 min on RTX 4090).
     """
 
-    splatting_config: str = "configs/come_unbounded.json"
+    splatting_config: str = "configs/hierarchical.json"
     scene_type: str = "unbounded"
     iterations: int = 30_000
     train_timeout: int = 2400
@@ -166,9 +171,9 @@ def _come_exec_prefix() -> list[str]:
 def is_come_available() -> bool:
     """Return True if CoMe is reachable via docker sidecar or conda env.
 
-    Emits a WARNING reminding callers of the unresolved licensing status
-    (ADR-004) when the sidecar is found running outside a recognised
-    development environment (``COME_DEV_ENVIRONMENT=1`` suppresses it).
+    Emits a WARNING reminding callers of the non-commercial licence (ADR-004)
+    when the sidecar is found running outside a recognised development
+    environment (``COME_DEV_ENVIRONMENT=1`` suppresses it).
     """
     prefix = _come_exec_prefix()
     if not prefix:
@@ -180,10 +185,11 @@ def is_come_available() -> bool:
     dev_env = os.environ.get("COME_DEV_ENVIRONMENT", "0").strip()
     if dev_env not in ("1", "true", "yes"):
         logger.warning(
-            "CoMe backend is available but its repository carries no LICENSE "
-            "file as of 2026-05-26 (SPDX: NOASSERTION).  Do NOT use in "
-            "commercial-distribution builds.  See ADR-004 for the licensing "
-            "gate.  Set COME_DEV_ENVIRONMENT=1 to suppress this warning."
+            "CoMe backend is available but is licensed under the Inria/MPII "
+            "Gaussian-Splatting License — NON-COMMERCIAL research use only. "
+            "Do NOT use its outputs in commercial products/distribution without "
+            "a separate agreement with Inria. See ADR-004. Set "
+            "COME_DEV_ENVIRONMENT=1 to suppress this warning."
         )
 
     return True

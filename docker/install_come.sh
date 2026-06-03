@@ -2,93 +2,89 @@
 # install_come.sh — Install CoMe (Confidence-based Mesh Extraction) inside the
 # come sidecar container.  Invoked by docker/Dockerfile.come when INSTALL_COME=1.
 #
-# LICENSING NOTE: CoMe has no LICENSE file as of 2026-05-26 (SPDX: NOASSERTION).
-# Do not include in commercial images until a permissive licence is reviewed.
-# See ADR-004 for the build-arg gate that prevents accidental inclusion.
+# LICENSING (verified 2026-05-26 against github.com/r4dl/CoMe): CoMe ships
+# LICENSE.md = the Inria/MPII "Gaussian-Splatting License" — NON-COMMERCIAL
+# research use only (plus NOTICE.md covering SOF and StopThePop). Do NOT use
+# its outputs in commercial products/distribution without a separate agreement
+# with Inria. Build is gated behind INSTALL_COME=0 by default. See ADR-004.
+#
+# Installs the upstream-tested conda env (environment.yml: python 3.10,
+# pytorch>=2.1, pytorch-cuda=12.1, cgal, gmp, dacite) and builds the four
+# vendored CUDA submodules. The come env's python is placed on PATH by the
+# Dockerfile so `docker exec come python3 ...` resolves to it.
 set -e
 
 echo "=== Installing CoMe (Confidence-based Mesh Extraction) ==="
+export PATH="/opt/miniconda/bin:$PATH"
 
 # ---------------------------------------------------------------------------
-# Optional conda setup (mirrors install_milo.sh pattern)
-# CoMe targets system Python 3.10; conda is installed only if it is absent,
-# and the TOS is accepted to satisfy conda 25.x requirements.
+# Miniconda (if absent). TOS accept required since conda 25.x.
 # ---------------------------------------------------------------------------
 if ! command -v conda &> /dev/null; then
     echo "Installing Miniconda..."
     wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh
     bash /tmp/miniconda.sh -b -p /opt/miniconda
     rm /tmp/miniconda.sh
-    export PATH="/opt/miniconda/bin:$PATH"
-    # Accept TOS (required since conda 25.x)
     conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main 2>/dev/null || true
     conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r 2>/dev/null || true
 fi
 
-export PATH="/opt/miniconda/bin:$PATH"
-
 # ---------------------------------------------------------------------------
-# Clone CoMe — force HTTPS for submodules (SSH not available in Docker build)
+# Clone CoMe. Submodules are vendored in-tree (no .gitmodules); --recursive is
+# harmless. Force HTTPS in case any nested ref uses git@.
 # ---------------------------------------------------------------------------
-echo "Configuring HTTPS for git submodules..."
 git config --global url."https://github.com/".insteadOf "git@github.com:"
-
-echo "Cloning CoMe..."
-if [ ! -d "/opt/come" ]; then
+if [ ! -d /opt/come ]; then
+    echo "Cloning CoMe..."
     git clone --recursive https://github.com/r4dl/CoMe.git /opt/come
 fi
+cd /opt/come
 
 # ---------------------------------------------------------------------------
-# Build CUDA submodules
-# CoMe uses the same diff-gaussian-rasterization and simple-knn extensions as
-# standard 3DGS, plus tetra-triangulation for marching tetrahedra extraction.
+# Create the upstream-tested conda env. environment.yml pins python=3.10,
+# pytorch>=2.1, pytorch-cuda=12.1, cgal, gmp, dacite, open3d, trimesh, etc.
 # ---------------------------------------------------------------------------
+echo "Creating conda env 'come' from environment.yml..."
+conda env create -f environment.yml || conda env update -n come -f environment.yml
+
+RUN_COME="conda run -n come"
 export CUDA_HOME=/usr/local/cuda
-export TORCH_CUDA_ARCH_LIST="8.9"
+export TORCH_CUDA_ARCH_LIST="8.9"   # RTX 6000 Ada / RTX 4090 = sm_89
+
+# ---------------------------------------------------------------------------
+# Build the four vendored CUDA submodules into the come env.
+# Verified set (README setup): simple-knn, diff-gaussian-rasterization,
+# decoupled-fused-ssim. tetra-triangulation (Delaunay, CGAL+GMP from conda) is
+# required by extract_mesh_tets.py (real-world marching tetrahedra).
+# ---------------------------------------------------------------------------
+echo "Building simple-knn..."
+$RUN_COME pip install --no-build-isolation ./submodules/simple-knn
 
 echo "Building diff-gaussian-rasterization..."
-cd /opt/come
-pip3 install --no-build-isolation submodules/diff-gaussian-rasterization/
+$RUN_COME pip install --no-build-isolation ./submodules/diff-gaussian-rasterization
 
-echo "Building simple-knn..."
-pip3 install --no-build-isolation submodules/simple-knn/
+echo "Building decoupled-fused-ssim..."
+$RUN_COME pip install --no-build-isolation ./submodules/decoupled-fused-ssim
 
-# tetra_triangulation (Delaunay, requires CGAL + pybind11) — non-fatal
-# Build failure falls back gracefully; mesh extraction uses a fallback path.
-echo "Building tetra_triangulation (non-fatal on failure)..."
-pip3 install pybind11
-cd /opt/come/submodules/tetra_triangulation \
-    && cmake . \
-        -DPYTHON_EXECUTABLE=/usr/bin/python3 \
-        -DCMAKE_CXX_FLAGS="-I/usr/local/cuda/include" \
-        -Dpybind11_DIR="$(python3 -m pybind11 --cmakedir)" \
-    && make -j"$(nproc)" \
-    && pip3 install -e . \
-    || echo "WARNING: tetra_triangulation build failed — marching-tetrahedra extraction unavailable"
-
-cd /opt/come
+# tetra-triangulation: cmake build using conda-provided CGAL/GMP. Best-effort —
+# on failure extract_mesh_tets.py is unavailable but extract_mesh_tsdf.py and
+# training still work.
+echo "Building tetra-triangulation (non-fatal on failure)..."
+CONDA_ENV_PREFIX="$(conda env list | awk '/come/{print $NF}' | head -1)"
+( cd submodules/tetra-triangulation \
+    && $RUN_COME cmake . -DCMAKE_PREFIX_PATH="${CONDA_ENV_PREFIX}" \
+    && $RUN_COME make -j"$(nproc)" \
+    && $RUN_COME pip install -e . ) \
+    || echo "WARNING: tetra-triangulation build failed — extract_mesh_tets.py (real-world tets) unavailable; TSDF path still works"
 
 # ---------------------------------------------------------------------------
-# Python requirements
-# ---------------------------------------------------------------------------
-echo "Installing CoMe Python requirements..."
-if [ -f requirements.txt ]; then
-    pip3 install -r requirements.txt
-fi
-
-pip3 install \
-    open3d==0.19.0 trimesh scikit-image opencv-python plyfile tqdm einops
-
-# PLY-to-GLB export capability
-pip3 install pygltflib
-
-# ---------------------------------------------------------------------------
-# Verify core extensions
+# Verify core extensions in the come env.
 # ---------------------------------------------------------------------------
 echo "Verifying CoMe installation..."
-python3 -c "import torch; print(f'PyTorch {torch.__version__}, CUDA {torch.cuda.is_available()}')"
-python3 -c "import diff_gaussian_rasterization; print('diff-gaussian-rasterization OK')"
-python3 -c "import simple_knn; print('simple-knn OK')"
+$RUN_COME python -c "import torch; print(f'PyTorch {torch.__version__}, CUDA available: {torch.cuda.is_available()}')"
+$RUN_COME python -c "import diff_gaussian_rasterization, simple_knn; print('rasterizer + simple-knn OK')"
+$RUN_COME python -c "import dacite, plyfile, trimesh, open3d; print('config + IO deps OK')"
 
-echo "=== CoMe installation complete ==="
-echo "Usage: docker exec come python3 /opt/come/extract.py -s <COLMAP_DATASET> -m <OUTPUT_DIR>"
+echo "=== CoMe installation complete (conda env: come, NON-COMMERCIAL licence) ==="
+echo "Train:   docker exec come python3 /opt/come/train.py --splatting_config configs/hierarchical.json -s <DATASET> -m <OUT>"
+echo "Extract: docker exec come python3 /opt/come/extract_mesh_tets.py -m <OUT>   # real-world"
