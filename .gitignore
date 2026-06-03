@@ -1,18 +1,48 @@
+# ---------------------------------------------------------------------------
+# Editors / IDEs
+# ---------------------------------------------------------------------------
 .vscode
+.idea
+.vs/
 .claude
+imgui.ini
+lichtfeld-studio.aps
+
+# ---------------------------------------------------------------------------
+# Build artifacts
+# ---------------------------------------------------------------------------
 build/
+build*/
+build*/**
 cmake-build-debug/
 cmake-build-release/
+output*
+results
+testdata
+test-data/
+
+# ---------------------------------------------------------------------------
+# Dependencies / vendored libraries
+# ---------------------------------------------------------------------------
 external/libtorch/
 external/release/libtorch/
 external/debug/libtorch/
-output*
-results
-.idea
-imgui.ini
-data
-*.pt
+vcpkg/
+vcpkg/**
+vcpkg_*/
+vcpkg_*/**
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
 *.py
+__pycache__/
+*.pyc
+.venv/
+.venv*/
+test.py
+src/python/stubs/lichtfeld/build_info.pyi
+# Keep these tracked sources despite the blanket *.py / *.sh ignores:
 !scripts/lichtfeld_mcp_bridge.py
 !scripts/hardware_trace.py
 !scripts/run_gallery_pipeline.py
@@ -20,52 +50,54 @@ data
 !scripts/extract_strings.py
 !scripts/validate_localization.py
 !scripts/benchmark_omniblender.sh
+!scripts/test_*.py
 !src/python/_lfs_panel_contract.py
 !src/python/lfs_plugins/**/*.py
 !src/python/scripts/manage_stubs.py
+!src/pipeline/**/*.py
 !tests/python/**/*.py
 !docs/plugins/examples/**/*.py
-!src/pipeline/**/*.py
-!scripts/test_*.py
-.venv/
-*.png
-!src/**/assets/**/*.png
-*.sqlite
-test.py
-*.nsys-rep
-testdata
-vcpkg/
-vcpkg/**
-vcpkg_*/**
-vcpkg_*/
-build*/
-build*/**
 
+# ---------------------------------------------------------------------------
+# Model weights / data / binaries
+# ---------------------------------------------------------------------------
 *.pt
 !weights/*.pt
-lichtfeld-studio.aps
-.vs__pycache__/
-__pycache__/
-*.pyc
-src/python/stubs/lichtfeld/build_info.pyi
-tasks/
-__pycache__/
-*.pyc
-.venv*/
-test-data/
-research/gap-analysis-local/
-!docs/renders/*.jpg
-.env
-research/come-paper/
-
-# ruflo / ruvector local database (not source)
-ruvector.db
-*.ruvector.db
-
-# Bulk-ingestion secrets and scratch (drive_ingestor.py)
-# Ignore secret contents but keep the dir + committed .example template.
-secrets/*
-!secrets/*.example
+data
 data/raw/
 data/scratch/
 *.sqlite
+
+# ---------------------------------------------------------------------------
+# Images / media (keep committed assets & render docs)
+# ---------------------------------------------------------------------------
+*.png
+!src/**/assets/**/*.png
+!docs/renders/*.jpg
+
+# ---------------------------------------------------------------------------
+# Profiling
+# ---------------------------------------------------------------------------
+*.nsys-rep
+
+# ---------------------------------------------------------------------------
+# Project scratch / research
+# ---------------------------------------------------------------------------
+tasks/
+research/gap-analysis-local/
+research/come-paper/
+
+# ---------------------------------------------------------------------------
+# ruflo / ruvector local database (not source)
+# ---------------------------------------------------------------------------
+ruvector.db
+*.ruvector.db
+
+# ---------------------------------------------------------------------------
+# Secrets & credentials
+# ---------------------------------------------------------------------------
+.env
+# Bulk-ingestion secrets and scratch (drive_ingestor.py):
+# ignore secret contents but keep the dir + committed .example template.
+secrets/*
+!secrets/*.example
