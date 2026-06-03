@@ -22,8 +22,9 @@ logger = logging.getLogger("test_gsplat_mesh")
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-PLY_PATH = "/home/devuser/workspace/gaussians/test-data/gallery_output/model_quality/splat_30000.ply"
-OUT_DIR = Path("/home/devuser/workspace/gaussians/test-data/gallery_output/gsplat_mesh_test")
+_GALLERY = Path(os.environ.get("TEST_DATA_DIR", str(PROJECT_ROOT.parent / "test-data"))) / "gallery_output"
+PLY_PATH = str(_GALLERY / "model_quality" / "splat_30000.ply")
+OUT_DIR = _GALLERY / "gsplat_mesh_test"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 

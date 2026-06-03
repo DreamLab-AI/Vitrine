@@ -48,11 +48,11 @@ services:
 
     volumes:
       # Model staging — pre-populate this with downloaded models
-      - /home/john/comfyui-models-staging:/models-staging:ro
+      - ${MODELS_STAGING_DIR:-./models-staging}:/models-staging:ro
       # Persistent output data (web UI writes to /data/output)
       - ./output:/data/output
       # Host-compiled LichtFeld binary (bind-mount from host build)
-      - /home/john/githubs/gaussian/LichtFeld-Studio/build:/opt/gaussian-toolkit/build:ro
+      - ${LICHTFELD_BUILD_DIR:-./build}:/opt/gaussian-toolkit/build:ro
       # Host CUDA libs (if container CUDA version differs from host)
       - /opt/cuda/lib64:/opt/host-cuda-libs:ro
       # Persistent model cache (survives rebuilds)

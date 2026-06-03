@@ -16,11 +16,15 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-# ── Paths ──
-PLY_PATH = "/home/devuser/workspace/gaussians/test-data/gallery_output/model_quality/splat_30000.ply"
-COLMAP_CAMERAS = "/home/devuser/workspace/gaussians/test-data/gallery_output/colmap/exported/cameras.txt"
-COLMAP_IMAGES  = "/home/devuser/workspace/gaussians/test-data/gallery_output/colmap/exported/images.txt"
-OUT_DIR = "/home/devuser/workspace/gaussians/test-data/gallery_output/gsplat_depth_test"
+# ── Paths (override base via TEST_DATA_DIR env var) ──
+from pathlib import Path as _Path
+_GALLERY = _Path(os.environ.get(
+    "TEST_DATA_DIR", str(_Path(__file__).resolve().parent.parent.parent / "test-data")
+)) / "gallery_output"
+PLY_PATH = str(_GALLERY / "model_quality" / "splat_30000.ply")
+COLMAP_CAMERAS = str(_GALLERY / "colmap" / "exported" / "cameras.txt")
+COLMAP_IMAGES  = str(_GALLERY / "colmap" / "exported" / "images.txt")
+OUT_DIR = str(_GALLERY / "gsplat_depth_test")
 os.makedirs(OUT_DIR, exist_ok=True)
 
 # ── 1. Load PLY ──

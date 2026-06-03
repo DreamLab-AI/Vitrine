@@ -35,7 +35,8 @@ logger = logging.getLogger("object_separation")
 # ---------------------------------------------------------------------------
 #  Paths
 # ---------------------------------------------------------------------------
-TEST_DATA = Path("/home/devuser/workspace/gaussians/test-data/gallery_output")
+import os
+TEST_DATA = Path(os.environ.get("TEST_DATA_DIR", str(PROJECT_ROOT.parent / "test-data"))) / "gallery_output"
 PLY_PATH = TEST_DATA / "model" / "splat_7000.ply"
 COLMAP_TXT_DIR = TEST_DATA / "colmap" / "undistorted" / "sparse" / "0_txt"
 IMAGE_DIR = TEST_DATA / "colmap" / "undistorted" / "images"
