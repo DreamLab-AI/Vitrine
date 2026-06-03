@@ -1,0 +1,110 @@
+\chapter{Technology Foundations}
+\label{ch:technology}
+
+This chapter provides a technical overview of the core technologies employed in the project pipeline. The intent is to equip non-specialist readers with sufficient understanding to evaluate the experimental results and recommendations that follow, while providing technically literate readers with specific detail on method selection and parameterisation.
+
+\section{3D Gaussian Splatting}
+\label{sec:tech-3dgs}
+
+\subsection{Conceptual Overview}
+
+\acrlong{3dgs} (\acrshort{3dgs}), introduced by \textcite{Kerbl2023}, represents a 3D scene as a collection of anisotropic 3D Gaussian primitives. Each Gaussian is defined by a mean position $\boldsymbol{\mu} \in \mathbb{R}^3$, a covariance matrix $\boldsymbol{\Sigma} \in \mathbb{R}^{3 \times 3}$ encoding its shape and orientation, an opacity value $\alpha \in [0,1]$, and a set of spherical harmonic coefficients encoding view-dependent colour.
+
+Rendering proceeds by projecting these 3D Gaussians onto the image plane, where they become 2D Gaussians that can be efficiently composited using alpha blending in depth order. The key insight is that this splatting operation is fully differentiable, enabling end-to-end optimisation of all Gaussian parameters against photometric loss computed from known camera views.
+
+\subsection{Training Process}
+
+The training process begins with an initial set of 3D points, typically obtained from a Structure-from-Motion reconstruction (Section~\ref{sec:tech-sfm}). Each point is initialised as a small isotropic Gaussian, and the parameters are optimised via gradient descent against the training images. During training, an adaptive density control mechanism periodically splits, clones, or prunes Gaussians based on gradient statistics---large Gaussians in high-gradient regions are split, small Gaussians with large gradients are cloned, and Gaussians with very low opacity are removed.
+
+The original implementation by \textcite{Kerbl2023} trains a typical scene in 20--40 minutes on a single consumer \acrshort{gpu}, producing a representation that renders at 100+ FPS at 1080p resolution. This represents a dramatic improvement over \acrshort{nerf}-based methods, which require hours of training and seconds per rendered frame.
+
+\subsection{Variants and Extensions}
+
+Since the original publication, numerous extensions have been proposed. Two are particularly relevant to this project:
+
+\begin{description}
+  \item[\acrshort{mrnf} (Mini-Splatting)] \textcite{Fang2024} introduced a densification strategy that prioritises relocation of existing Gaussians over splitting, combined with normal-based filtering to improve surface alignment. This produces cleaner reconstructions with fewer Gaussians, which is advantageous for subsequent mesh extraction.
+
+  \item[\acrshort{mcmc} Gaussian Splatting] \textcite{Kheradmand2024} reformulated the densification process as a Markov Chain Monte Carlo sampling problem, replacing the heuristic split/clone/prune strategy with a principled stochastic optimisation. This approach is more robust to initialisation quality and produces more uniform Gaussian distributions.
+\end{description}
+
+Both variants were evaluated in this project (Chapter~\ref{ch:results}).
+
+\section{COLMAP Structure-from-Motion}
+\label{sec:tech-sfm}
+
+\acrshort{colmap} \parencite{Schoenberger2016sfm, Schoenberger2016mvs} is the de facto standard \acrlong{sfm} system for research and production use. Given a set of images of a scene, \acrshort{colmap} jointly estimates camera intrinsic parameters, camera poses (extrinsic parameters), and a sparse 3D point cloud representing the scene geometry.
+
+The process operates in two phases:
+
+\begin{enumerate}
+  \item \textbf{Feature extraction and matching.} \acrshort{colmap} detects SIFT features \parencite{Lowe2004} in each image and matches them across image pairs. For large image collections, an exhaustive matching strategy is replaced by vocabulary-tree or sequential matching to manage computational cost.
+
+  \item \textbf{Incremental reconstruction.} Starting from a well-conditioned image pair, \acrshort{colmap} incrementally registers additional images to the reconstruction by solving Perspective-n-Point (PnP) problems, triangulating new 3D points, and refining all parameters through bundle adjustment.
+\end{enumerate}
+
+For video-derived image sets---as used in this project---sequential matching with a sliding window is typically most effective, as temporal adjacency implies visual overlap. Frame extraction rate is a critical parameter: too few frames produce insufficient overlap for reliable matching, while too many frames increase computation time without improving reconstruction quality and may introduce motion blur artefacts.
+
+\begin{technote}
+For the gallery walkthrough dataset used in this project, we extracted frames at 2 FPS from the source video, yielding approximately 600 frames for a 5-minute walk-through. \acrshort{colmap} sequential matching with a window size of 10 was employed, completing the full reconstruction in approximately 45 minutes on a single RTX 4090.
+\end{technote}
+
+\section{Mesh Extraction Methods}
+\label{sec:tech-mesh}
+
+While \acrshort{3dgs} produces high-quality renderings, certain downstream applications---physics simulation, 3D printing, integration with traditional 3D workflows---require explicit surface meshes. Extracting meshes from Gaussian representations is an active area of research. We evaluated several approaches:
+
+\subsection{TSDF Fusion}
+\label{sec:tech-tsdf}
+
+The Truncated Signed Distance Function (\acrshort{tsdf}) approach \parencite{Curless1996} is a classical volumetric fusion method. Depth maps are rendered from the Gaussian representation at known camera poses and fused into a voxel grid storing signed distance values. The surface is extracted as the zero-crossing of the distance field via Marching Cubes \parencite{Lorensen1987}. This approach is fast and robust but resolution-limited by the voxel grid, producing meshes that lack fine detail and exhibit staircase artefacts at insufficient resolution.
+
+\subsection{SuGaR: Surface-Aligned Gaussian Representation}
+\label{sec:tech-sugar}
+
+SuGaR \parencite{Guedon2024Sugar} introduces a regularisation term during Gaussian training that encourages Gaussians to align with the scene's true surfaces. A subsequent Poisson reconstruction step extracts a mesh from the aligned Gaussians. The method produces cleaner meshes than \acrshort{tsdf} fusion but requires a modified training procedure and additional computation.
+
+\subsection{MILo: Mesh Extraction with Isosurface Lifting}
+\label{sec:tech-milo}
+
+MILo \parencite{Guedon2025MILo} extends the SuGaR approach with an improved isosurface extraction algorithm that better preserves fine geometric detail. The method operates as a post-processing step on pre-trained Gaussian representations, making it compatible with any \acrshort{3dgs} training method. Our pipeline integrates MILo as a Docker sidecar container due to its distinct dependency requirements.
+
+\subsection{CoMe: Confidence-Based Mesh Extraction}
+\label{sec:tech-come}
+
+CoMe \parencite{Radl2025CoMe} proposes a confidence-weighted approach to mesh extraction that assigns quality scores to different regions of the Gaussian representation, enabling adaptive mesh resolution. Regions with high reconstruction confidence receive finer tessellation, while uncertain regions are represented more coarsely. At the time of writing, the CoMe implementation has not yet been publicly released, but the approach is discussed in Chapter~\ref{ch:future} as a promising future direction.
+
+\section{Object Segmentation with SAM3}
+\label{sec:tech-sam}
+
+The Segment Anything Model (SAM) \parencite{Kirillov2023} and its successors provide class-agnostic object segmentation from image inputs. SAM3, the third-generation model, extends this capability to 3D-consistent segmentation: given multi-view images and camera poses, SAM3 can identify and segment individual objects across all views simultaneously, producing per-object masks that are consistent in 3D space.
+
+For cultural heritage applications, this capability enables the decomposition of a complex scene---an exhibition gallery, a multi-component installation---into individually addressable objects. Each object can then be reconstructed, stored, and presented independently, enabling interactive experiences where users can examine, manipulate, or obtain information about individual components of a preserved scene.
+
+\section{Scene Assembly: Blender and USD}
+\label{sec:tech-assembly}
+
+Extracted meshes and segmented objects require assembly into coherent scenes for presentation. Two complementary technologies serve this purpose:
+
+\textbf{Blender} \parencite{Blender2024} is the dominant open-source 3D authoring tool, providing comprehensive mesh editing, material assignment, lighting, and rendering capabilities. Its Python scripting interface enables automated pipeline integration, and its support for diverse import/export formats makes it an effective hub for format conversion.
+
+\textbf{Universal Scene Description (USD)} \parencite{Pixar2019} is an interchange format originally developed by Pixar for film production pipelines. \acrshort{usd} provides a hierarchical, composable scene representation that can reference assets non-destructively, enabling the assembly of complex scenes from independently authored components. Its adoption by Apple (for AR/VR content), NVIDIA (Omniverse), and the wider industry makes it an increasingly attractive target format for cultural heritage scene assembly.
+
+\section{Browser and Engine Viewing}
+\label{sec:tech-viewing}
+
+The final stage of the preservation pipeline is audience delivery. Two principal rendering targets were evaluated:
+
+\subsection{WebGL and Browser-Based Viewers}
+
+\acrshort{webgl}-based Gaussian splat viewers enable direct browser viewing without any application installation. Projects such as gsplat.js and Antimatter15's WebGL splat viewer demonstrate that real-time splat rendering at 30+ FPS is achievable on consumer hardware through standard web browsers. The emerging WebGPU standard promises further performance improvements through compute shader access.
+
+Browser-based delivery is particularly attractive for cultural heritage because it minimises the technical barrier for audiences and integrates naturally with existing digital collection management systems.
+
+\subsection{Unreal Engine Integration}
+
+For higher-fidelity and more immersive experiences---particularly those targeting VR headsets---Unreal Engine provides a mature real-time rendering platform with extensive support for spatial audio, physics interaction, and multi-user networking. Recent Unreal Engine plugins for Gaussian splat rendering enable direct import of \acrshort{3dgs} assets, avoiding the quality loss associated with mesh conversion.
+
+\begin{keyfinding}
+The technology landscape in early 2026 presents cultural heritage practitioners with a spectrum of delivery options, from zero-installation browser-based splat viewers to fully immersive Unreal Engine VR experiences, with the same underlying Gaussian splat representation serving both ends of this spectrum.
+\end{keyfinding}

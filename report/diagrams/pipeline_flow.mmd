@@ -1,0 +1,45 @@
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#2A7B88', 'primaryTextColor': '#fff', 'primaryBorderColor': '#1B2A4A', 'lineColor': '#5C6B7A', 'secondaryColor': '#E07A5F', 'tertiaryColor': '#D4A843'}}}%%
+flowchart LR
+    subgraph Input["Input Stage"]
+        A[Video Source] --> B[Frame Extraction]
+    end
+
+    subgraph SfM["Structure from Motion"]
+        B --> C[COLMAP Feature Detection]
+        C --> D[COLMAP Sparse Reconstruction]
+        D --> E[Point Cloud + Camera Poses]
+    end
+
+    subgraph Training["3DGS Training"]
+        E --> F{Strategy Selection}
+        F -->|Default| G[MRNF 30K iterations]
+        F -->|Adaptive| H[MCMC 15K iterations]
+        F -->|High Quality| I[MILo 18K iterations]
+        G --> J[Trained Gaussians]
+        H --> J
+        I --> J
+    end
+
+    subgraph Extraction["Mesh & Export"]
+        J --> K{Mesh Method}
+        K -->|Fast| L[TSDF Fusion]
+        K -->|Balanced| M[SuGaR]
+        K -->|Quality| N[MILo Mesh]
+        L --> O[Triangle Mesh]
+        M --> O
+        N --> O
+    end
+
+    subgraph Output["Output Stage"]
+        O --> P[Blender Import]
+        P --> Q[Material Assignment]
+        Q --> R[USD Export]
+        R --> S[Web Viewer]
+        R --> T[AR/VR Delivery]
+    end
+
+    style Input fill:#3B82F6,color:#fff
+    style SfM fill:#2A7B88,color:#fff
+    style Training fill:#2A7B88,color:#fff
+    style Extraction fill:#E07A5F,color:#fff
+    style Output fill:#D4A843,color:#fff

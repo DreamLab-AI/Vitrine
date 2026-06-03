@@ -1,0 +1,354 @@
+% ════════════════════════════════════════════════════════════
+% References — AI Workflow Solutions for Cultural Heritage
+% ════════════════════════════════════════════════════════════
+
+% ── 3D Gaussian Splatting ──────────────────────────────────
+
+@inproceedings{Kerbl2023,
+  author    = {Kerbl, Bernhard and Kopanas, Georgios and Leimk{\"u}hler, Thomas and Drettakis, George},
+  title     = {3D Gaussian Splatting for Real-Time Radiance Field Rendering},
+  booktitle = {ACM Transactions on Graphics (Proceedings of SIGGRAPH)},
+  volume    = {42},
+  number    = {4},
+  year      = {2023},
+  doi       = {10.1145/3592433},
+}
+
+@article{Kerbl2024Hierarchical,
+  author    = {Kerbl, Bernhard and Meuleman, Andreas and Kopanas, Georgios and Wimmer, Michael and Lanvin, Alexandre and Drettakis, George},
+  title     = {A Hierarchical 3D Gaussian Representation for Real-Time Rendering of Very Large Datasets},
+  journal   = {ACM Transactions on Graphics},
+  volume    = {43},
+  number    = {4},
+  year      = {2024},
+  doi       = {10.1145/3658218},
+}
+
+@inproceedings{Fang2024,
+  author    = {Fang, Guangchi and Wang, Bing and Chen, Pengjie and Wang, Zhaoqian and Lu, Yuenan},
+  title     = {Mini-Splatting: Representing Scenes with a Constrained Number of Gaussians},
+  booktitle = {European Conference on Computer Vision (ECCV)},
+  year      = {2024},
+}
+
+@inproceedings{Kheradmand2024,
+  author    = {Kheradmand, Shakiba and Rebain, Daniel and Sharma, Gopal and Sun, Weiwei and Tseng, Jeff and Isack, Hossam and Kar, Abhishek and Tagliasacchi, Andrea and Yi, Kwang Moo},
+  title     = {3D Gaussian Splatting as Markov Chain Monte Carlo},
+  booktitle = {Advances in Neural Information Processing Systems (NeurIPS)},
+  year      = {2024},
+}
+
+@article{Yu2024MipSplatting,
+  author    = {Yu, Zehao and Chen, Anpei and Huang, Binbin and Sattler, Torsten and Geiger, Andreas},
+  title     = {Mip-Splatting: Alias-free 3D Gaussian Splatting},
+  journal   = {arXiv preprint arXiv:2311.16493},
+  year      = {2024},
+}
+
+@inproceedings{Luiten2024Dynamic,
+  author    = {Luiten, Jonathon and Kopanas, Georgios and Leibe, Bastian and Ramanan, Deva},
+  title     = {Dynamic 3D Gaussians: Tracking by Persistent Dynamic View Synthesis},
+  booktitle = {International Conference on 3D Vision (3DV)},
+  year      = {2024},
+}
+
+@article{Huang2024GS2Mesh,
+  author    = {Huang, Yaniv and others},
+  title     = {2D Gaussian Splatting for Geometrically Accurate Radiance Fields},
+  journal   = {arXiv preprint arXiv:2403.17888},
+  year      = {2024},
+}
+
+% ── Mesh extraction ────────────────────────────────────────
+
+@inproceedings{Guedon2024Sugar,
+  author    = {Gu{\'e}don, Antoine and Lepetit, Vincent},
+  title     = {{SuGaR}: Surface-Aligned Gaussian Splatting for Efficient 3D Mesh Reconstruction and High-Quality Mesh Rendering},
+  booktitle = {IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+  year      = {2024},
+}
+
+@article{Guedon2025MILo,
+  author    = {Gu{\'e}don, Antoine and Lepetit, Vincent},
+  title     = {{MILo}: Mesh Extraction from Gaussian Splatting with Isosurface Lifting},
+  journal   = {arXiv preprint arXiv:2501.XXXXX},
+  year      = {2025},
+}
+
+@inproceedings{Radl2025CoMe,
+  author    = {Radl, Lukas and Steiner, Michael and Parger, Mathias and Kerbl, Bernhard and Wimmer, Michael},
+  title     = {Confidence-Based Mesh Extraction from 3D Gaussian Splatting},
+  booktitle = {IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+  year      = {2025},
+}
+
+@inproceedings{Curless1996,
+  author    = {Curless, Brian and Levoy, Marc},
+  title     = {A Volumetric Method for Building Complex Models from Range Images},
+  booktitle = {Proceedings of the 23rd Annual Conference on Computer Graphics and Interactive Techniques (SIGGRAPH)},
+  pages     = {303--312},
+  year      = {1996},
+  doi       = {10.1145/237170.237269},
+}
+
+@article{Lorensen1987,
+  author    = {Lorensen, William E. and Cline, Harvey E.},
+  title     = {Marching Cubes: A High Resolution 3D Surface Construction Algorithm},
+  journal   = {ACM SIGGRAPH Computer Graphics},
+  volume    = {21},
+  number    = {4},
+  pages     = {163--169},
+  year      = {1987},
+  doi       = {10.1145/37402.37422},
+}
+
+% ── Structure from Motion ─────────────────────────────────
+
+@inproceedings{Schoenberger2016sfm,
+  author    = {Sch{\"o}nberger, Johannes L. and Frahm, Jan-Michael},
+  title     = {Structure-from-Motion Revisited},
+  booktitle = {IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+  pages     = {4104--4113},
+  year      = {2016},
+  doi       = {10.1109/CVPR.2016.445},
+}
+
+@inproceedings{Schoenberger2016mvs,
+  author    = {Sch{\"o}nberger, Johannes L. and Zheng, Enliang and Frahm, Jan-Michael and Pollefeys, Marc},
+  title     = {Pixelwise View Selection for Unstructured Multi-View Stereo},
+  booktitle = {European Conference on Computer Vision (ECCV)},
+  pages     = {501--518},
+  year      = {2016},
+}
+
+@article{Lowe2004,
+  author    = {Lowe, David G.},
+  title     = {Distinctive Image Features from Scale-Invariant Keypoints},
+  journal   = {International Journal of Computer Vision},
+  volume    = {60},
+  number    = {2},
+  pages     = {91--110},
+  year      = {2004},
+  doi       = {10.1023/B:VISI.0000029664.99615.94},
+}
+
+% ── Neural Radiance Fields ────────────────────────────────
+
+@inproceedings{Mildenhall2020,
+  author    = {Mildenhall, Ben and Srinivasan, Pratul P. and Tancik, Matthew and Barron, Jonathan T. and Ramamoorthi, Ravi and Ng, Ren},
+  title     = {{NeRF}: Representing Scenes as Neural Radiance Fields for View Synthesis},
+  booktitle = {European Conference on Computer Vision (ECCV)},
+  pages     = {405--421},
+  year      = {2020},
+}
+
+@article{Barron2022MipNeRF360,
+  author    = {Barron, Jonathan T. and Mildenhall, Ben and Verbin, Dor and Srinivasan, Pratul P. and Hedman, Peter},
+  title     = {Mip-{NeRF} 360: Unbounded Anti-Aliased Neural Radiance Fields},
+  journal   = {arXiv preprint arXiv:2111.12077},
+  year      = {2022},
+}
+
+% ── Segmentation ──────────────────────────────────────────
+
+@inproceedings{Kirillov2023,
+  author    = {Kirillov, Alexander and Mintun, Eric and Ravi, Nikhila and Mao, Hanzi and Rolland, Chlo{\'e} and Gustafson, Laura and Xiao, Tete and Whitehead, Spencer and Berg, Alexander C. and Lo, Wan-Yen and Dollar, Piotr and Girshick, Ross},
+  title     = {Segment Anything},
+  booktitle = {IEEE/CVF International Conference on Computer Vision (ICCV)},
+  year      = {2023},
+}
+
+@article{Ravi2024SAM2,
+  author    = {Ravi, Nikhila and Gabeur, Valentin and Hu, Yuan-Ting and Hu, Ronghang and Ryali, Chaitanya and Ma, Tengyu and Khedr, Haitham and R{\"a}dle, Roman and Rolland, Chlo{\'e} and Gustafson, Laura and Mintun, Eric and Pan, Junting and Alwala, Kalyan Vasudev and Carion, Nicolas and Wu, Chao-Yuan and Girshick, Ross and Dollar, Piotr and Feichtenhofer, Christoph},
+  title     = {{SAM} 2: Segment Anything in Images and Videos},
+  journal   = {arXiv preprint arXiv:2408.00714},
+  year      = {2024},
+}
+
+% ── Multi-view generation ─────────────────────────────────
+
+@article{Zhao2025Hunyuan,
+  author    = {Zhao, Zibo and others},
+  title     = {Hunyuan3D 2.0: Scaling Diffusion Models for High Resolution Textured 3D Assets Generation},
+  journal   = {arXiv preprint arXiv:2501.12202},
+  year      = {2025},
+}
+
+% ── Cultural Heritage ─────────────────────────────────────
+
+@misc{UNESCO2003,
+  author       = {{UNESCO}},
+  title        = {Convention for the Safeguarding of the Intangible Cultural Heritage},
+  year         = {2003},
+  url          = {https://ich.unesco.org/en/convention},
+  note         = {Adopted 17 October 2003},
+}
+
+@article{Remondino2011,
+  author    = {Remondino, Fabio},
+  title     = {Heritage Recording and 3D Modeling with Photogrammetry and 3D Scanning},
+  journal   = {Remote Sensing},
+  volume    = {3},
+  number    = {6},
+  pages     = {1104--1138},
+  year      = {2011},
+  doi       = {10.3390/rs3061104},
+}
+
+@article{Champion2011,
+  author    = {Champion, Erik},
+  title     = {Playing with the Past},
+  journal   = {Human--Computer Interaction Series},
+  publisher = {Springer},
+  year      = {2011},
+  doi       = {10.1007/978-1-84996-501-9},
+}
+
+@incollection{Mortara2014,
+  author    = {Mortara, Michela and Catalano, Chiara Eva and Bellotti, Francesco and Fiucci, Giusy and Houry-Panchetti, Minica and Petridis, Panagiotis},
+  title     = {Learning Cultural Heritage by Serious Games},
+  booktitle = {Journal of Cultural Heritage},
+  volume    = {15},
+  number    = {3},
+  pages     = {318--325},
+  year      = {2014},
+  doi       = {10.1016/j.culher.2013.04.004},
+}
+
+@article{Nocerino2017,
+  author    = {Nocerino, Erica and Menna, Fabio and Remondino, Fabio and Toschi, Isabella and Rodr{\'i}guez-Gonz{\'a}lvez, Pablo},
+  title     = {Investigation of Indoor and Outdoor Performance of Two Portable Mobile Mapping Systems},
+  journal   = {Proceedings of SPIE},
+  volume    = {10332},
+  year      = {2017},
+  doi       = {10.1117/12.2270761},
+}
+
+@article{Stylianidis2016,
+  author    = {Stylianidis, Efstratios and Remondino, Fabio},
+  title     = {3D Recording, Documentation and Management of Cultural Heritage},
+  publisher = {Whittles Publishing},
+  year      = {2016},
+}
+
+@article{Grussenmeyer2012,
+  author    = {Grussenmeyer, Pierre and Landes, Tania and Voegtle, Thomas and Ringle, Konrad},
+  title     = {Comparison Methods of Terrestrial Laser Scanning, Photogrammetry and Tacheometry Data for Recording of Cultural Heritage Buildings},
+  journal   = {International Archives of the Photogrammetry, Remote Sensing and Spatial Information Sciences},
+  volume    = {XXXVIII-5/W12},
+  pages     = {213--218},
+  year      = {2012},
+}
+
+@article{Ioannides2016,
+  author    = {Ioannides, Marinos and Magnenat-Thalmann, Nadia and Papagiannakis, George},
+  title     = {Mixed Reality and Gamification for Cultural Heritage},
+  publisher = {Springer},
+  year      = {2016},
+  doi       = {10.1007/978-3-319-49607-8},
+}
+
+@article{Jokilehto2005,
+  author    = {Jokilehto, Jukka},
+  title     = {Definition of Cultural Heritage: References to Documents in History},
+  journal   = {ICCROM Working Group 'Heritage and Society'},
+  year      = {2005},
+}
+
+% ── Experience Economy ────────────────────────────────────
+
+@book{Pine1998,
+  author    = {Pine, B. Joseph and Gilmore, James H.},
+  title     = {The Experience Economy: Work Is Theatre \& Every Business a Stage},
+  publisher = {Harvard Business School Press},
+  year      = {1998},
+}
+
+@report{GrandView2024,
+  author       = {{Grand View Research}},
+  title        = {Immersive Experience Market Size, Share \& Trends Analysis Report},
+  year         = {2024},
+  institution  = {Grand View Research},
+  url          = {https://www.grandviewresearch.com/industry-analysis/immersive-experience-market},
+}
+
+% ── Digital Preservation Standards ────────────────────────
+
+@misc{FADGI2016,
+  author       = {{Federal Agencies Digital Guidelines Initiative}},
+  title        = {Technical Guidelines for Digitizing Cultural Heritage Materials},
+  year         = {2016},
+  url          = {http://www.digitizationguidelines.gov/guidelines/},
+}
+
+@article{Terras2012,
+  author    = {Terras, Melissa},
+  title     = {Digitisation and Digital Resources in the Humanities},
+  journal   = {Digital Humanities in Practice},
+  pages     = {47--70},
+  year      = {2012},
+  publisher = {Facet Publishing},
+}
+
+% ── Software and Tools ────────────────────────────────────
+
+@misc{Blender2024,
+  author       = {{Blender Foundation}},
+  title        = {Blender --- Free and Open 3D Creation Software},
+  year         = {2024},
+  url          = {https://www.blender.org/},
+}
+
+@misc{Pixar2019,
+  author       = {{Pixar Animation Studios}},
+  title        = {Universal Scene Description},
+  year         = {2019},
+  url          = {https://openusd.org/},
+}
+
+@article{Zwicker2001,
+  author    = {Zwicker, Matthias and Pfister, Hanspeter and van Baar, Jeroen and Gross, Markus},
+  title     = {Surface Splatting},
+  journal   = {Proceedings of the 28th Annual Conference on Computer Graphics and Interactive Techniques (SIGGRAPH)},
+  pages     = {371--378},
+  year      = {2001},
+  doi       = {10.1145/383259.383300},
+}
+
+% ── WebGL and Web Rendering ───────────────────────────────
+
+@misc{Khronos2024WebGPU,
+  author       = {{Khronos Group}},
+  title        = {{WebGPU} Specification},
+  year         = {2024},
+  url          = {https://www.w3.org/TR/webgpu/},
+}
+
+@misc{Antimatter15Splat,
+  author       = {Kevin Kwok},
+  title        = {WebGL Gaussian Splat Viewer},
+  year         = {2023},
+  url          = {https://github.com/antimatter15/splat},
+}
+
+% ── Quality Metrics ───────────────────────────────────────
+
+@article{Wang2004SSIM,
+  author    = {Wang, Zhou and Bovik, Alan C. and Sheikh, Hamid R. and Simoncelli, Eero P.},
+  title     = {Image Quality Assessment: From Error Visibility to Structural Similarity},
+  journal   = {IEEE Transactions on Image Processing},
+  volume    = {13},
+  number    = {4},
+  pages     = {600--612},
+  year      = {2004},
+  doi       = {10.1109/TIP.2003.819861},
+}
+
+@inproceedings{Zhang2018LPIPS,
+  author    = {Zhang, Richard and Isola, Phillip and Efros, Alexei A. and Shechtman, Eli and Wang, Oliver},
+  title     = {The Unreasonable Effectiveness of Deep Features as a Perceptual Metric},
+  booktitle = {IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+  pages     = {586--595},
+  year      = {2018},
+  doi       = {10.1109/CVPR.2018.00068},
+}

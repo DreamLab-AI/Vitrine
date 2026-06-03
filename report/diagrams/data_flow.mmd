@@ -1,0 +1,48 @@
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#2A7B88', 'primaryTextColor': '#fff', 'primaryBorderColor': '#1B2A4A', 'lineColor': '#5C6B7A'}}}%%
+flowchart TD
+    subgraph Sources["Data Sources"]
+        V[Video Files<br/>MP4 / MOV]
+        P[Photographs<br/>JPG / RAW]
+        D[Drone Footage<br/>4K Video]
+    end
+
+    subgraph Processing["Processing Layer"]
+        FF[FFmpeg<br/>Frame Extraction]
+        CO[COLMAP<br/>SfM + MVS]
+        GS[3D Gaussian<br/>Splatting]
+        ME[Mesh Extraction<br/>TSDF / SuGaR / MILo]
+    end
+
+    subgraph Storage["Shared Storage"]
+        S1[/data/frames/]
+        S2[/data/colmap/]
+        S3[/models/gaussians/]
+        S4[/models/meshes/]
+        S5[/outputs/]
+    end
+
+    subgraph Outputs["Deliverables"]
+        USD[USD Scene]
+        GLB[GLB Mesh]
+        PLY[Gaussian PLY]
+        WEB[Web Viewer<br/>Viser / Three.js]
+    end
+
+    V --> FF
+    P --> FF
+    D --> FF
+    FF --> S1 --> CO
+    CO --> S2 --> GS
+    GS --> S3 --> ME
+    ME --> S4
+
+    S3 --> PLY
+    S4 --> USD
+    S4 --> GLB
+    S3 --> WEB
+    S4 --> WEB
+
+    style Sources fill:#3B82F6,color:#fff
+    style Processing fill:#2A7B88,color:#fff
+    style Storage fill:#D4A843,color:#1B2A4A
+    style Outputs fill:#E07A5F,color:#fff

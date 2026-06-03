@@ -1,0 +1,331 @@
+\chapter{Module 2: Processing Pipeline}
+\label{ch:module-processing}
+
+\begin{tcolorbox}[
+  enhanced,
+  colback=LightGrey,
+  colframe=MidGrey,
+  fonttitle=\bfseries\sffamily,
+  title={Module Information},
+  sharp corners=south,
+  boxrule=0.6pt
+]
+\begin{description}[font=\sffamily\bfseries, leftmargin=4cm, style=sameline]
+  \item[Prerequisites] Module~1 (Chapter~\ref{ch:module-capture}); basic comfort with command-line interfaces
+  \item[Duration] 4--6 hours (including processing wait time)
+  \item[Hardware] Computer with NVIDIA GPU (8\,GB+ VRAM), or access to a cloud GPU instance
+  \item[Software] Docker Desktop, web browser, terminal emulator
+  \item[Budget tier] Free (with institutional GPU) or Standard (\pounds 1--3/hour cloud GPU)
+\end{description}
+\end{tcolorbox}
+
+\medskip
+
+\noindent\textbf{Learning Objectives.} Upon completing this module, participants will be able to:
+\begin{enumerate}
+  \item Install Docker and the \texttt{gaussian-toolkit} on a local workstation or cloud GPU instance.
+  \item Upload captured video to the pipeline's web interface and initiate processing.
+  \item Monitor pipeline progress through each stage (\acrshort{colmap}, training, optional mesh extraction).
+  \item Interpret the key quality indicators in the pipeline output.
+  \item Identify and resolve the five most common processing failures.
+  \item Access and navigate the reconstructed scene in the built-in browser viewer.
+\end{enumerate}
+
+\section{Installing Docker and the Gaussian Toolkit}
+\label{sec:proc-install}
+
+The \texttt{gaussian-toolkit} is distributed as a set of Docker containers, as described in Chapter~\ref{ch:pipeline}. This eliminates the need to install CUDA, Python, \acrshort{colmap}, or any of the other GPU-accelerated dependencies manually---a process that, in our experience, takes even experienced developers 4--8 hours and is the single most common point of abandonment for new users of 3D reconstruction tools.
+
+\subsection{Prerequisites}
+
+Before beginning installation, verify that your system meets the following requirements:
+
+\begin{itemize}
+  \item \textbf{Operating system:} Linux (Ubuntu 20.04+), Windows 10/11 with WSL2, or macOS (CPU-only, significantly slower).
+  \item \textbf{GPU:} NVIDIA GPU with 8\,GB+ VRAM and CUDA compute capability 7.0 or higher. The RTX 3060 (12\,GB) is the minimum recommended for practical use; the RTX 3080/4070 (16\,GB) or above is recommended for comfortable operation.
+  \item \textbf{Disk space:} At least 50\,GB free for Docker images and working data.
+  \item \textbf{RAM:} 16\,GB minimum, 32\,GB recommended.
+  \item \textbf{Docker:} Docker Desktop (Windows/macOS) or Docker Engine (Linux), version 24.0 or later.
+  \item \textbf{NVIDIA Container Toolkit:} Required on Linux; included in Docker Desktop for Windows with WSL2.
+\end{itemize}
+
+\subsection{Installation Steps}
+
+\begin{lstlisting}[language=bash, caption={Installing the \texttt{gaussian-toolkit}.}, label={lst:install}]
+# 1. Clone the repository
+git clone https://github.com/DreamLab-AI/Video-to-Gaussian.git
+cd gaussian-toolkit
+
+# 2. Pull the pre-built Docker images (approximately 30 GB)
+docker compose pull
+
+# 3. Start the services
+docker compose up -d
+
+# 4. Verify all services are running
+docker compose ps
+
+# 5. Open the web interface
+# Navigate to http://localhost:8080 in your browser
+\end{lstlisting}
+
+\begin{technote}
+The initial \texttt{docker compose pull} downloads approximately 30\,GB of container images. On a typical university network connection (100\,Mbps), this takes 30--45 minutes. Subsequent starts are near-instant as images are cached locally. For workshop delivery, pre-pulling images on all participant machines before the session begins is strongly recommended.
+\end{technote}
+
+\subsection{Cloud GPU Alternative}
+
+For participants without local GPU access, cloud GPU instances provide an accessible alternative. The following providers have been tested with the \texttt{gaussian-toolkit}:
+
+\begin{table}[htbp]
+  \centering
+  \caption{Cloud GPU options for \texttt{gaussian-toolkit} processing.}
+  \label{tab:cloud-gpu}
+  \begin{tabular}{@{}L{2.5cm}L{3cm}L{2.5cm}L{2cm}L{2.5cm}@{}}
+    \toprule
+    \textbf{Provider} & \textbf{GPU} & \textbf{VRAM} & \textbf{Cost/hr} & \textbf{Notes} \\
+    \midrule
+    RunPod       & RTX 4090     & 24\,GB & \$0.44 & Docker-native \\
+    Vast.ai      & RTX 3090     & 24\,GB & \$0.25 & Variable pricing \\
+    Lambda Labs  & A10G         & 24\,GB & \$0.60 & Persistent instances \\
+    Google Colab & T4 (free) / A100 (Pro) & 16/40\,GB & \$0--12/mo & Notebook interface \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+For cloud deployment, the \texttt{gaussian-toolkit} provides a one-command setup script:
+
+\begin{lstlisting}[language=bash, caption={Cloud instance quick setup.}, label={lst:cloud-setup}]
+# On a fresh cloud GPU instance (Ubuntu + NVIDIA drivers)
+curl -fsSL https://get.docker.com | sh
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker
+git clone https://github.com/DreamLab-AI/Video-to-Gaussian.git
+cd gaussian-toolkit && docker compose up -d
+\end{lstlisting}
+
+\section{Uploading Video to the Web Interface}
+\label{sec:proc-upload}
+
+The \texttt{gaussian-toolkit} web interface provides a drag-and-drop upload mechanism accessible at \texttt{http://localhost:8080} (local) or the cloud instance's public IP address.
+
+\subsection{Upload Process}
+
+\begin{enumerate}
+  \item Open the web interface in a browser (Chrome or Firefox recommended).
+  \item Click \textbf{New Project} and enter a descriptive project name (e.g., ``North Gallery 2026-04-01'').
+  \item Drag the captured video file onto the upload area, or click to browse. Supported formats: MP4 (H.264/H.265), MOV, AVI.
+  \item Select the processing configuration:
+    \begin{description}
+      \item[Quick] 7,000 training iterations, \acrshort{colmap} exhaustive matching. Fastest results (20--40 minutes for a 3-minute video on RTX 4090), lower fidelity.
+      \item[Standard] 30,000 iterations, \acrshort{colmap} sequential matching. Recommended for most captures (1--2 hours).
+      \item[Archival] 50,000 iterations, \acrshort{colmap} exhaustive matching, all three training variants (\acrshort{3dgs}, \acrshort{mrnf}, \acrshort{mcmc}). Highest fidelity, longest processing time (3--6 hours).
+    \end{description}
+  \item Optionally enable mesh extraction (TSDF and/or MILo) if mesh outputs are required.
+  \item Click \textbf{Start Processing}.
+\end{enumerate}
+
+\begin{recommendation}
+For training purposes, use the \textbf{Quick} configuration for initial runs. The reduced iteration count produces a visibly lower-fidelity result, but it completes in 20--40 minutes rather than 1--2 hours, allowing participants to iterate on capture technique within a single workshop session. Once the capture technique is validated, reprocess the same footage with the \textbf{Standard} or \textbf{Archival} configuration for the final preservation artefact.
+\end{recommendation}
+
+\section{Monitoring the Pipeline}
+\label{sec:proc-monitoring}
+
+The web interface provides real-time progress monitoring through a multi-stage status display. Understanding what each stage does, and what constitutes normal versus abnormal behaviour, is essential for troubleshooting.
+
+\subsection{Stage 1: Frame Extraction}
+
+The pipeline extracts frames from the uploaded video using FFmpeg. The interface displays:
+
+\begin{itemize}
+  \item \textbf{Total frames extracted.} A 3-minute 4K video at 30\,fps produces approximately 5,400 frames. The pipeline extracts at a configurable rate (default: every second frame, yielding approximately 2,700 frames for a 3-minute video).
+  \item \textbf{Frames rejected.} Blurred or near-duplicate frames are discarded by the Laplacian variance filter. A rejection rate above 20\% suggests the camera was moving too fast.
+  \item \textbf{Final frame count.} Typically 1,500--3,000 frames for a 3--5 minute capture.
+\end{itemize}
+
+\subsection{Stage 2: COLMAP Structure-from-Motion}
+\label{sec:proc-colmap}
+
+This is the most time-consuming and failure-prone stage. \acrshort{colmap} processes the extracted frames to determine camera positions and produce a sparse 3D point cloud (see Section~\ref{sec:tech-sfm}).
+
+The interface displays:
+
+\begin{itemize}
+  \item \textbf{Feature extraction progress.} Each frame is analysed for distinctive visual features (SIFT descriptors). This is parallelised across CPU cores and completes relatively quickly.
+  \item \textbf{Feature matching progress.} Frames are compared pairwise to identify shared features. This is the slowest sub-stage, growing quadratically with frame count for exhaustive matching and linearly for sequential matching.
+  \item \textbf{Registered images.} The number of frames successfully placed in 3D space. This is the single most important quality indicator.
+  \item \textbf{Registration rate.} Registered images divided by total frames. The target is $\geq 90\%$.
+  \item \textbf{Sparse points.} The number of 3D points in the reconstructed sparse cloud. Typical values range from 50,000 to 500,000 depending on scene complexity and capture thoroughness.
+\end{itemize}
+
+\begin{keyfinding}
+The \acrshort{colmap} registration rate is the earliest and most reliable predictor of final reconstruction quality. A rate below 80\% almost always produces a reconstruction with visible holes or distortion. A rate below 50\% typically indicates a fundamental capture problem (motion blur, insufficient overlap) and the footage should be recaptured rather than reprocessed.
+\end{keyfinding}
+
+\subsection{Stage 3: Gaussian Splat Training}
+
+Once \acrshort{colmap} completes, the Gaussian splat training begins. The interface displays:
+
+\begin{itemize}
+  \item \textbf{Current iteration} and progress bar (e.g., 15,000/30,000).
+  \item \textbf{Training loss.} The photometric error between the rendered Gaussians and the training images. This should decrease rapidly in the first few thousand iterations, then gradually plateau.
+  \item \textbf{Gaussian count.} The number of Gaussians in the scene, which increases through densification and decreases through pruning. Typical converged values range from 500,000 to 5,000,000 depending on scene complexity.
+  \item \textbf{Preview renders.} Every 1,000 iterations, the interface renders a preview from a fixed viewpoint, allowing participants to watch the reconstruction emerge in real time.
+\end{itemize}
+
+\subsection{Stage 4: Mesh Extraction (Optional)}
+
+If mesh extraction was enabled, one or both of the following processes run after training:
+
+\begin{description}
+  \item[TSDF fusion] Renders depth maps from the trained Gaussians at each camera position, then fuses them into a volumetric grid that is converted to a triangle mesh via marching cubes. Produces water-tight meshes but may lose fine detail.
+  \item[MILo] A learned mesh extraction method that directly converts the Gaussian representation to a triangle mesh using a neural network. Produces higher-detail meshes but requires the MILo sidecar container.
+\end{description}
+
+\section{Understanding the Output}
+\label{sec:proc-output}
+
+Upon completion, the pipeline produces the following output files, accessible through the web interface's download panel or directly from the Docker volume:
+
+\begin{table}[htbp]
+  \centering
+  \caption{Pipeline output files and their uses.}
+  \label{tab:output-files}
+  \begin{tabular}{@{}l l L{6cm}@{}}
+    \toprule
+    \textbf{File} & \textbf{Format} & \textbf{Use} \\
+    \midrule
+    \texttt{scene.ply}   & PLY (Gaussian) & The native Gaussian splat representation. Primary preservation artefact. Loadable in browser viewers and Gaussian-aware applications. \\
+    \texttt{scene.splat}  & SPLAT binary   & Compressed format for browser viewers (antimatter15/splat, gsplat.js). Faster loading, same visual quality. \\
+    \texttt{scene.glb}    & glTF Binary    & Triangle mesh (if mesh extraction enabled). Compatible with Blender, Unreal, Unity, and web-based 3D viewers (model-viewer). \\
+    \texttt{scene.usda}   & USD ASCII      & Universal Scene Description (if enabled). The preferred interchange format for production 3D workflows and long-term archival. \\
+    \texttt{cameras.json} & JSON           & Camera positions and intrinsics from \acrshort{colmap}. Useful for registering additional captures of the same space. \\
+    \texttt{metadata.json} & JSON          & The complete capture and processing metadata record (see Module~5, Chapter~\ref{ch:module-metadata}). \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{technote}
+The \texttt{.ply} file containing the Gaussian splat representation is typically 50--200\,MB for a standard scene. The \texttt{.splat} file is a sorted, compressed version at approximately 60\% of the PLY size. The \texttt{.glb} mesh file varies widely---from 10\,MB for a simplified mesh to 500\,MB+ for a high-detail extraction---and contains texture maps baked from the Gaussian representation.
+\end{technote}
+
+\section{Viewing Results in the Browser}
+\label{sec:proc-viewing}
+
+The pipeline's built-in browser viewer is accessible immediately upon completion at \texttt{http://localhost:8080/viewer/\{project-id\}}. The viewer supports:
+
+\begin{itemize}
+  \item \textbf{Orbit navigation.} Click and drag to rotate around the scene centre. Scroll to zoom.
+  \item \textbf{Fly-through navigation.} WASD keys for movement, mouse for look direction. This mode allows free exploration of the reconstructed space.
+  \item \textbf{Quality comparison.} Toggle between the Gaussian splat and mesh representations (if both were generated) to observe the quality difference first-hand.
+  \item \textbf{Gaussian count display.} Shows the number of Gaussians being rendered and the current frame rate. Useful for assessing whether the scene is within the viewer's comfortable rendering budget.
+\end{itemize}
+
+\section{Troubleshooting Common Issues}
+\label{sec:proc-troubleshoot}
+
+Table~\ref{tab:troubleshoot} documents the five most common processing issues encountered during the pilot project, their symptoms, likely causes, and remedies.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Common processing issues and remedies.}
+  \label{tab:troubleshoot}
+  \begin{tabular}{@{}L{2.5cm}L{3cm}L{3cm}L{4cm}@{}}
+    \toprule
+    \textbf{Symptom} & \textbf{Likely Cause} & \textbf{Evidence} & \textbf{Remedy} \\
+    \midrule
+    \acrshort{colmap} registration $< 50\%$
+      & Motion blur or insufficient frame overlap
+      & Blurred frames visible when reviewing extracted images
+      & Recapture at slower pace; increase frame extraction rate \\
+    \addlinespace
+    Large holes in reconstruction
+      & Area not captured from enough viewpoints
+      & Missing coverage visible in \acrshort{colmap} sparse point cloud
+      & Capture additional footage of the missing area and merge \\
+    \addlinespace
+    Floating blobs (``floaters'')
+      & Moving objects in scene or strong reflections
+      & Floaters correspond to locations of people, screens, or mirrors
+      & Recapture without moving elements; use SAM3 cleanup (Module~4) \\
+    \addlinespace
+    Out of GPU memory
+      & Too many frames or excessively high resolution
+      & CUDA out-of-memory error in training logs
+      & Reduce frame extraction rate; downsample to 2K; use GPU with more VRAM \\
+    \addlinespace
+    Pipeline hangs at ``Feature matching''
+      & Exhaustive matching on too many frames
+      & Matching progress stalls at high frame counts ($>$3,000)
+      & Switch to sequential matching mode; reduce frame count \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{Practical Exercise: Process Your Captured Video}
+\label{sec:proc-exercise}
+
+\begin{tcolorbox}[
+  enhanced,
+  colback=SuccessGreen!8,
+  colframe=SuccessGreen,
+  fonttitle=\bfseries\sffamily,
+  title={Exercise 2.1: Pipeline Processing},
+  sharp corners=south,
+  boxrule=0.6pt
+]
+\textbf{Objective:} Process the video captured in Exercise~1.1 (Section~\ref{sec:cap-exercise}) through the full \texttt{gaussian-toolkit} pipeline.
+
+\textbf{Time:} 30 minutes setup + 20--40 minutes processing (Quick mode) or 1--2 hours (Standard mode)
+
+\textbf{Equipment:} Computer with Docker and \texttt{gaussian-toolkit} installed (per Section~\ref{sec:proc-install}), or cloud GPU instance
+
+\textbf{Steps:}
+\begin{enumerate}
+  \item Upload your captured video to the web interface and select \textbf{Quick} configuration.
+  \item While processing runs, record the following metrics as they appear:
+    \begin{itemize}
+      \item Total frames extracted: \rule{3cm}{0.4pt}
+      \item Frames rejected (blur): \rule{3cm}{0.4pt}
+      \item \acrshort{colmap} registration rate: \rule{3cm}{0.4pt}
+      \item Sparse points: \rule{3cm}{0.4pt}
+      \item Final Gaussian count: \rule{3cm}{0.4pt}
+    \end{itemize}
+  \item When processing completes, open the browser viewer and navigate through your reconstruction.
+  \item Identify and note any quality issues: holes, floaters, distortion, missing areas.
+  \item Correlate any quality issues with your capture technique: can you identify what you would do differently?
+  \item If your registration rate was below 80\%, recapture and reprocess.
+\end{enumerate}
+
+\textbf{Expected outcome:} A viewable Gaussian splat reconstruction of the room captured in Exercise~1.1, accompanied by an understanding of how capture decisions map to reconstruction quality. Participants should be able to articulate at least one specific improvement they would make to their capture technique.
+\end{tcolorbox}
+
+\begin{tcolorbox}[
+  enhanced,
+  colback=SuccessGreen!8,
+  colframe=SuccessGreen,
+  fonttitle=\bfseries\sffamily,
+  title={Exercise 2.2: Quality Comparison},
+  sharp corners=south,
+  boxrule=0.6pt
+]
+\textbf{Objective:} Compare Quick and Standard processing of the same footage to understand the quality--time trade-off.
+
+\textbf{Time:} 1--2 hours (processing time for Standard configuration)
+
+\textbf{Steps:}
+\begin{enumerate}
+  \item Reprocess the same video using the \textbf{Standard} configuration (30,000 iterations).
+  \item Open both results in the browser viewer (two tabs) and compare:
+    \begin{itemize}
+      \item Fine detail (text on labels, surface textures)
+      \item Edge sharpness (transitions between objects)
+      \item Floaters and artefacts
+      \item Overall colour fidelity
+    \end{itemize}
+  \item Record your observations: is the quality difference worth the additional processing time for this particular scene?
+\end{enumerate}
+
+\textbf{Expected outcome:} Participants should observe noticeably finer detail and fewer artefacts in the Standard output, and be able to make an informed decision about which configuration to use for different capture scenarios.
+\end{tcolorbox}

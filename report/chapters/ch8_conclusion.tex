@@ -1,0 +1,76 @@
+\chapter{Conclusion}
+\label{ch:conclusion}
+
+\section{Summary of Findings}
+\label{sec:conc-summary}
+
+This pilot project has investigated the application of AI-driven 3D reconstruction workflows---specifically 3D Gaussian Splatting---to the preservation of immersive and intangible cultural heritage. Through the development and evaluation of the \texttt{gaussian-toolkit} pipeline, we have established several findings of practical significance:
+
+\begin{enumerate}
+  \item \textbf{3D Gaussian Splatting is viable for cultural heritage preservation.} The technology produces high-quality, photorealistic 3D representations from standard video input, with processing times measured in hours rather than days and hardware requirements within the reach of institutional IT budgets.
+
+  \item \textbf{Gaussian splat representations outperform mesh extractions} for visual fidelity in the complex, reflective, and detailed environments characteristic of gallery and museum spaces. Mesh extraction introduces substantial quality degradation that is immediately perceptible.
+
+  \item \textbf{Browser-based splat viewers enable direct audience access} without specialised software or hardware, making volumetric cultural heritage content as accessible as a web page.
+
+  \item \textbf{Capture methodology is the dominant quality factor.} The quality of the source video---camera stability, coverage completeness, lighting consistency---has a far greater impact on reconstruction quality than the choice of training algorithm or parameter settings.
+
+  \item \textbf{Containerised, AI-orchestrated pipelines reduce the expertise barrier} for cultural heritage practitioners, encoding specialist knowledge into automated workflows that can be operated by non-specialists.
+
+  \item \textbf{The splat-as-artefact paradigm} offers a fundamentally different preservation philosophy: rather than converting captures into traditional 3D meshes (with attendant quality loss), the volumetric representation itself becomes the preservation target, retaining maximum scene information for future access and re-processing.
+\end{enumerate}
+
+\section{Value Proposition for the University of Salford}
+\label{sec:conc-value}
+
+The findings of this pilot project position the University of Salford to lead in an emerging area of cultural heritage practice. The value proposition operates at multiple levels:
+
+\begin{description}
+  \item[Institutional capability.] The \texttt{gaussian-toolkit} provides the University with an operational capability for volumetric capture and preservation of its own cultural heritage activities---exhibitions, performances, installations, and events across its facilities.
+
+  \item[Knowledge exchange.] The pipeline and methodology developed in this project constitute transferable knowledge assets that can be shared with partner institutions, cultural organisations, and creative industry practitioners through the AI \acrshort{ke} \acrshort{cop} framework.
+
+  \item[Research positioning.] The intersection of AI, 3D reconstruction, and cultural heritage is a rapidly growing research area with strong funding prospects. This pilot provides the preliminary data and demonstrated capability required for competitive research proposals.
+
+  \item[Student and staff development.] The technologies and workflows developed here provide authentic, industry-relevant learning opportunities for students and staff in creative technologies, digital media, computer science, and cultural studies.
+
+  \item[External engagement.] Browser-based access to preserved cultural heritage content creates opportunities for public engagement, educational outreach, and international collaboration that extend the University's impact beyond its physical campus.
+\end{description}
+
+\section{Next Steps and Timeline}
+\label{sec:conc-next}
+
+We propose the following concrete next steps, organised into three phases:
+
+\subsection{Phase 1: Foundation (Q2--Q3 2026)}
+
+\begin{itemize}
+  \item Deploy the \texttt{gaussian-toolkit} on University of Salford infrastructure (local GPU server or managed cloud instance).
+  \item Conduct capture methodology training for 5--10 cultural heritage practitioners within the University's partner network.
+  \item Perform 3--5 additional test captures across diverse cultural heritage scenarios (different venue types, lighting conditions, artwork categories) to validate the pipeline's generalisability.
+  \item Integrate the splat viewer with the University's digital collection management system as a proof-of-concept.
+  \item Prepare a capture methodology quick-reference guide for distribution.
+\end{itemize}
+
+\subsection{Phase 2: Institutional Rollout (Q4 2026 -- Q2 2027)}
+
+\begin{itemize}
+  \item Establish a cultural heritage capture service, available to University departments and partner institutions, with documented workflows and quality assurance processes.
+  \item Evaluate and integrate emerging mesh extraction methods (CoMe) and object segmentation (SAM3) as they become available.
+  \item Develop a public-facing web portal for browsing and exploring preserved cultural heritage content.
+  \item Initiate consortium development for EU Horizon Europe funding.
+\end{itemize}
+
+\subsection{Phase 3: Scaling and Sustainability (Q3 2027 onwards)}
+
+\begin{itemize}
+  \item Submit Horizon Europe proposal with consortium partners.
+  \item Deploy cloud-based processing infrastructure for multi-venue, multi-institution throughput.
+  \item Establish data governance framework for long-term preservation of Gaussian splat archives.
+  \item Develop VR/immersive viewing experiences using Unreal Engine for select high-profile collections.
+  \item Publish research findings and contribute to emerging standards for volumetric cultural heritage data.
+\end{itemize}
+
+\bigskip
+
+The pilot project documented in this report demonstrates that the technological foundations are sound, the workflow is practical, and the results are compelling. The path from pilot to institutional capability to international collaboration is clear. The University of Salford has an opportunity to establish itself at the forefront of AI-driven cultural heritage preservation---a field whose importance will only grow as the cultural sector's investment in immersive and experiential content continues to accelerate.

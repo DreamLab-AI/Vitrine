@@ -129,6 +129,22 @@ Minimum: single GPU with 12 GB VRAM (TSDF only; MILo, CoMe, and GaussianWrapping
 
 This is a fork of LichtFeld Studio. Upstream code (`src/core/`, `src/app/`, `src/mcp/`, `src/rendering/`, `src/training/`) is not modified. All pipeline additions live in `src/pipeline/`, `src/web/`, `docker/`, and `scripts/`. See [BOUNDARIES.md](BOUNDARIES.md) for the full separation policy.
 
+## Current Status
+
+The pipeline runs end-to-end: video upload through COLMAP, 3DGS training, mesh extraction (TSDF or MILo), Blender assembly, to a 3D web viewer. MILo produces 736K vertex meshes with learned SDF extraction.
+
+**Key finding**: Source video quality is the primary quality bottleneck. YouTube-compressed video of featureless/reflective scenes produces broken gaussian training regardless of mesh extraction method. See [docs/capture-methodology.md](docs/capture-methodology.md) for filming guidelines that produce good reconstructions.
+
+| What works | What needs improvement |
+|------------|----------------------|
+| COLMAP SfM (100% registration) | Source video quality (YouTube too lossy) |
+| MILo mesh extraction (736K verts) | Gaussian training on reflective/featureless scenes |
+| Web 3D viewer + preview carousel | SAM3 per-object segmentation (dtype fix needed) |
+| Blender Cycles texture bake (0.5s) | Per-object Hunyuan MV pipeline (not yet wired) |
+| Docker two-container deployment | Automated MILo dispatch from web UI |
+
+See [docs/engineering-log.md](docs/engineering-log.md) for the full development history.
+
 ## License
 
 Upstream LichtFeld Studio: GPL-3.0. Pipeline additions: GPL-3.0 (derivative work).

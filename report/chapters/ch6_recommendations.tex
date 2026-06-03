@@ -1,0 +1,118 @@
+\chapter{Recommendations}
+\label{ch:recommendations}
+
+This chapter presents the project's recommendations, derived from the experimental findings documented in Chapter~\ref{ch:results} and informed by the broader technological and institutional context established in Chapters~\ref{ch:background}--\ref{ch:pipeline}. Recommendations are ordered by priority, with the primary recommendation presented first.
+
+\section{Primary Recommendation: Record as Gaussian Splats, Skip Meshing}
+\label{sec:rec-primary}
+
+\begin{recommendation}[title={Primary Recommendation}]
+Gaussian splat representations should be treated as \textbf{first-class preservation artefacts} in their own right. For the majority of cultural heritage preservation scenarios, the splat-to-mesh conversion step should be omitted entirely, with browser-based splat viewers serving as the primary delivery mechanism.
+\end{recommendation}
+
+The experimental results demonstrate unambiguously that mesh extraction degrades visual quality relative to the native splat representation. This degradation is not marginal---it is substantial and immediately perceptible, particularly in the complex, reflective, and fine-detailed environments characteristic of gallery and museum spaces. Mesh extraction also adds significant processing time, computational cost, and failure modes to the pipeline.
+
+The rationale for mesh extraction has traditionally rested on two pillars: first, that downstream applications (games engines, 3D printing, simulation) require explicit surface geometry; and second, that no viable pathway existed for delivering splat representations directly to audiences. Both pillars have weakened significantly:
+
+\begin{enumerate}
+  \item Modern games engines (Unreal Engine 5.4+, Unity 6+) now support direct Gaussian splat import and rendering through plugins, eliminating the need for mesh conversion in the most common high-fidelity delivery pipeline.
+
+  \item Browser-based \acrshort{webgl}/WebGPU splat viewers have matured to the point where real-time, interactive viewing of multi-million-Gaussian scenes is possible on consumer hardware through standard web browsers, eliminating the need for specialised applications.
+\end{enumerate}
+
+Adopting splat-as-artefact confers several advantages:
+
+\begin{itemize}
+  \item \textbf{Higher visual fidelity.} The splat representation preserves view-dependent effects, fine geometric detail, and semi-transparent surfaces that are lost in mesh conversion.
+  \item \textbf{Reduced processing cost.} Eliminating mesh extraction reduces total pipeline processing time by 40--60\% and removes a significant source of failure modes.
+  \item \textbf{Smaller expertise requirement.} Mesh extraction and repair is a skilled task requiring 3D modelling expertise; splat viewing requires none.
+  \item \textbf{Future-proofing.} The splat representation retains all captured scene information, from which future mesh extraction methods (as they improve) can operate. The reverse is not true---once information is lost in mesh conversion, it cannot be recovered.
+\end{itemize}
+
+\section{Browser-Based Splat Viewers for Accessibility}
+\label{sec:rec-browser}
+
+\begin{recommendation}
+The University of Salford should adopt browser-based Gaussian splat viewing as its primary delivery mechanism for digitised cultural heritage content, embedded within existing digital collection management interfaces.
+\end{recommendation}
+
+Browser-based delivery maximises accessibility: no application installation, no hardware requirements beyond a standard web browser, and no technical expertise required of the audience. The viewer can be embedded as an iframe within existing collection management systems, providing a seamless integration with catalogue records, provenance information, and curatorial commentary.
+
+We recommend evaluation of the following viewer frameworks:
+
+\begin{table}[htbp]
+  \centering
+  \caption{Browser-based splat viewer comparison.}
+  \label{tab:viewer-comparison}
+  \begin{tabular}{@{}L{3cm}L{2.5cm}L{2.5cm}L{2.5cm}L{2.5cm}@{}}
+    \toprule
+    \textbf{Feature} & \textbf{gsplat.js} & \textbf{Luma WebGL} & \textbf{Antimatter15} & \textbf{gaussian-toolkit} \\
+    \midrule
+    Max Gaussians    & 10M+   & 5M     & 3M    & 5M \\
+    WebGPU support   & Yes    & Yes    & No    & Planned \\
+    Mobile support   & Partial & Good  & Good  & Partial \\
+    Self-hostable    & Yes    & No     & Yes   & Yes \\
+    Licence          & MIT    & Proprietary & MIT & MIT \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+For institutional deployment, we recommend a self-hosted solution (gsplat.js or the \texttt{gaussian-toolkit} viewer) to maintain control over data, avoid vendor dependency, and comply with institutional data governance requirements.
+
+\section{Unreal Engine Integration for Immersive Viewing}
+\label{sec:rec-unreal}
+
+\begin{recommendation}
+For high-fidelity immersive experiences---particularly those targeting VR headsets or large-format display installations---Unreal Engine with native Gaussian splat support should be adopted as the rendering platform.
+\end{recommendation}
+
+While browser-based viewing serves the majority of access scenarios, certain presentation contexts demand higher fidelity and richer interaction than current web technologies can deliver. VR headset experiences, large-format projection installations, and interactive exhibit kiosks benefit from the advanced rendering capabilities, spatial audio integration, and input device support that Unreal Engine provides.
+
+The key enabling development is the availability of Unreal Engine plugins that render Gaussian splats natively, without mesh conversion. This preserves the full visual quality of the splat representation while gaining access to Unreal's comprehensive feature set.
+
+\section{Per-Object Segmentation for Interactive Experiences}
+\label{sec:rec-segmentation}
+
+\begin{recommendation}
+Future capture workflows should incorporate 3D-consistent object segmentation (SAM3 or equivalent) to decompose complex scenes into individually addressable components, enabling interactive exploration and object-level metadata association.
+\end{recommendation}
+
+A preserved cultural heritage scene is most valuable when audiences can interact with it beyond simple navigation. The ability to select an individual artwork, read its catalogue information, view it from multiple angles, or compare it with related works transforms the preservation from a passive record into an active research and engagement tool.
+
+3D-consistent object segmentation provides the foundation for this interactivity by decomposing the scene reconstruction into semantically meaningful components. Each segmented object can be:
+
+\begin{itemize}
+  \item Associated with catalogue metadata (artist, date, medium, provenance).
+  \item Rendered independently or highlighted within the scene context.
+  \item Exported individually for detailed study or re-use.
+  \item Linked to related objects across other preserved scenes or collections.
+\end{itemize}
+
+\section{Capture Methodology for Cultural Heritage Sites}
+\label{sec:rec-capture}
+
+\begin{recommendation}
+The University of Salford should develop and disseminate a capture methodology guide for cultural heritage practitioners, specifying equipment requirements, camera movement protocols, lighting considerations, and quality assurance checks.
+\end{recommendation}
+
+As established in Section~\ref{sec:res-video-quality}, the dominant quality bottleneck in the pipeline is the source capture quality. Algorithmic improvements cannot compensate for inadequate input data. A modest investment in capture methodology---training practitioners in slow, systematic camera movement with consistent lighting---will yield greater quality improvements than any software enhancement.
+
+Key capture guidelines include:
+
+\begin{enumerate}
+  \item \textbf{Camera movement.} Slow, steady movement at walking pace or slower. Avoid rapid panning or tilting. Use a gimbal or stabiliser where possible.
+
+  \item \textbf{Coverage.} Ensure every surface of interest is visible from at least 3--5 viewpoints with substantial overlap. Pay particular attention to corners, ceilings, and areas behind objects.
+
+  \item \textbf{Lighting.} Consistent illumination throughout the capture. Disable auto-exposure if possible; otherwise, pre-expose to the dominant illumination level and lock exposure.
+
+  \item \textbf{Resolution.} 4K video at 30 FPS is sufficient for most scenarios. Higher resolutions yield diminishing returns for \acrshort{sfm} matching but increase processing time significantly.
+
+  \item \textbf{Reflective surfaces.} Minimise glass reflections where possible (adjust lighting angles, use anti-reflective treatments). Document the presence and nature of reflective surfaces for post-processing guidance.
+
+  \item \textbf{Scale reference.} Include a known-dimension reference object (calibration board, measured target) in at least one capture to enable metric scale recovery.
+\end{enumerate}
+
+\begin{technote}
+A one-page capture methodology quick-reference card suitable for lamination and distribution to cultural heritage practitioners is provided in Appendix~\ref{app:capture-card}.
+\end{technote}

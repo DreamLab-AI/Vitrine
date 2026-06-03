@@ -1,0 +1,48 @@
+\chapter{Background}
+\label{ch:background}
+
+\section{Intangible Cultural Heritage and the UNESCO Convention}
+\label{sec:bg-ich}
+
+The concept of intangible cultural heritage (\acrshort{ich}) was formally codified in the UNESCO Convention for the Safeguarding of the Intangible Cultural Heritage, adopted in 2003 \parencite{UNESCO2003}. The Convention defines \acrshort{ich} as ``the practices, representations, expressions, knowledge, skills---as well as the instruments, objects, artefacts and cultural spaces associated therewith---that communities, groups and, in some cases, individuals recognise as part of their cultural heritage.''
+
+While the Convention was principally concerned with traditional practices---oral traditions, performing arts, rituals, festivals, and traditional craftsmanship---the underlying principle extends naturally to contemporary cultural production that shares these qualities of ephemerality, performativity, and embodied experience. Immersive art installations, interactive digital works, and site-specific performances are, in this sense, the intangible cultural heritage of the present: their cultural value resides not in physical objects that can be collected and stored, but in experiences that unfold in space and time.
+
+The Convention's emphasis on \emph{safeguarding} rather than \emph{preservation} is significant. Safeguarding encompasses documentation, research, and transmission alongside physical conservation, acknowledging that living cultural practices cannot simply be frozen in amber. For the purposes of this report, we adopt a similar orientation: our goal is not to create a perfect replica of an immersive experience, but to create a representation sufficiently rich in spatial and visual information that it can serve as a meaningful record and a basis for future re-encounter.
+
+\section{The Experience Economy and Cultural Content}
+\label{sec:bg-experience}
+
+The cultural sector's increasing investment in immersive and experiential formats reflects broader economic and social trends identified by \textcite{Pine1998} as the ``experience economy.'' Audiences---particularly younger demographics---increasingly seek participatory, embodied encounters with cultural content rather than passive consumption. This has driven a proliferation of immersive exhibitions, interactive installations, site-specific performances, and mixed-reality experiences across museums, galleries, festivals, and public spaces.
+
+The economic and cultural significance of this shift is substantial. The global immersive experience market was valued at approximately \$60 billion in 2025 \parencite{GrandView2024}, with cultural and educational applications representing a growing segment. Major institutions---the V\&A, Tate, Barbican, and numerous international counterparts---now regularly commission and exhibit immersive works, while dedicated immersive venues have emerged as a distinct sector of the cultural economy.
+
+This proliferation creates an urgent preservation need. Unlike a painting or sculpture that persists after exhibition, an immersive installation is typically dismantled at the close of its run. The technological components---projectors, sensors, computing hardware, bespoke software---become obsolete. The physical configuration of the space is lost. The work effectively ceases to exist, surviving only in promotional photographs, critical reviews, and the memories of those who experienced it.
+
+The preservation gap is particularly acute for works by emerging artists and smaller institutions, who lack the resources for comprehensive technical documentation and whose works are precisely those most at risk of being lost to cultural memory.
+
+\section{Digital Preservation Approaches}
+\label{sec:bg-digital-preservation}
+
+The digital preservation of cultural heritage has evolved through several generations of technology and methodology. Early approaches focused on 2D digitisation---high-resolution photography and scanning of physical artefacts---which remains the dominant paradigm for collections management in most institutions \parencite{FADGI2016}.
+
+Three-dimensional digitisation emerged as a distinct field in the 1990s, initially through laser scanning and structured light systems. These methods produce dense point clouds or surface meshes with sub-millimetre accuracy but require specialist equipment, extended capture times, and significant post-processing expertise. They are well-suited to the digitisation of individual objects---sculptures, architectural elements, archaeological finds---but scale poorly to room-sized environments and provide no information about surface appearance beyond geometry \parencite{Remondino2011}.
+
+Photogrammetry, the reconstruction of 3D geometry from overlapping photographs, offered a more accessible alternative. Modern photogrammetric software---Agisoft Metashape, RealityCapture, Meshroom---can produce high-quality textured meshes from consumer camera imagery. The approach democratised 3D digitisation to a degree, but the workflow remains technically demanding: image capture requires careful planning, processing is computationally intensive, and the resulting meshes often exhibit artefacts in regions of specular reflection, transparency, or fine geometric detail \parencite{Nocerino2017}.
+
+The emergence of Neural Radiance Fields (\acrshort{nerf}) in 2020 \parencite{Mildenhall2020} marked a paradigm shift. Rather than reconstructing explicit geometry, NeRFs encode a scene as a continuous volumetric function---a neural network that maps 3D coordinates and viewing directions to colour and density values. This representation can model complex optical phenomena---view-dependent reflections, semi-transparent surfaces, intricate geometry---that defeat traditional photogrammetric methods. However, NeRFs are computationally expensive to train and render, requiring minutes or hours to produce a single novel view.
+
+\acrlong{3dgs} (\acrshort{3dgs}), introduced by \textcite{Kerbl2023}, addressed the rendering efficiency limitation while retaining many of NeRF's representational advantages. By representing scenes as collections of 3D Gaussian primitives rather than neural fields, \acrshort{3dgs} enables real-time rendering at high quality while training in minutes rather than hours. This combination of quality, speed, and rendering efficiency makes \acrshort{3dgs} particularly attractive for cultural heritage applications, where both capture throughput and audience accessibility are important considerations.
+
+\section{Games Engines as Preservation Spaces}
+\label{sec:bg-engines}
+
+The concept of using real-time rendering engines as platforms for cultural heritage presentation is well established. Unreal Engine and Unity have been employed in virtual museum projects, archaeological reconstructions, and cultural heritage visualisations for over a decade \parencite{Champion2011, Mortara2014}. Their advantages include real-time interaction, cross-platform deployment, spatial audio support, and the ability to combine multiple media types within a unified environment.
+
+More recently, the development of web-based 3D rendering capabilities---through \acrshort{webgl}, WebGPU, and frameworks such as Three.js and Babylon.js---has opened the possibility of delivering 3D cultural heritage content directly through standard web browsers, eliminating the need for specialised applications or hardware. This is particularly significant for accessibility and public engagement: a browser-based viewer requires no installation, runs on consumer devices, and can be embedded within existing digital collection interfaces.
+
+The convergence of \acrshort{3dgs} with web-based rendering is a recent development of particular relevance to this project. Several open-source viewers---including gsplat.js, Luma AI's WebGL viewer, and Antimatter15's splat viewer---now enable real-time viewing of Gaussian splat scenes directly in web browsers, achieving frame rates suitable for interactive exploration on mid-range hardware. This convergence eliminates the final barrier between volumetric capture and public delivery, creating an end-to-end pathway from video recording to browser-accessible 3D experience.
+
+\begin{keyfinding}
+The convergence of 3D Gaussian Splatting with browser-based WebGL/WebGPU rendering creates, for the first time, a practical end-to-end pathway from video capture to publicly accessible, interactive 3D cultural heritage content---without requiring specialised hardware or software at any point in the audience delivery chain.
+\end{keyfinding}

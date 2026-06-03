@@ -1,0 +1,307 @@
+\chapter{Module 4: Advanced Techniques}
+\label{ch:module-advanced}
+
+\begin{tcolorbox}[
+  enhanced,
+  colback=LightGrey,
+  colframe=MidGrey,
+  fonttitle=\bfseries\sffamily,
+  title={Module Information},
+  sharp corners=south,
+  boxrule=0.6pt
+]
+\begin{description}[font=\sffamily\bfseries, leftmargin=4cm, style=sameline]
+  \item[Prerequisites] Module~2 (Chapter~\ref{ch:module-processing}); comfort with command-line tools; basic familiarity with Blender (for scene composition exercises)
+  \item[Duration] 6--8 hours (full day)
+  \item[Hardware] NVIDIA GPU with 16\,GB+ VRAM recommended; 24\,GB for segmentation and multi-view generation
+  \item[Software] \texttt{gaussian-toolkit}, Blender 4.0+, optionally Unreal Engine 5.4+
+  \item[Budget tier] Standard to Professional (API credits required for multi-view generation)
+\end{description}
+\end{tcolorbox}
+
+\medskip
+
+\noindent\textbf{Learning Objectives.} Upon completing this module, participants will be able to:
+\begin{enumerate}
+  \item Perform per-object segmentation on a Gaussian splat scene using SAM3.
+  \item Apply inpainting techniques to remove unwanted elements from reconstructed scenes.
+  \item Generate novel views of isolated objects using multi-view diffusion models.
+  \item Compose multiple Gaussian splat assets into a unified scene in Blender.
+  \item Construct a \acrshort{usd} scene graph for interactive heritage experiences.
+  \item Manage API credit budgets for cloud-based processing services.
+\end{enumerate}
+
+\section{Per-Object Segmentation with SAM3}
+\label{sec:adv-sam3}
+
+A full-scene Gaussian splat reconstruction treats the entire captured space as a single, undifferentiated volume. While this is sufficient for viewing and archival, many cultural heritage applications require the ability to isolate individual objects within the scene: selecting a specific artwork for close inspection, associating per-object metadata, or extracting a single artefact for use in a different context.
+
+The \acrlong{sam} version~3 (SAM3), introduced by Meta in 2024 and extended to 3D-consistent segmentation by several research groups, provides this capability. SAM3 operates on the rendered views of a Gaussian splat scene, producing per-object masks that are back-projected into the 3D Gaussian representation to assign each Gaussian to a specific object or region.
+
+\subsection{How SAM3 Segmentation Works}
+
+The segmentation process operates in three stages:
+
+\begin{enumerate}
+  \item \textbf{View rendering.} The trained Gaussian splat scene is rendered from multiple viewpoints (typically the original \acrshort{colmap} camera positions) to produce a set of 2D images.
+
+  \item \textbf{2D segmentation.} SAM3 segments each rendered image into distinct objects. The operator provides prompts---point clicks, bounding boxes, or text descriptions---to identify the objects of interest. SAM3 propagates these prompts across all views to produce consistent per-view masks.
+
+  \item \textbf{3D Gaussian assignment.} Each Gaussian in the 3D scene is projected into the segmented views. Based on which object mask it falls into across multiple views, each Gaussian is assigned to an object label. The result is a segmented Gaussian splat where each Gaussian carries an object ID in addition to its geometric and appearance parameters.
+\end{enumerate}
+
+\begin{technote}
+SAM3's 3D consistency is achieved by propagating segmentation across views using the known camera geometry from \acrshort{colmap}. A Gaussian that projects into ``sculpture'' in 80\% of views and ``background'' in 20\% is assigned to ``sculpture.'' Ambiguous Gaussians at object boundaries may require manual refinement, particularly for objects with complex silhouettes (wire meshes, translucent materials).
+\end{technote}
+
+\subsection{Practical Segmentation Workflow}
+
+The \texttt{gaussian-toolkit} integrates SAM3 segmentation as a post-processing step accessible from the web interface:
+
+\begin{enumerate}
+  \item Open a completed project in the web interface.
+  \item Click \textbf{Segment Scene} to enter the segmentation interface.
+  \item Navigate to a viewpoint where the target object is clearly visible.
+  \item Click on the object to place a positive prompt point. SAM3 highlights the predicted object boundary in all rendered views simultaneously.
+  \item Refine if necessary: add additional positive points on the object or negative points on background areas that were incorrectly included.
+  \item Name the segment (e.g., ``Wire Mesh Sculpture'') and confirm.
+  \item Repeat for additional objects.
+  \item Click \textbf{Export Segments} to produce individual \texttt{.ply} files for each labelled object.
+\end{enumerate}
+
+\subsection{Applications for Cultural Heritage}
+
+Per-object segmentation enables several valuable workflows:
+
+\begin{itemize}
+  \item \textbf{Object-level metadata.} Each segmented object can carry its own metadata record---artist, title, materials, provenance---linked through the metadata schema (Module~5).
+  \item \textbf{Interactive catalogues.} Viewers can click on individual objects within the scene to access catalogue information, related images, or audio commentary.
+  \item \textbf{Object re-use.} A segmented sculpture can be extracted from its gallery context and placed in a virtual exhibition alongside works from other collections.
+  \item \textbf{Conservation documentation.} Segmenting damaged or deteriorating elements allows focused before/after comparisons.
+\end{itemize}
+
+\section{Inpainting and Scene Cleanup}
+\label{sec:adv-inpainting}
+
+Real-world captures inevitably contain unwanted elements: people walking through the scene, exit signs, temporary barriers, feature targets placed on the floor for \acrshort{colmap} registration, or the capture operator's reflection in glass surfaces. Inpainting removes these elements and fills the resulting gaps with plausible content.
+
+\subsection{Gaussian Inpainting Workflow}
+
+\begin{enumerate}
+  \item \textbf{Identify unwanted elements.} Using the SAM3 segmentation interface, mark the unwanted regions.
+  \item \textbf{Remove marked Gaussians.} The marked Gaussians are deleted from the scene, leaving gaps.
+  \item \textbf{Inpaint gaps.} The pipeline renders views of the gapped scene and uses a 2D inpainting model (Stable Diffusion inpainting or equivalent) to fill each gap with plausible content. The inpainted 2D views are then used as additional training data for a brief fine-tuning pass (typically 2,000--5,000 iterations) that grows new Gaussians to fill the 3D gaps.
+\end{enumerate}
+
+\begin{keyfinding}
+Inpainting quality is heavily dependent on the size and complexity of the removed region. Small removals (individual people, signs, tape markers) produce nearly seamless results. Large removals (an entire wall of a room) produce visually plausible but potentially inaccurate fill content. For cultural heritage purposes, inpainted regions should be documented in the metadata record to distinguish authentic capture from synthesised infill.
+\end{keyfinding}
+
+\begin{recommendation}
+Always retain the un-inpainted reconstruction as the primary archival artefact. The inpainted version is a presentation artefact---suitable for public-facing viewing---but the un-inpainted version is the authentic preservation record. Both should be stored in the archival package.
+\end{recommendation}
+
+\section{Multi-View Generation with Hunyuan MV}
+\label{sec:adv-multiview}
+
+When a capture covers an object from a limited range of viewpoints---one side of a large sculpture against a wall, for example---the reconstruction will have significant gaps or distortion on the unobserved surfaces. Multi-view diffusion models can hallucinate plausible views from unobserved angles, providing synthetic training data that improves the reconstruction.
+
+Hunyuan MV (Tencent, 2024) is a multi-view diffusion model that, given one or more images of an object, generates geometrically consistent novel views from specified camera positions. These synthetic views can be added to the training set to fill coverage gaps.
+
+\subsection{Workflow}
+
+\begin{enumerate}
+  \item \textbf{Identify coverage gaps.} Examine the \acrshort{colmap} camera positions to identify viewing directions with no or sparse coverage.
+  \item \textbf{Render existing views.} Extract rendered images from the trained Gaussian splat at viewpoints near the gap boundaries.
+  \item \textbf{Generate synthetic views.} Submit the boundary views to Hunyuan MV (via API or local deployment) with target camera positions in the gap region. The model generates multi-view consistent images for the requested positions.
+  \item \textbf{Add to training set.} The synthetic views, with their known camera positions, are added to the original training data.
+  \item \textbf{Fine-tune.} A short fine-tuning pass (5,000--10,000 iterations) incorporates the new viewpoints into the reconstruction.
+\end{enumerate}
+
+\begin{technote}
+Multi-view generation introduces \emph{hallucinated} content---the model generates plausible but not necessarily accurate views of surfaces it has never seen. For heritage preservation, this is a significant caveat. The generated views should be used to improve the visual completeness of the reconstruction for presentation purposes, but the metadata record must clearly indicate which regions are reconstructed from real capture data and which are synthesised. The archival version should always include only the authentic reconstruction.
+\end{technote}
+
+\subsection{API Budget Considerations}
+
+Multi-view generation via cloud APIs incurs per-image costs. Typical pricing (as of early 2026):
+
+\begin{itemize}
+  \item \textbf{Hunyuan MV API:} Approximately \$0.02--0.05 per generated view at 1024$\times$1024 resolution.
+  \item \textbf{Typical use:} Generating 20--50 synthetic views to fill a coverage gap costs \$0.40--2.50 per gap.
+  \item \textbf{Budget planning:} For a programme processing 20 captures per month with an average of 2 gap regions each, budget approximately \$20--100/month for multi-view generation.
+\end{itemize}
+
+Running the model locally (on an RTX 4090 with 24\,GB VRAM) eliminates API costs but requires downloading the model weights (approximately 15\,GB) and accepting slower generation speed (30--60 seconds per view versus 5--10 seconds via API).
+
+\section{Scene Composition in Blender}
+\label{sec:adv-blender}
+
+Blender 4.0 and later supports Gaussian splat import through community add-ons, enabling reconstructed heritage content to be combined with other 3D elements, annotated, lit, and rendered for presentation.
+
+\subsection{Common Composition Scenarios}
+
+\begin{description}
+  \item[Virtual exhibition design] Place Gaussian splat reconstructions of artworks from different collections into a shared virtual gallery space. Position them on pedestals, against walls, or in purpose-designed architectural settings.
+
+  \item[Before/after comparison] Overlay a historical photograph (projected onto a plane) with the current Gaussian splat reconstruction to visualise changes over time.
+
+  \item[Annotation and labelling] Add 3D text labels, measurement lines, and info panels to a heritage scene for educational or research presentations.
+
+  \item[Cinematic documentation] Create scripted camera paths through a heritage scene for high-quality video documentation, with controlled lighting, depth of field, and motion blur.
+\end{description}
+
+\subsection{Blender Import Workflow}
+
+\begin{enumerate}
+  \item Install the Gaussian splat import add-on (available from the \texttt{gaussian-toolkit} repository or the Blender add-on repository).
+  \item \textbf{File $\rightarrow$ Import $\rightarrow$ Gaussian Splat (.ply)} to load the splat into the scene.
+  \item The splat appears as a custom object type in the outliner. It can be translated, rotated, and scaled using standard Blender transform tools.
+  \item To combine with meshes, align coordinate systems using shared reference points (e.g., floor plane, a known object dimension).
+  \item For rendering, use the Cycles renderer with the Gaussian splat render pass enabled. EEVEE support is in development.
+\end{enumerate}
+
+\section{USD Scene Graphs for Interactive Experiences}
+\label{sec:adv-usd}
+
+\acrlong{usd} provides a rich scene graph format capable of representing complex, multi-layered heritage scenes with metadata, interaction triggers, and time-varying data. Building a \acrshort{usd} scene graph around Gaussian splat captures enables:
+
+\begin{itemize}
+  \item \textbf{Hierarchical scene organisation.} A gallery can be represented as a \acrshort{usd} stage containing rooms, each room containing walls and floor, and each wall containing individual artworks---each with its own Gaussian splat representation and metadata.
+  \item \textbf{Layer composition.} Different aspects of a heritage scene (geometry, metadata, annotations, interaction logic) can be stored in separate \acrshort{usd} layers and composed non-destructively.
+  \item \textbf{Time-varying data.} For heritage sites that change over time (seasonal variations, conservation interventions), \acrshort{usd}'s time-sampling system can represent the evolution of a scene across multiple capture dates.
+\end{itemize}
+
+\begin{lstlisting}[language={}, caption={USD scene graph for a gallery with segmented objects.}, label={lst:usd-scene-graph}]
+#usda 1.0
+(
+    doc = "Gallery Capture - Material Worlds Exhibition"
+)
+
+def Xform "Gallery" (
+    doc = "Main gallery space"
+)
+{
+    def GaussianSplat "FullScene" {
+        asset file = @full_scene.ply@
+        int gaussian_count = 2500000
+    }
+
+    def Xform "Artworks" {
+        def GaussianSplat "WireMeshSculpture" {
+            asset file = @segments/wire_mesh_sculpture.ply@
+            custom string artist = "Artist Name"
+            custom string title = "Untitled (Wire Figure)"
+            custom string medium = "Galvanised wire, found objects, LED"
+            custom string dimensions = "200 x 80 x 60 cm"
+            custom string accession = "UoS.2026.043"
+        }
+
+        def GaussianSplat "ProjectionPiece" {
+            asset file = @segments/projection_piece.ply@
+            custom string artist = "Artist Name 2"
+            custom string title = "Refractions"
+            custom string medium = "Video projection on acrylic"
+        }
+    }
+}
+\end{lstlisting}
+
+\section{Game-Ready Asset Creation}
+\label{sec:adv-game-ready}
+
+While this report recommends treating Gaussian splats as first-class artefacts (Chapter~\ref{ch:recommendations}), some delivery contexts---particularly real-time interactive experiences in game engines---benefit from or require triangle mesh representations. As mesh extraction quality improves, the following workflow produces the best currently available results:
+
+\begin{enumerate}
+  \item Train the Gaussian splat using the \acrshort{mrnf} variant, which produces reconstructions better suited to mesh extraction (see Section~\ref{sec:tech-3dgs}).
+  \item Extract a mesh using MILo at maximum detail settings.
+  \item Import the mesh into Blender for manual cleanup: remove floating fragments, close small holes, simplify overly dense regions.
+  \item Retopologise if the polygon count exceeds the target budget (typically 100K--500K triangles for a game-ready asset).
+  \item Bake texture maps from the high-detail mesh to the retopologised mesh: diffuse, normal, roughness, and ambient occlusion.
+  \item Export as \texttt{.glb} or \texttt{.fbx} for engine import.
+\end{enumerate}
+
+\begin{technote}
+As of early 2026, the manual cleanup step (step~3) remains significant for heritage-quality mesh extraction. Automated mesh extraction from Gaussian splats produces meshes that are visually adequate at distance but contain topology artefacts (non-manifold edges, intersecting faces, inverted normals) that are unacceptable for game engine use without manual intervention. This is a rapidly improving area---mesh extraction quality approximately doubled between mid-2024 and early 2026---and fully automated game-ready extraction is a plausible near-term development.
+\end{technote}
+
+\section{API Budget Management}
+\label{sec:adv-budget}
+
+Advanced techniques in this module involve cloud API services that incur per-use costs. Effective budget management requires understanding the cost structure and planning processing runs accordingly.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Typical API costs for advanced processing operations (early 2026 pricing).}
+  \label{tab:api-costs}
+  \begin{tabular}{@{}L{3.5cm}L{3cm}L{2.5cm}L{3.5cm}@{}}
+    \toprule
+    \textbf{Operation} & \textbf{Provider} & \textbf{Cost per Use} & \textbf{Monthly Budget (20 captures)} \\
+    \midrule
+    Multi-view generation    & Hunyuan MV API       & \$0.50--2.50/scene  & \$10--50 \\
+    Cloud GPU processing     & RunPod/Vast.ai       & \$0.25--0.60/hour   & \$50--120 \\
+    SAM3 segmentation (cloud) & Replicate           & \$0.10--0.30/scene  & \$2--6 \\
+    Inpainting (cloud)       & Stability AI API     & \$0.02--0.05/image  & \$5--15 \\
+    \addlinespace
+    \multicolumn{3}{@{}l}{\textbf{Total monthly budget (20 captures, full advanced pipeline)}} & \textbf{\$67--191} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{recommendation}
+Run SAM3 segmentation and inpainting locally whenever possible---both operations are well within the capability of a 16\,GB VRAM GPU and incur zero API costs. Reserve cloud API spending for multi-view generation (which requires large models impractical for local deployment) and overflow GPU capacity during high-volume capture periods.
+\end{recommendation}
+
+\section{Practical Exercise: Segment and Clean a Scene}
+\label{sec:adv-exercise}
+
+\begin{tcolorbox}[
+  enhanced,
+  colback=SuccessGreen!8,
+  colframe=SuccessGreen,
+  fonttitle=\bfseries\sffamily,
+  title={Exercise 4.1: Object Segmentation},
+  sharp corners=south,
+  boxrule=0.6pt
+]
+\textbf{Objective:} Segment two or more distinct objects in the reconstruction from Exercise~2.1, and export them as individual splat files.
+
+\textbf{Time:} 60--90 minutes
+
+\textbf{Steps:}
+\begin{enumerate}
+  \item Open your completed project in the \texttt{gaussian-toolkit} web interface.
+  \item Enter the segmentation interface and identify two objects (or regions) to segment: for example, a piece of furniture and a wall-mounted object.
+  \item Use point prompts to select each object. Refine the segmentation boundaries until satisfied.
+  \item Name each segment with a descriptive label.
+  \item Export the individual segment \texttt{.ply} files.
+  \item Load each segment in the browser viewer independently. Verify that it contains only the intended object without significant background bleed.
+\end{enumerate}
+
+\textbf{Expected outcome:} Two or more individually viewable Gaussian splat objects extracted from the full scene reconstruction. Participants should observe that clean, well-defined objects (furniture, artwork) segment more accurately than diffuse or transparent elements (curtains, glass).
+\end{tcolorbox}
+
+\begin{tcolorbox}[
+  enhanced,
+  colback=SuccessGreen!8,
+  colframe=SuccessGreen,
+  fonttitle=\bfseries\sffamily,
+  title={Exercise 4.2: Scene Cleanup},
+  sharp corners=south,
+  boxrule=0.6pt
+]
+\textbf{Objective:} Remove an unwanted element from the reconstruction and inpaint the gap.
+
+\textbf{Time:} 45--60 minutes
+
+\textbf{Steps:}
+\begin{enumerate}
+  \item Identify an unwanted element in your reconstruction: a person who walked through the scene, a temporary sign, or a feature target placed for capture.
+  \item Use the segmentation interface to mark the unwanted element.
+  \item Execute the removal and inpainting workflow.
+  \item Compare the inpainted result with the original. Note any visible artefacts at the inpainting boundary.
+  \item Document the inpainting in the metadata record: which region was modified and why.
+\end{enumerate}
+
+\textbf{Expected outcome:} A cleaned reconstruction with the unwanted element removed and the gap filled with plausible (if not perfectly accurate) content. Participants should understand both the power and the limitations of inpainting for heritage documentation.
+\end{tcolorbox}

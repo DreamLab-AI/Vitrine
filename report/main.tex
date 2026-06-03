@@ -1,0 +1,467 @@
+% main.tex — Master document
+% AI Workflow Solutions towards the Efficient Preservation of
+% Immersive and Intangible Cultural Heritage in Virtual Spaces
+%
+% Dr John O'Hare, DreamLab AI Consulting Ltd
+% For: Roger McKinley, University of Salford
+% March 2026
+
+\documentclass[a4paper,11pt,twoside,openright]{report}
+
+% ────────────────────────────────────────────────────────────
+% Language and encoding
+% ────────────────────────────────────────────────────────────
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[british]{babel}
+\usepackage{microtype}
+
+% ────────────────────────────────────────────────────────────
+% Page geometry
+% ────────────────────────────────────────────────────────────
+\usepackage[
+  a4paper,
+  top=30mm,
+  bottom=30mm,
+  inner=30mm,
+  outer=25mm,
+  headheight=14pt
+]{geometry}
+
+% ────────────────────────────────────────────────────────────
+% Fonts
+% ────────────────────────────────────────────────────────────
+\usepackage{lmodern}
+\usepackage{inconsolata}
+
+% ────────────────────────────────────────────────────────────
+% Colours
+% ────────────────────────────────────────────────────────────
+\usepackage[dvipsnames,svgnames,x11names]{xcolor}
+
+\definecolor{UoSRed}{HTML}{B71234}
+\definecolor{DreamLabAccent}{HTML}{6366F1}
+\definecolor{DarkBg}{HTML}{0F172A}
+\definecolor{MidGrey}{HTML}{64748B}
+\definecolor{LightGrey}{HTML}{F1F5F9}
+\definecolor{CodeBg}{HTML}{1E293B}
+\definecolor{SuccessGreen}{HTML}{22C55E}
+\definecolor{WarningAmber}{HTML}{F59E0B}
+
+% ────────────────────────────────────────────────────────────
+% Graphics and figures
+% ────────────────────────────────────────────────────────────
+\usepackage{graphicx}
+\graphicspath{{figures/}{diagrams/}}
+\usepackage{subcaption}
+\usepackage{float}
+\usepackage{wrapfig}
+
+% ────────────────────────────────────────────────────────────
+% TikZ and pgfplots
+% ────────────────────────────────────────────────────────────
+\usepackage{tikz}
+\usetikzlibrary{
+  calc,
+  positioning,
+  arrows.meta,
+  shapes.geometric,
+  decorations.markings,
+  backgrounds,
+  fit,
+  patterns,
+  shadows,
+  fadings
+}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+
+% ────────────────────────────────────────────────────────────
+% Tables
+% ────────────────────────────────────────────────────────────
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{longtable}
+\usepackage{multirow}
+\usepackage{array}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\newcolumntype{C}[1]{>{\centering\arraybackslash}p{#1}}
+\newcolumntype{R}[1]{>{\raggedleft\arraybackslash}p{#1}}
+
+% ────────────────────────────────────────────────────────────
+% Bibliography
+% ────────────────────────────────────────────────────────────
+\usepackage[
+  backend=biber,
+  style=authoryear-comp,
+  sorting=nyt,
+  maxbibnames=99,
+  maxcitenames=2,
+  giveninits=true,
+  uniquename=init,
+  url=true,
+  doi=true,
+  isbn=false,
+  eprint=false
+]{biblatex}
+\addbibresource{references.bib}
+
+% ────────────────────────────────────────────────────────────
+% Hyperlinks
+% ────────────────────────────────────────────────────────────
+\usepackage[
+  colorlinks=true,
+  linkcolor=UoSRed,
+  citecolor=DreamLabAccent,
+  urlcolor=DreamLabAccent,
+  bookmarks=true,
+  bookmarksnumbered=true,
+  pdfauthor={Dr John O'Hare},
+  pdftitle={AI Workflow Solutions for Cultural Heritage Preservation},
+  pdfsubject={3D Gaussian Splatting for Intangible Cultural Heritage},
+  pdfkeywords={Gaussian Splatting, Cultural Heritage, Digital Preservation, AI}
+]{hyperref}
+\usepackage{bookmark}
+
+% ────────────────────────────────────────────────────────────
+% Headers and footers
+% ────────────────────────────────────────────────────────────
+\usepackage{fancyhdr}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[LE]{\small\textcolor{MidGrey}{\leftmark}}
+\fancyhead[RO]{\small\textcolor{MidGrey}{\rightmark}}
+\fancyfoot[LE,RO]{\small\textcolor{MidGrey}{\thepage}}
+\fancyfoot[CE,CO]{\small\textcolor{MidGrey}{DreamLab AI Consulting Ltd}}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0.2pt}
+\renewcommand{\headrule}{\hbox to\headwidth{\color{UoSRed}\leaders\hrule height \headrulewidth\hfill}}
+\renewcommand{\footrule}{\hbox to\headwidth{\color{LightGrey}\leaders\hrule height \footrulewidth\hfill}}
+
+\fancypagestyle{plain}{%
+  \fancyhf{}
+  \fancyfoot[LE,RO]{\small\textcolor{MidGrey}{\thepage}}
+  \renewcommand{\headrulewidth}{0pt}
+  \renewcommand{\footrulewidth}{0.2pt}
+}
+
+% ────────────────────────────────────────────────────────────
+% Code listings
+% ────────────────────────────────────────────────────────────
+\usepackage{listings}
+\lstset{
+  basicstyle=\ttfamily\small,
+  backgroundcolor=\color{LightGrey},
+  frame=single,
+  rulecolor=\color{MidGrey},
+  breaklines=true,
+  breakatwhitespace=true,
+  showstringspaces=false,
+  tabsize=2,
+  captionpos=b,
+  numbers=left,
+  numberstyle=\tiny\color{MidGrey},
+  keywordstyle=\color{DreamLabAccent}\bfseries,
+  commentstyle=\color{MidGrey}\itshape,
+  stringstyle=\color{SuccessGreen}
+}
+
+% ────────────────────────────────────────────────────────────
+% Coloured boxes (tcolorbox)
+% ────────────────────────────────────────────────────────────
+\usepackage[most]{tcolorbox}
+
+% Key Finding box
+\newtcolorbox{keyfinding}[1][]{%
+  enhanced,
+  colback=UoSRed!5,
+  colframe=UoSRed,
+  fonttitle=\bfseries,
+  title={Key Finding},
+  left=6mm,
+  sharp corners=south,
+  boxrule=0.8pt,
+  toptitle=2mm,
+  bottomtitle=2mm,
+  attach boxed title to top left={xshift=10mm, yshift=-\tcboxedtitleheight/2},
+  boxed title style={
+    colback=UoSRed,
+    colframe=UoSRed,
+    sharp corners,
+    size=small
+  },
+  #1
+}
+
+% Recommendation box
+\newtcolorbox{recommendation}[1][]{%
+  enhanced,
+  colback=DreamLabAccent!5,
+  colframe=DreamLabAccent,
+  fonttitle=\bfseries,
+  title={Recommendation},
+  left=6mm,
+  sharp corners=south,
+  boxrule=0.8pt,
+  toptitle=2mm,
+  bottomtitle=2mm,
+  attach boxed title to top left={xshift=10mm, yshift=-\tcboxedtitleheight/2},
+  boxed title style={
+    colback=DreamLabAccent,
+    colframe=DreamLabAccent,
+    sharp corners,
+    size=small
+  },
+  #1
+}
+
+% Technical Note box
+\newtcolorbox{technote}[1][]{%
+  enhanced,
+  colback=CodeBg!5,
+  colframe=MidGrey,
+  fonttitle=\bfseries\color{white},
+  title={Technical Note},
+  left=6mm,
+  boxrule=0.6pt,
+  toptitle=2mm,
+  bottomtitle=2mm,
+  attach boxed title to top left={xshift=10mm, yshift=-\tcboxedtitleheight/2},
+  boxed title style={
+    colback=MidGrey,
+    colframe=MidGrey,
+    sharp corners,
+    size=small
+  },
+  #1
+}
+
+% ────────────────────────────────────────────────────────────
+% Glossaries and index
+% ────────────────────────────────────────────────────────────
+\usepackage[acronym,toc,nonumberlist]{glossaries}
+\makeglossaries
+
+\newacronym{3dgs}{3DGS}{3D Gaussian Splatting}
+\newacronym{sfm}{SfM}{Structure from Motion}
+\newacronym{tsdf}{TSDF}{Truncated Signed Distance Function}
+\newacronym{ich}{ICH}{Intangible Cultural Heritage}
+\newacronym{uos}{UoS}{University of Salford}
+\newacronym{sam}{SAM}{Segment Anything Model}
+\newacronym{nerf}{NeRF}{Neural Radiance Fields}
+\newacronym{mrnf}{MRNF}{Mini-Splatting with Relocation and Normal Filtering}
+\newacronym{mcmc}{MCMC}{Markov Chain Monte Carlo}
+\newacronym{usd}{USD}{Universal Scene Description}
+\newacronym{webgl}{WebGL}{Web Graphics Library}
+\newacronym{colmap}{COLMAP}{COLlaborative MAPping}
+\newacronym{ke}{KE}{Knowledge Exchange}
+\newacronym{cop}{CoP}{Community of Practice}
+\newacronym{gpu}{GPU}{Graphics Processing Unit}
+
+\usepackage{makeidx}
+\makeindex
+
+% ────────────────────────────────────────────────────────────
+% Miscellaneous
+% ────────────────────────────────────────────────────────────
+\usepackage{enumitem}
+\setlist{nosep,leftmargin=*}
+\usepackage{pdfpages}
+\usepackage{csquotes}
+\usepackage{siunitx}
+\usepackage{amsmath,amssymb}
+\usepackage{etoolbox}
+
+% Chapter title formatting
+\usepackage{titlesec}
+\titleformat{\chapter}[display]
+  {\normalfont\huge\bfseries\color{DarkBg}}
+  {\textcolor{UoSRed}{\chaptertitlename\ \thechapter}}{10pt}{\Huge}
+\titlespacing*{\chapter}{0pt}{-20pt}{30pt}
+
+\titleformat{\section}
+  {\normalfont\Large\bfseries\color{DarkBg}}
+  {\textcolor{UoSRed}{\thesection}}{1em}{}
+
+\titleformat{\subsection}
+  {\normalfont\large\bfseries\color{DarkBg}}
+  {\textcolor{DreamLabAccent}{\thesubsection}}{1em}{}
+
+\titleformat{\part}[display]
+  {\centering\normalfont\Huge\bfseries\color{DarkBg}}
+  {\textcolor{UoSRed}{\partname\ \thepart}}{10pt}{\huge}
+\titlespacing*{\part}{0pt}{50pt}{40pt}
+
+% ────────────────────────────────────────────────────────────
+% Document metadata
+% ────────────────────────────────────────────────────────────
+\title{AI Workflow Solutions towards the Efficient Preservation of Immersive and Intangible Cultural Heritage in Virtual Spaces}
+\author{Dr John O'Hare \\ DreamLab AI Consulting Ltd}
+\date{March 2026}
+
+% ════════════════════════════════════════════════════════════
+\begin{document}
+
+% ────────────────────────────────────────────────────────────
+% Title page
+% ────────────────────────────────────────────────────────────
+\begin{titlepage}
+\begin{tikzpicture}[remember picture, overlay]
+  % Full-bleed dark background
+  \fill[DarkBg] (current page.south west) rectangle (current page.north east);
+
+  % Geometric accent — radial dots
+  \foreach \i in {1,...,60} {
+    \pgfmathsetmacro{\xr}{rand*10}
+    \pgfmathsetmacro{\yr}{rand*14}
+    \pgfmathsetmacro{\op}{0.03 + rand*0.08}
+    \fill[white, opacity=\op]
+      ($(current page.south west) + (\xr,\yr)$) circle (1pt);
+  }
+
+  % Top-left geometric pattern — overlapping circles
+  \foreach \r in {2,3.2,4.4,5.6} {
+    \draw[UoSRed, opacity=0.15, line width=0.6pt]
+      ($(current page.north west) + (2.5,-3)$) circle (\r);
+  }
+
+  % Bottom-right geometric pattern — diagonal lines
+  \foreach \i in {0,0.8,...,6.4} {
+    \draw[DreamLabAccent, opacity=0.10, line width=0.5pt]
+      ($(current page.south east) + (-\i-1, 0.5)$) --
+      ($(current page.south east) + (-0.5, \i+1)$);
+  }
+
+  % Horizontal accent bar
+  \fill[UoSRed] ($(current page.west) + (0,2)$) rectangle ($(current page.east) + (0,2.08)$);
+  \fill[DreamLabAccent] ($(current page.west) + (0,1.9)$) rectangle ($(current page.east) + (0,1.94)$);
+
+  % Report type label
+  \node[anchor=north west, text=UoSRed, font=\footnotesize\sffamily\bfseries, text width=12cm]
+    at ($(current page.north west) + (3,-2)$)
+    {TECHNICAL REPORT \textcolor{MidGrey}{|} AI \& KNOWLEDGE EXCHANGE};
+
+  % Main title
+  \node[anchor=west, text=white, font=\fontsize{26}{30}\selectfont\bfseries\sffamily, text width=15cm]
+    at ($(current page.west) + (3,5.5)$)
+    {AI Workflow Solutions towards\\[4pt]
+     the Efficient Preservation of\\[4pt]
+     Immersive and Intangible\\[4pt]
+     Cultural Heritage in\\[4pt]
+     Virtual Spaces};
+
+  % Subtitle / tagline
+  \node[anchor=west, text=MidGrey, font=\large\sffamily, text width=13cm]
+    at ($(current page.west) + (3,0.8)$)
+    {3D Gaussian Splatting, Agentic Pipelines, and Browser-Based\\
+     Delivery for Experiential Art Preservation};
+
+  % Author block
+  \node[anchor=west, text=white, font=\sffamily, text width=10cm]
+    at ($(current page.west) + (3,-1.5)$)
+    {\textbf{Dr John O'Hare}\\[2pt]
+     DreamLab AI Consulting Ltd\\[8pt]
+     \textcolor{MidGrey}{Prepared for}\\[2pt]
+     \textbf{Roger McKinley}\\[2pt]
+     Creative Technology and Content Manager\\
+     University of Salford};
+
+  % Date
+  \node[anchor=west, text=DreamLabAccent, font=\sffamily\bfseries]
+    at ($(current page.west) + (3,-4.5)$)
+    {March 2026};
+
+  % Logo placeholders
+  \node[anchor=south west, opacity=0.9]
+    at ($(current page.south west) + (3,2)$)
+    {\textcolor{white}{\sffamily\small [DreamLab AI Logo]}};
+
+  \node[anchor=south east, opacity=0.9]
+    at ($(current page.south east) + (-3,2)$)
+    {\textcolor{white}{\sffamily\small [University of Salford Logo]}};
+
+  % Version indicator
+  \node[anchor=south east, text=MidGrey, font=\tiny\sffamily]
+    at ($(current page.south east) + (-3,1)$)
+    {v1.0 \textcolor{MidGrey}{|} CONFIDENTIAL};
+
+\end{tikzpicture}
+\end{titlepage}
+
+% ────────────────────────────────────────────────────────────
+% Front matter
+% ────────────────────────────────────────────────────────────
+\pagenumbering{roman}
+
+% Executive summary
+\chapter*{Executive Summary}
+\addcontentsline{toc}{chapter}{Executive Summary}
+\markboth{Executive Summary}{Executive Summary}
+
+This report documents the findings of a pilot project conducted by DreamLab AI Consulting Ltd for the University of Salford's AI Knowledge Exchange Community of Practice. The project investigated the application of contemporary AI-driven 3D reconstruction workflows---specifically 3D Gaussian Splatting (\acrshort{3dgs})---to the challenge of preserving immersive and experiential cultural heritage content within virtual spaces.
+
+The central premise of this work is that traditional digital preservation methods---photographic archives, video recordings, textual descriptions---fail to capture the \emph{experiential} qualities that define immersive art installations, interactive performances, and site-specific works. These works exist as spatial, temporal, and sensory experiences; their meaning is inseparable from the act of inhabiting them. A photograph of an immersive installation is not a preservation of that installation any more than a photograph of a symphony is a preservation of its music.
+
+Through the development and evaluation of an end-to-end reconstruction pipeline---the \texttt{gaussian-toolkit}---we demonstrate that \acrshort{3dgs} offers a viable, efficient, and accessible pathway for capturing the spatial and visual qualities of such works. The pipeline integrates Structure-from-Motion reconstruction via \acrshort{colmap}, Gaussian splat training, mesh extraction, and browser-based viewing into a containerised, AI-orchestrated workflow.
+
+Our primary finding, and the central recommendation of this report, is that \textbf{Gaussian splat representations should be treated as first-class preservation artefacts in their own right}, rather than as intermediate stages in a mesh-extraction pipeline. Browser-based splat viewers now offer sufficient quality and performance to deliver these representations directly to audiences, avoiding the significant quality degradation that accompanies mesh conversion. This approach dramatically reduces both the computational cost and the expertise required for cultural heritage digitisation.
+
+The report details the technological foundations, pipeline architecture, experimental results, and strategic recommendations for scaling this approach across the University of Salford's cultural heritage activities and beyond.
+
+\tableofcontents
+\listoffigures
+\listoftables
+
+% Print glossary in front matter
+\printglossary[type=\acronymtype, title={Acronyms and Abbreviations}]
+
+% ────────────────────────────────────────────────────────────
+% Main matter
+% ────────────────────────────────────────────────────────────
+\cleardoublepage
+\pagenumbering{arabic}
+
+% ════════════════════════════════════════════════════════════
+% Part I: Research Report
+% ════════════════════════════════════════════════════════════
+\part{Research Report}
+\label{part:research}
+
+\include{chapters/ch1_introduction}
+\include{chapters/ch2_background}
+\include{chapters/ch3_technology}
+\include{chapters/ch4_pipeline}
+\include{chapters/ch5_results}
+\include{chapters/ch6_recommendations}
+\include{chapters/ch7_future}
+\include{chapters/ch8_conclusion}
+
+% ════════════════════════════════════════════════════════════
+% Part II: Training Programme
+% ════════════════════════════════════════════════════════════
+\cleardoublepage
+\part{Training Programme}
+\label{part:training}
+
+\include{chapters/ch9_training_overview}
+\include{chapters/ch10_module_capture}
+\include{chapters/ch11_module_processing}
+\include{chapters/ch12_module_viewing}
+\include{chapters/ch13_module_advanced}
+\include{chapters/ch14_module_metadata}
+\include{chapters/ch15_cloud_processing}
+
+% ────────────────────────────────────────────────────────────
+% Back matter
+% ────────────────────────────────────────────────────────────
+\cleardoublepage
+\printbibliography[heading=bibintoc, title={References}]
+
+\appendix
+\include{appendices/appendix_pipeline}
+\include{appendices/appendix_metrics}
+
+\printindex
+
+\end{document}

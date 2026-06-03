@@ -1,0 +1,254 @@
+\chapter{Module 1: Scene and Artifact Capture}
+\label{ch:module-capture}
+
+\begin{tcolorbox}[
+  enhanced,
+  colback=LightGrey,
+  colframe=MidGrey,
+  fonttitle=\bfseries\sffamily,
+  title={Module Information},
+  sharp corners=south,
+  boxrule=0.6pt
+]
+\begin{description}[font=\sffamily\bfseries, leftmargin=4cm, style=sameline]
+  \item[Prerequisites] None (entry-level module)
+  \item[Duration] 3--4 hours (half day)
+  \item[Hardware] Any device capable of recording 4K video (smartphone minimum)
+  \item[Software] None required for capture; video playback software for review
+  \item[Budget tier] Free
+\end{description}
+\end{tcolorbox}
+
+\medskip
+
+\noindent\textbf{Learning Objectives.} Upon completing this module, participants will be able to:
+\begin{enumerate}
+  \item Explain why camera movement technique is the dominant quality factor in Gaussian splat reconstruction.
+  \item Execute three fundamental capture patterns---orbit, walkthrough, and detail pass---for different scene types.
+  \item Assess and manage lighting conditions in gallery, studio, and outdoor capture environments.
+  \item Record comprehensive metadata alongside every capture using the structured documentation template.
+  \item Evaluate their own captured footage against the quality checklist before submission for processing.
+\end{enumerate}
+
+\section{Why Capture Technique Matters}
+\label{sec:cap-why}
+
+The experimental results presented in Chapter~\ref{ch:results} demonstrate unambiguously that capture quality is the single most important determinant of reconstruction fidelity. The \acrshort{colmap} \acrlong{sfm} stage (Section~\ref{sec:tech-sfm}) must successfully register a high proportion of extracted frames---ideally above 90\%---to produce a dense, well-distributed point cloud from which Gaussians can be initialised. Poor capture technique leads to failed registrations, sparse point clouds, and reconstructions with holes, floaters, and geometric distortion.
+
+\begin{keyfinding}
+In our experimental evaluations, the difference in reconstruction quality between a well-executed phone capture and a poorly executed professional camera capture consistently favoured the phone. Technique dominates equipment.
+\end{keyfinding}
+
+The three failure modes most commonly caused by poor capture are:
+
+\begin{enumerate}
+  \item \textbf{Registration failure.} Rapid camera movement, motion blur, or insufficient overlap between consecutive frames causes \acrshort{colmap} to fail to match features, leaving unregistered frames and gaps in the reconstruction.
+
+  \item \textbf{Geometric distortion.} Capturing from a narrow range of viewpoints (e.g., only from one side of a room) produces a reconstruction that appears correct from the captured angles but is distorted or hollow when viewed from novel positions.
+
+  \item \textbf{Floaters and artefacts.} Inconsistent lighting, reflective surfaces, or moving objects in the scene produce spurious Gaussians---``floaters''---that appear as ghostly blobs suspended in mid-air when viewing the reconstruction.
+\end{enumerate}
+
+\section{Camera Movement Techniques}
+\label{sec:cap-movement}
+
+Three fundamental capture patterns cover the majority of cultural heritage scenarios. Most real captures combine two or all three patterns in a single recording session.
+
+\subsection{The Orbit}
+\label{sec:cap-orbit}
+
+The orbit is the primary pattern for individual artefacts: sculptures, display cases, small installations, and architectural features. The operator walks in a circle around the subject, maintaining a roughly constant distance and keeping the subject centred in the frame throughout.
+
+\begin{description}
+  \item[Movement] Walk slowly and smoothly in a circle around the subject. Maintain a consistent walking pace---approximately half your normal walking speed. Do not stop and start.
+  \item[Distance] Stay at a distance of 1--3 metres from the subject. Closer produces higher detail but requires more orbits at different heights to cover the full surface.
+  \item[Height variation] Complete a minimum of two orbits: one at the subject's mid-height and one elevated (holding the camera above head height, angled downward). For tall subjects, add a third orbit at a lower angle.
+  \item[Duration] A complete orbit set (two heights) for a human-scale subject takes approximately 2--3 minutes of continuous video.
+  \item[Overlap] Adjacent frames must share at least 60\% of their visible content. At 30\,fps and a slow walking pace, this is achieved automatically. At 60\,fps, even generous overlap is ensured.
+\end{description}
+
+\begin{technote}
+The orbit is effective because it provides dense, evenly distributed viewpoints with high inter-frame overlap---exactly what \acrshort{colmap} requires for robust feature matching. The circular trajectory also ensures that every surface is observed from multiple angles, enabling accurate depth estimation.
+\end{technote}
+
+\subsection{The Walkthrough}
+\label{sec:cap-walkthrough}
+
+The walkthrough is the primary pattern for interior spaces: gallery rooms, exhibition halls, studio spaces, and architectural interiors. The operator walks through the space following a systematic path that covers all areas.
+
+\begin{description}
+  \item[Movement] Walk at half normal pace in a serpentine pattern, moving across the room in parallel passes approximately 2--3 metres apart. At each end of the room, turn slowly (do not snap the camera around) and begin the next pass.
+  \item[Camera orientation] Angle the camera slightly downward (approximately 10--15 degrees below horizontal) to capture both the walls and the floor. The floor provides critical feature matching points for \acrshort{colmap}---plain, featureless floors are the most common cause of registration failure in interior captures.
+  \item[Coverage] After completing the serpentine passes, walk the perimeter of the room close to the walls, capturing wall-mounted works and architectural detail.
+  \item[Duration] A typical gallery room (10$\times$10\,m) requires 5--8 minutes of continuous video for thorough coverage.
+\end{description}
+
+\begin{recommendation}
+If the floor is plain and featureless (polished concrete, white tile), place temporary markers---sheets of printed newspaper, colourful tape crosses, or purpose-printed feature targets---at regular intervals before capture. These provide the visual features that \acrshort{colmap} needs to match frames. The markers can be edited out of the reconstruction later using the inpainting techniques described in Module~4 (Chapter~\ref{ch:module-advanced}).
+\end{recommendation}
+
+\subsection{The Detail Pass}
+\label{sec:cap-detail}
+
+The detail pass supplements orbit or walkthrough captures with close-up footage of specific features: plaques, textures, fine details, damage or patina, and any elements of particular curatorial interest.
+
+\begin{description}
+  \item[Movement] Approach the feature slowly, moving from a medium distance to close-up. Once at close range, orbit the feature with small, slow movements. Then retreat slowly.
+  \item[Continuity] The detail pass \emph{must} begin and end with the subject visible at the same distance as the broader orbit or walkthrough footage. This provides the overlap that \acrshort{colmap} needs to register the close-up frames within the broader reconstruction.
+  \item[Duration] 30--60 seconds per detail feature.
+\end{description}
+
+\begin{technote}
+The approach-and-retreat pattern is critical. If you simply film a close-up of a plaque without transitioning from the broader scene, \acrshort{colmap} will be unable to determine where the close-up frames fit within the global reconstruction, and they will be discarded as unregistered frames.
+\end{technote}
+
+\section{Lighting Considerations}
+\label{sec:cap-lighting}
+
+Lighting is the second most important factor after camera movement. \acrshort{3dgs} is trained against photometric loss---it learns to reproduce the appearance of the scene as observed from the training viewpoints. If the lighting changes between frames (moving clouds, flickering fluorescents, a window that alternates between sun and shadow), the training process receives contradictory signals and produces artefacts.
+
+\subsection{Gallery and Museum Spaces}
+
+Most gallery spaces have controlled, consistent artificial lighting---which is ideal for capture. Key considerations:
+
+\begin{itemize}
+  \item \textbf{Avoid mixed lighting zones.} If a gallery has both artificial lighting and natural light from windows, the natural light will change over the course of the capture. Either close blinds/curtains or capture quickly enough that the natural light does not shift appreciably.
+  \item \textbf{Spot-lit artworks.} Directional spotlights create strong specular highlights that vary with viewing angle. This is inherently handled by \acrshort{3dgs} through its spherical harmonic colour model, but extremely bright specular reflections (chrome surfaces, glass cases) can still cause artefacts. Capture these areas from more viewpoints than usual to give the training process more data to resolve the view-dependent appearance.
+  \item \textbf{Do not use flash.} Flash illumination changes with every frame and is incompatible with photogrammetric reconstruction.
+  \item \textbf{Dark spaces.} Some immersive installations deliberately use low light. Increase ISO sensitivity on the camera, accept higher noise, and capture more slowly. Modern denoisers (applied before or during frame extraction) can mitigate noise. Reconstruction quality will be lower than in well-lit spaces, but a noisy capture of a dark installation is still far more useful than no capture at all.
+\end{itemize}
+
+\subsection{Outdoor and Site-Specific Locations}
+
+Outdoor captures introduce additional challenges:
+
+\begin{itemize}
+  \item \textbf{Overcast days are ideal.} Diffuse cloud cover provides even, consistent illumination without hard shadows. Avoid midday sun, which creates harsh shadows that change as you move around the subject.
+  \item \textbf{Avoid golden hour for photogrammetry.} While golden hour light is beautiful for photography, the rapidly changing light direction and colour temperature during sunset/sunrise makes it problematic for multi-minute captures.
+  \item \textbf{Moving elements.} Trees, flags, water, and people will create artefacts. Wait for still moments if possible, or plan to use masking and cleanup in post-processing (Module~4).
+\end{itemize}
+
+\section{Metadata Documentation}
+\label{sec:cap-metadata}
+
+Every capture must be accompanied by a structured metadata record. This is not optional overhead---it is an integral part of the preservation workflow. A 3D reconstruction without metadata is an orphaned file; with metadata, it is a cultural heritage record.
+
+The full metadata schema is defined in Module~5 (Chapter~\ref{ch:module-metadata}). At the point of capture, the operator must record the following information, using either the printed field sheet or the digital form provided:
+
+\subsection{Required Fields}
+
+\begin{description}
+  \item[Scene title] A descriptive title for the capture (e.g., ``Main Gallery, North Wall Installation'').
+  \item[Date and time] ISO~8601 format: \texttt{2026-04-01T14:30:00Z}. The time is important for correlating with lighting conditions.
+  \item[Location] Venue name and, for outdoor captures, GPS coordinates. Modern smartphones record GPS in video metadata automatically; for cameras without GPS, use a phone to note coordinates.
+  \item[Creator/artist credits] The name(s) of the artist(s) or creator(s) whose work appears in the capture. For gallery spaces containing multiple works, list all.
+  \item[Capture operator] Who performed the capture.
+  \item[Rights and permissions] Under what licence or permission the capture was made. Note any restrictions on distribution, commercial use, or public display.
+  \item[Material descriptions] A brief description of the physical materials present: ``wire mesh sculpture, approximately 2\,m tall, mixed media including found objects and LED lighting.''
+  \item[Lighting conditions] General lighting description: ``artificial gallery track lighting, no natural light, even illumination'' or ``mixed natural (skylights) and artificial (spot), afternoon.''
+  \item[Scale reference] Whether a scale reference (ruler, known-size object) is visible in the capture. If so, describe its location and size.
+  \item[Cultural context notes] Any contextual information that a future viewer would need to understand the work: its place in an exhibition, relationship to other works, artist's intent, historical significance.
+\end{description}
+
+\subsection{Agentic Scaffolding: The Capture Metadata Record}
+\label{sec:cap-agentic}
+
+The metadata fields above are formalised as a JSON schema that serves dual purposes: human documentation and machine processing. When the operator completes the capture form (either on paper or digitally), the information is structured into the following format for ingestion by the agentic pipeline described in Chapter~\ref{ch:pipeline}:
+
+\begin{lstlisting}[language={}, caption={Capture-time metadata record (JSON).}, label={lst:capture-metadata}]
+{
+  "capture": {
+    "id": "auto-generated UUID",
+    "title": "Main Gallery, North Wall Installation",
+    "date": "2026-04-01T14:30:00Z",
+    "location": {
+      "name": "University of Salford, New Adelphi Gallery",
+      "gps": [53.4870, -2.2742]
+    },
+    "creator": "Artist Name",
+    "operator": "Capture Operator Name",
+    "rights": "CC BY-SA 4.0",
+    "description": "Wire mesh figure, 2m tall, mixed media",
+    "lighting": "artificial gallery track, even",
+    "scale_reference": "30cm ruler on plinth base",
+    "cultural_context": "Part of 'Material Worlds' exhibition,
+                          Spring 2026"
+  },
+  "technical": {
+    "device": "iPhone 15 Pro",
+    "resolution": "4K (3840x2160)",
+    "fps": 30,
+    "duration_seconds": 180,
+    "stabilisation": "handheld",
+    "capture_pattern": ["orbit", "detail_pass"]
+  }
+}
+\end{lstlisting}
+
+This record is stored alongside the video file and accompanies it through the processing pipeline, where the agentic orchestrator appends processing results (Chapter~\ref{ch:module-metadata}).
+
+\section{Practical Exercise: Capture a Room in Your Building}
+\label{sec:cap-exercise}
+
+\begin{tcolorbox}[
+  enhanced,
+  colback=SuccessGreen!8,
+  colframe=SuccessGreen,
+  fonttitle=\bfseries\sffamily,
+  title={Exercise 1.1: Room Capture},
+  sharp corners=south,
+  boxrule=0.6pt
+]
+\textbf{Objective:} Capture a room or space in your building that could plausibly be a cultural heritage preservation target.
+
+\textbf{Time:} 45--60 minutes (including preparation and metadata)
+
+\textbf{Equipment:} Smartphone with 4K video capability
+
+\textbf{Steps:}
+\begin{enumerate}
+  \item \textbf{Scout the space} (10 minutes). Walk through the room without filming. Identify: lighting conditions, reflective surfaces, featureless areas (plain walls, floors), moving elements (people, screens), and features of particular interest.
+  \item \textbf{Plan your capture path} (5 minutes). Sketch the room on paper and draw your planned walkthrough serpentine path, noting where you will perform detail passes.
+  \item \textbf{Prepare the space.} If the floor is featureless, place newspaper sheets or tape crosses at 2\,m intervals. Remove or note any moving elements.
+  \item \textbf{Complete the metadata form} (5 minutes). Fill in all required fields from Section~\ref{sec:cap-metadata}.
+  \item \textbf{Record the walkthrough} (5--8 minutes of continuous video). Follow your planned path at half walking speed. Do not stop, do not adjust the camera mid-recording, and do not use zoom.
+  \item \textbf{Record detail passes} (2--5 minutes). Select 2--3 features of interest and perform the approach--orbit--retreat pattern for each.
+  \item \textbf{Review your footage.} Play back on your phone. Check for: consistent framing, absence of motion blur, sufficient coverage of all walls and the floor.
+\end{enumerate}
+
+\textbf{Expected outcome:} 7--13 minutes of continuous 4K video, a completed metadata form, and a hand-drawn capture plan. This footage will be processed in Module~2 (Chapter~\ref{ch:module-processing}).
+\end{tcolorbox}
+
+\section{Quality Checklist}
+\label{sec:cap-checklist}
+
+Before submitting footage for processing, verify each of the following. A failure on any item marked \textbf{Critical} is likely to cause processing failure or severe quality degradation.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Pre-submission quality checklist for captured footage.}
+  \label{tab:capture-checklist}
+  \begin{tabular}{@{}l L{8cm} l@{}}
+    \toprule
+    \textbf{Priority} & \textbf{Check} & \textbf{Remedy} \\
+    \midrule
+    Critical & Video is in 4K resolution (3840$\times$2160 or higher) & Recapture \\
+    Critical & No motion blur visible when pausing at random frames & Recapture more slowly \\
+    Critical & Continuous recording (no cuts, pauses, or zoom changes) & Recapture \\
+    Critical & Camera moved smoothly throughout (no sudden jerks) & Recapture \\
+    \addlinespace
+    Important & All surfaces captured from at least two distinct angles & Add supplementary passes \\
+    Important & Floor/ground visible in walkthrough frames & Recapture with camera angled down \\
+    Important & Scale reference visible in at least one section & Place ruler and add detail pass \\
+    Important & Consistent lighting throughout capture duration & Close blinds or recapture \\
+    \addlinespace
+    Desirable & Multiple height levels captured in orbits & Add elevated orbit pass \\
+    Desirable & No people or moving objects in frame & Recapture or note for post cleanup \\
+    Desirable & Detail passes for all features of curatorial interest & Add detail passes \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{keyfinding}
+The checklist above encodes the most common failure modes observed during the pilot project. Approximately 70\% of processing failures were traceable to one of the four ``Critical'' items. Making the checklist a mandatory pre-submission step eliminates the most expensive failures---those that consume GPU processing time before failing.
+\end{keyfinding}
