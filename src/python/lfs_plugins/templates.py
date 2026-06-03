@@ -104,6 +104,7 @@ MAIN_PANEL_RML = '''<rml>
 '''
 
 MAIN_PANEL_RCSS = '''body.plugin-panel {
+    font-family: Inter;
     padding: 0;
 }
 

@@ -6,8 +6,11 @@
 #include <thread>
 #include <vector>
 
+#include "core/point_cloud.hpp"
 #include "core/scene.hpp"
+#include "core/tensor.hpp"
 #include "python/python_runtime.hpp"
+#include "visualizer/scene/scene_manager.hpp"
 
 namespace lfs::python {
 
@@ -106,6 +109,50 @@ namespace lfs::python {
         EXPECT_EQ(consume_scene_mutation_flags(), combined);
         EXPECT_EQ(get_scene_mutation_flags(), 0u);
         EXPECT_EQ(consume_scene_mutation_flags(), 0u);
+    }
+
+    TEST_F(SceneValidityTest, ClearResetsDatasetMetadata) {
+        auto means = core::Tensor::from_vector({0.0f, 0.0f, 0.0f}, {size_t{1}, size_t{3}}, core::Device::CPU);
+        auto colors = core::Tensor::from_vector({1.0f, 1.0f, 1.0f}, {size_t{1}, size_t{3}}, core::Device::CPU);
+
+        dummy_scene_.setInitialPointCloud(std::make_shared<core::PointCloud>(std::move(means), std::move(colors)));
+        dummy_scene_.setSceneCenter(core::Tensor::from_vector({1.0f, 2.0f, 3.0f}, {size_t{3}}, core::Device::CPU));
+        dummy_scene_.setImagesHaveAlpha(true);
+        dummy_scene_.setTrainingModelNode("Model");
+        const auto dataset_id = dummy_scene_.addDataset("Dataset");
+        const auto cameras_group_id = dummy_scene_.addGroup("Cameras", dataset_id);
+        const auto train_group_id = dummy_scene_.addCameraGroup("Training (1)", cameras_group_id, 1);
+        dummy_scene_.addCamera("cam_0001.png", train_group_id, std::make_shared<core::Camera>());
+
+        ASSERT_TRUE(dummy_scene_.getInitialPointCloud());
+        ASSERT_TRUE(dummy_scene_.getSceneCenter().is_valid());
+        ASSERT_TRUE(dummy_scene_.imagesHaveAlpha());
+        ASSERT_EQ(dummy_scene_.getTrainingModelNodeName(), "Model");
+        ASSERT_EQ(dummy_scene_.getAllCameras().size(), 1u);
+        ASSERT_GT(dummy_scene_.getNodeCount(), 0u);
+
+        dummy_scene_.clear();
+
+        EXPECT_FALSE(dummy_scene_.getInitialPointCloud());
+        EXPECT_FALSE(dummy_scene_.getSceneCenter().is_valid());
+        EXPECT_FALSE(dummy_scene_.imagesHaveAlpha());
+        EXPECT_TRUE(dummy_scene_.getTrainingModelNodeName().empty());
+        EXPECT_TRUE(dummy_scene_.getAllCameras().empty());
+        EXPECT_EQ(dummy_scene_.getNodeCount(), 0u);
+    }
+
+    TEST_F(SceneValidityTest, SceneManagerEmptyStateKeepsApplicationSceneContext) {
+        lfs::vis::SceneManager scene_manager;
+        EXPECT_EQ(get_application_scene(), &scene_manager.getScene());
+
+        scene_manager.addGroupNode("Bootstrap");
+        ASSERT_GT(scene_manager.getScene().getNodeCount(), 0u);
+
+        ASSERT_TRUE(scene_manager.clear());
+
+        EXPECT_EQ(get_application_scene(), &scene_manager.getScene());
+        EXPECT_EQ(scene_manager.getContentType(), lfs::vis::SceneManager::ContentType::Empty);
+        EXPECT_EQ(scene_manager.getScene().getNodeCount(), 0u);
     }
 
 } // namespace lfs::python

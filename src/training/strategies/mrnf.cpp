@@ -492,6 +492,7 @@ namespace lfs::training {
         auto dist_from_center = (means - center).abs().max(1);
 
         auto prune_mask = (raw_opacities < MRNF_RAW_OPACITY_PRUNE_THRESHOLD) |
+                          compute_near_zero_rotation_mask(_splat_data->rotation_raw()) |
                           (scale_min < MRNF_LOG_MIN_SCALE_THRESHOLD) |
                           (scale_max > log_max_allowed) |
                           (dist_from_center > max_allowed);

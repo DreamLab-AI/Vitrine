@@ -7,9 +7,11 @@
 
 #include "gui/rml_overlay_context.hpp"
 #include "core/logger.hpp"
+#include "gui/rmlui/rml_document_utils.hpp"
 #include "gui/rmlui/rml_theme.hpp"
 #include "gui/rmlui/rmlui_manager.hpp"
 #include "gui/rmlui/rmlui_render_interface.hpp"
+#include "gui/rmlui/sdl_rml_key_mapping.hpp"
 #include "internal/resource_paths.hpp"
 #include "theme/theme.hpp"
 
@@ -44,7 +46,7 @@ namespace lfs::vis::gui {
 
         try {
             const auto full_path = lfs::vis::getAssetPath(rml_path_);
-            doc_ = ctx_->LoadDocument(full_path.string());
+            doc_ = rml_documents::loadDocument(ctx_, full_path);
             if (doc_) {
                 doc_->Show();
             } else {
@@ -160,16 +162,19 @@ namespace lfs::vis::gui {
         const float local_x = input.mouse_x - overlay_x;
         const float local_y = input.mouse_y - overlay_y;
 
-        ctx_->ProcessMouseMove(static_cast<int>(local_x), static_cast<int>(local_y), 0);
+        const int mods = sdlModsToRml(input.key_ctrl, input.key_shift,
+                                      input.key_alt, input.key_super);
+
+        ctx_->ProcessMouseMove(static_cast<int>(local_x), static_cast<int>(local_y), mods);
 
         if (input.mouse_clicked[0])
-            ctx_->ProcessMouseButtonDown(0, 0);
+            ctx_->ProcessMouseButtonDown(0, mods);
         if (!input.mouse_down[0])
-            ctx_->ProcessMouseButtonUp(0, 0);
+            ctx_->ProcessMouseButtonUp(0, mods);
         if (input.mouse_clicked[1])
-            ctx_->ProcessMouseButtonDown(1, 0);
+            ctx_->ProcessMouseButtonDown(1, mods);
         if (!input.mouse_down[1])
-            ctx_->ProcessMouseButtonUp(1, 0);
+            ctx_->ProcessMouseButtonUp(1, mods);
     }
 
     Rml::Element* RmlOverlayContext::getElementById(const std::string& id) {

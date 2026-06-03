@@ -357,33 +357,6 @@ namespace lfs::training::mcmc {
         void* stream = nullptr);
 
     /**
-     * Fused dead mask computation (ZERO intermediate allocations)
-     *
-     * Directly computes boolean dead mask from opacities and rotations in a single pass.
-     * Replaces the two-step process of:
-     *   1. Computing rot_mag_sq = (rotation * rotation).sum(-1)  [creates [N] intermediate]
-     *   2. Computing dead_mask = (opacity <= min_opacity).logical_or(rot_mag_sq < 1e-8f)
-     *
-     * Dead Gaussians are those with:
-     *   - opacity <= min_opacity OR
-     *   - ||rotation||^2 < 1e-8 (near-zero rotation magnitude)
-     *
-     * @param opacities [N] - Opacity values
-     * @param rotations [N, 4] - Quaternion rotations
-     * @param dead_mask [N] - Output: boolean mask (uint8_t)
-     * @param N - Number of Gaussians
-     * @param min_opacity - Minimum valid opacity threshold
-     * @param stream - CUDA stream
-     */
-    void launch_compute_dead_mask(
-        const float* opacities,
-        const float* rotations,
-        uint8_t* dead_mask,
-        size_t N,
-        float min_opacity,
-        void* stream = nullptr);
-
-    /**
      * In-place element-wise maximum: a[i] = max(a[i], b[i])
      *
      * Replaces allocating maximum() call that creates a new tensor every iteration.

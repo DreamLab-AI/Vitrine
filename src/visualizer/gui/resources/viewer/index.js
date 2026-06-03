@@ -99358,6 +99358,10 @@ class SkyElement extends AsyncElement {
         this._scene.sky.center = this._center;
         this._scene.skyboxIntensity = this._intensity;
         this._scene.skyboxMip = this._level;
+        const app = this.closestApp?.app;
+        if (app) {
+            app.renderNextFrame = true;
+        }
     }
     async _loadSkybox() {
         var _a;
@@ -99391,6 +99395,10 @@ class SkyElement extends AsyncElement {
         (_b = this._scene.envAtlas) === null || _b === void 0 ? void 0 : _b.destroy();
         // @ts-ignore
         this._scene.envAtlas = null;
+        const app = this.closestApp?.app;
+        if (app) {
+            app.renderNextFrame = true;
+        }
         this._scene = null;
     }
     /**
@@ -99418,6 +99426,10 @@ class SkyElement extends AsyncElement {
         this._center = value;
         if (this._scene) {
             this._scene.sky.center = this._center;
+            const app = this.closestApp?.app;
+            if (app) {
+                app.renderNextFrame = true;
+            }
         }
     }
     /**
@@ -99435,6 +99447,10 @@ class SkyElement extends AsyncElement {
         this._intensity = value;
         if (this._scene) {
             this._scene.skyboxIntensity = this._intensity;
+            const app = this.closestApp?.app;
+            if (app) {
+                app.renderNextFrame = true;
+            }
         }
     }
     /**
@@ -99452,6 +99468,10 @@ class SkyElement extends AsyncElement {
         this._level = value;
         if (this._scene) {
             this._scene.skyboxMip = this._level;
+            const app = this.closestApp?.app;
+            if (app) {
+                app.renderNextFrame = true;
+            }
         }
     }
     /**
@@ -99483,6 +99503,10 @@ class SkyElement extends AsyncElement {
         this._rotation = value;
         if (this._scene) {
             this._scene.skyboxRotation = new Quat().setFromEulerAngles(value);
+            const app = this.closestApp?.app;
+            if (app) {
+                app.renderNextFrame = true;
+            }
         }
     }
     /**
@@ -99500,6 +99524,10 @@ class SkyElement extends AsyncElement {
         this._scale = value;
         if (this._scene) {
             this._scene.sky.node.setLocalScale(this._scale);
+            const app = this.closestApp?.app;
+            if (app) {
+                app.renderNextFrame = true;
+            }
         }
     }
     /**
@@ -99520,6 +99548,10 @@ class SkyElement extends AsyncElement {
             const layer = this._scene.layers.getLayerById(LAYERID_SKYBOX);
             if (layer) {
                 layer.enabled = this._type !== 'none';
+            }
+            const app = this.closestApp?.app;
+            if (app) {
+                app.renderNextFrame = true;
             }
         }
     }
@@ -102441,6 +102473,7 @@ const main = (app, camera, settingsJson, config) => {
     const skyboxLoad = config.skyboxUrl &&
         loadSkybox(app, config.skyboxUrl).then((asset) => {
             app.scene.envAtlas = asset.resource;
+            app.renderNextFrame = true;
         });
     // Load and play sound
     if (global.settings.soundUrl) {

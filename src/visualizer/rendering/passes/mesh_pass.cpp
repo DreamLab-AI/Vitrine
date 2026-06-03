@@ -51,7 +51,8 @@ namespace lfs::vis {
                 .shadow_map_resolution = ctx.settings.mesh_shadow_resolution,
                 .dim_non_emphasized = ctx.settings.desaturate_unselected && any_emphasized,
                 .flash_intensity = flash_intensity,
-                .background_color = ctx.settings.background_color};
+                .background_color = ctx.settings.background_color,
+                .transparent_background = environmentBackgroundUsesTransparentViewerCompositing(ctx.settings)};
 
             glEnable(GL_DEPTH_TEST);
             glDepthFunc(GL_LESS);
@@ -81,10 +82,6 @@ namespace lfs::vis {
                     LOG_ERROR("Failed to composite: {}", composite_result.error());
                 }
             } else {
-                glClearColor(ctx.settings.background_color.r, ctx.settings.background_color.g,
-                             ctx.settings.background_color.b, 1.0f);
-                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
                 const auto present_result = engine.presentMeshOnly();
                 if (!present_result)
                     LOG_ERROR("Failed to present mesh: {}", present_result.error());

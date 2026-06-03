@@ -39,8 +39,11 @@ namespace gsplat_fwd {
         const scalar_t* __restrict__ radial_coeffs,     // [C, 6] or [C, 4] optional
         const scalar_t* __restrict__ tangential_coeffs, // [C, 2] optional
         const scalar_t* __restrict__ thin_prism_coeffs, // [C, 2] optional
+        // node transforms
+        const scalar_t* __restrict__ model_transforms, // [num_transforms, 4, 4] row-major optional
+        const int num_transforms,
         // node visibility culling (used when visible_indices is null)
-        const int* __restrict__ transform_indices,     // [N_total] optional
+        const int* __restrict__ transform_indices,     // [N_total] optional (also maps gaussians -> model_transforms)
         const bool* __restrict__ node_visibility_mask, // [num_visibility_nodes] optional
         const int num_visibility_nodes,
         // indirect indexing
@@ -77,7 +80,7 @@ namespace gsplat_fwd {
         }
 
         // Read from global gaussian index
-        const glm::fvec3 mean = glm::make_vec3(means + gid * 3);
+        const glm::fvec3 mean_local = glm::make_vec3(means + gid * 3);
         const glm::fvec3 scale = glm::make_vec3(scales + gid * 3);
         glm::fquat quat = glm::fquat{
             quats[gid * 4 + 0],
@@ -85,6 +88,16 @@ namespace gsplat_fwd {
             quats[gid * 4 + 2],
             quats[gid * 4 + 3]}; // w,x,y,z quaternion
         quat = glm::normalize(quat);
+
+        const scalar_t* model_transform = nullptr;
+        glm::fvec3 mean_world = mean_local;
+        if (model_transforms != nullptr && num_transforms > 0) {
+            const int transform_idx = transform_indices != nullptr
+                                          ? min(max(transform_indices[gid], 0), num_transforms - 1)
+                                          : 0;
+            model_transform = model_transforms + transform_idx * 16;
+            mean_world = apply_row_major_transform_point(model_transform, mean_local);
+        }
 
         // shift pointers to the current camera. note that glm is colume-major.
         const vec2 focal_length = {Ks[cid * 9 + 0], Ks[cid * 9 + 4]};
@@ -99,7 +112,7 @@ namespace gsplat_fwd {
         // transform Gaussian center to camera space
         // Interpolate to *center* shutter pose as single per-Gaussian camera pose
         const auto shutter_pose = interpolate_shutter_pose(0.5f, rs_params);
-        const vec3 mean_c = glm::rotate(shutter_pose.q, mean) + shutter_pose.t;
+        const vec3 mean_c = glm::rotate(shutter_pose.q, mean_world) + shutter_pose.t;
         if (!isfinite(mean_c.x) || !isfinite(mean_c.y) || !isfinite(mean_c.z)) {
             radii[idx * 2] = 0;
             radii[idx * 2 + 1] = 0;
@@ -125,7 +138,7 @@ namespace gsplat_fwd {
                 PerfectPinholeCameraModel camera_model(cm_params);
                 image_gaussian_return =
                     world_gaussian_to_image_gaussian_unscented_transform_shutter_pose(
-                        camera_model, rs_params, ut_params, mean, scale, quat);
+                        camera_model, rs_params, ut_params, mean_local, scale, quat, model_transform);
             } else {
                 OpenCVPinholeCameraModel<>::Parameters cm_params = {};
                 cm_params.resolution = {image_width, image_height};
@@ -144,7 +157,7 @@ namespace gsplat_fwd {
                 OpenCVPinholeCameraModel camera_model(cm_params);
                 image_gaussian_return =
                     world_gaussian_to_image_gaussian_unscented_transform_shutter_pose(
-                        camera_model, rs_params, ut_params, mean, scale, quat);
+                        camera_model, rs_params, ut_params, mean_local, scale, quat, model_transform);
             }
         } else if (camera_model_type == CameraModelType::FISHEYE) {
             OpenCVFisheyeCameraModel<>::Parameters cm_params = {};
@@ -158,14 +171,14 @@ namespace gsplat_fwd {
             OpenCVFisheyeCameraModel camera_model(cm_params);
             image_gaussian_return =
                 world_gaussian_to_image_gaussian_unscented_transform_shutter_pose(
-                    camera_model, rs_params, ut_params, mean, scale, quat);
+                    camera_model, rs_params, ut_params, mean_local, scale, quat, model_transform);
         } else if (camera_model_type == CameraModelType::EQUIRECTANGULAR) {
             EquirectangularCameraModel::Parameters cm_params = {};
             cm_params.resolution = {image_width, image_height};
             EquirectangularCameraModel camera_model(cm_params);
             image_gaussian_return =
                 world_gaussian_to_image_gaussian_unscented_transform_shutter_pose(
-                    camera_model, rs_params, ut_params, mean, scale, quat);
+                    camera_model, rs_params, ut_params, mean_local, scale, quat, model_transform);
         } else if (camera_model_type == CameraModelType::THIN_PRISM_FISHEYE) {
             ThinPrismFisheyeCameraModel<>::Parameters cm_params = {};
             cm_params.resolution = {image_width, image_height};
@@ -181,7 +194,7 @@ namespace gsplat_fwd {
             ThinPrismFisheyeCameraModel camera_model(cm_params);
             image_gaussian_return =
                 world_gaussian_to_image_gaussian_unscented_transform_shutter_pose(
-                    camera_model, rs_params, ut_params, mean, scale, quat);
+                    camera_model, rs_params, ut_params, mean_local, scale, quat, model_transform);
         } else {
             // should never reach here
             assert(false);
@@ -307,8 +320,10 @@ namespace gsplat_fwd {
         const float* radial_coeffs,     // [C, 6] or [C, 4] optional (can be nullptr)
         const float* tangential_coeffs, // [C, 2] optional (can be nullptr)
         const float* thin_prism_coeffs, // [C, 2] optional (can be nullptr)
+        const float* model_transforms,  // [num_transforms, 4, 4] row-major optional (can be nullptr)
         // node visibility culling
-        const int* transform_indices,     // [N_total] optional (can be nullptr)
+        const int* transform_indices, // [N_total] optional (can be nullptr)
+        int num_transforms,
         const bool* node_visibility_mask, // [num_visibility_nodes] optional (can be nullptr)
         int num_visibility_nodes,
         const int* visible_indices, // [M] maps output idx → global gaussian idx (nullptr = all visible)
@@ -353,6 +368,8 @@ namespace gsplat_fwd {
                 radial_coeffs,
                 tangential_coeffs,
                 thin_prism_coeffs,
+                model_transforms,
+                num_transforms,
                 transform_indices,
                 node_visibility_mask,
                 num_visibility_nodes,

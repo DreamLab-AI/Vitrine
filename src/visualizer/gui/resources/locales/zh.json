@@ -35,7 +35,6 @@
     "help.about": "关于LichtFeld Studio"
   },
   "window": {
-    "getting_started": "入门指南",
     "about": "关于LichtFeld Studio",
     "input_settings": "输入设置",
     "debug_info": "调试信息",
@@ -43,21 +42,20 @@
     "scene": "场景",
     "rendering": "渲染",
     "training": "训练",
-    "preferences": "偏好设置"
+    "preferences": "偏好设置",
+    "histogram": "Histogram"
   },
   "getting_started": {
-    "title": "快速入门指南",
+    "title": "入门指南",
     "description": "学习如何准备数据集并开始使用LichtFeld Studio：",
     "wiki_section": "维基 & 常见问题",
+    "video_automotive": "3dgs for automotive marketing",
     "video_intro": "360度等距柱状投影图像训练",
     "video_latest": "LichtFeld v0.3.0 功能概览",
     "video_reality_scan": "Reality Scan数据集",
     "video_colmap": "COLMAP教程",
     "video_lichtfeld": "LichtFeld教程",
-    "video_masks": "蒙版教程",
-    "loading": "加载中...",
-    "wiki_label": "Wiki:",
-    "watch_tooltip": "观看：{title}"
+    "video_masks": "蒙版教程"
   },
   "about": {
     "title": "LICHTFELD STUDIO",
@@ -93,7 +91,7 @@
     "section.losses": "损失参数",
     "section.initialization": "初始化",
     "section.thresholds": "阈值",
-    "section.save_steps": "保存步骤",
+    "section.save_steps": "保存/评估步骤",
     "section.basic_params": "训练参数",
     "section.advanced_params": "高级训练参数",
     "section.sparsity": "稀疏性设置",
@@ -105,6 +103,7 @@
     "dataset.cpu_cache": "CPU Cache:",
     "dataset.fs_cache": "FS Cache:",
     "dataset.output": "Output:",
+    "dataset.test_every": "Test Every:",
     "opt.strategy": "Strategy:",
     "opt.learning_rates": "Learning Rates:",
     "opt.iterations": "Iterations:",
@@ -180,7 +179,9 @@
     "tooltip.max_width": "最大图像宽度（像素）",
     "tooltip.cpu_cache": "将解码图像缓存到RAM",
     "tooltip.fs_cache": "将解码图像缓存到磁盘",
-    "tooltip.save_steps": "保存检查点的迭代次数",
+    "tooltip.test_every": "每N张图像使用一张作为测试集",
+    "tooltip.enable_eval": "启用训练期间的评估（在测试集上计算PSNR/SSIM）。会略微降低训练速度。",
+    "tooltip.save_steps": "保存检查点并执行评估的迭代次数（如果启用了启用评估）。评估始终在与检查点相同的迭代次数执行。",
     "tooltip.lr_position": "高斯位置学习率",
     "tooltip.lr_sh_coeff": "球谐函数学习率",
     "tooltip.lr_opacity": "不透明度学习率",
@@ -263,7 +264,74 @@
     "options.bg.color": "颜色",
     "options.bg.modulation": "调制",
     "options.bg.image": "图像",
-    "options.bg.random": "随机"
+    "options.bg.random": "随机",
+    "tooltip": {
+      "btn_switch_edit": "切换到已训练场景的编辑模式",
+      "ppisp_freeze_from_sidecar": "从 sidecar 文件加载 PPISP 权重",
+      "ppisp_sidecar_path": "PPISP sidecar 文件路径",
+      "ppisp_sidecar_browse": "浏览 PPISP sidecar 文件",
+      "ppisp_sidecar_clear": "清除已选 PPISP sidecar",
+      "bg_color": "训练期间使用的纯色背景",
+      "bg_image_path": "训练期间使用的背景图像路径",
+      "bg_image_browse": "浏览背景图像",
+      "bg_image_clear": "清除已选背景图像",
+      "dataset_path": "已加载数据集的路径",
+      "dataset_images": "数据集中的图像数量",
+      "dataset_output": "训练产物的输出目录",
+      "opt_strategy_display": "当前活动的稠密化策略",
+      "bilateral_grid_x": "双边网格 X 分辨率",
+      "bilateral_grid_y": "双边网格 Y 分辨率",
+      "bilateral_grid_w": "双边网格颜色/强度分箱",
+      "bilateral_grid_lr": "双边网格学习率",
+      "prune_opacity": "剪除低于此不透明度的高斯",
+      "revised_opacity": "使用修订后的不透明度公式",
+      "min_opacity": "剪枝的最小不透明度阈值",
+      "grow_scale_3d": "当 3D 尺度超过此值时进行稠密化",
+      "grow_scale_2d": "当 2D 屏幕空间尺度超过此值时进行稠密化",
+      "prune_scale_3d": "当 3D 尺度超过此值时剪枝",
+      "prune_scale_2d": "当 2D 屏幕空间尺度超过此值时剪枝",
+      "pause_refine_after_reset": "不透明度重置后暂停细化的迭代次数",
+      "sparsify_steps": "稀疏化步数",
+      "init_rho": "初始稀疏惩罚（rho）",
+      "prune_ratio": "稀疏化结束时要剪除的高斯最终比例",
+      "opt": {
+        "strategy": {
+          "mrnf": "带 MRNF 精细化的默认 3DGS 策略",
+          "igs_plus": "改进的 3DGS+，具备精细生长/剪枝",
+          "mcmc": "基于采样的稠密化 MCMC 策略"
+        },
+        "sh_degree": {
+          "0": "仅漫反射 — 最快，无视角相关颜色",
+          "1": "一阶 SH — 基础高光提示",
+          "2": "二阶 SH — 更好的视角相关颜色",
+          "3": "三阶 SH — 最佳质量，最多 VRAM"
+        },
+        "tile_mode": {
+          "full": "全分辨率光栅化",
+          "half": "半分辨率光栅化（约 4× 更快）",
+          "quarter": "四分之一分辨率光栅化（约 16× 更快）"
+        },
+        "mask_mode": {
+          "none": "在整张图像上训练，无掩码",
+          "segment": "使用分割掩码作为前景",
+          "ignore": "在损失中忽略被掩码的像素",
+          "alpha_consistent": "强制 alpha 与掩码一致"
+        },
+        "bg_mode": {
+          "color": "使用固定背景色",
+          "modulation": "使用重建的 alpha 调制背景",
+          "image": "使用背景图像",
+          "random": "每步随机化背景色"
+        },
+        "resize_factor": {
+          "auto": "根据 VRAM 自动选择缩放因子",
+          "1": "以原始图像分辨率训练",
+          "2": "以一半图像分辨率训练",
+          "4": "以四分之一图像分辨率训练",
+          "8": "以八分之一图像分辨率训练"
+        }
+      }
+    }
   },
   "scene": {
     "add_ply": "添加PLY...",
@@ -300,8 +368,8 @@
     "background": "背景",
     "enable_for_training": "启用训练",
     "disable_for_training": "禁用训练",
-    "enable_all_training": "全部启用训练",
-    "disable_all_training": "全部禁用训练",
+    "enable_all_training": "启用所选相机",
+    "disable_all_training": "禁用所选相机",
     "training_enabled_tooltip": "已包含在训练中",
     "training_disabled_tooltip": "已从训练中排除",
     "go_to_keyframe": "转到关键帧视图",
@@ -315,7 +383,10 @@
     "keyframe_easing.ease_out": "缓出",
     "keyframe_easing.ease_in_out": "缓入缓出",
     "keyframe_label": "关键帧 {index}  ({time:.2f}s)",
-    "search": "搜索"
+    "search": "搜索",
+    "show_in_file_manager": "在文件管理器中显示",
+    "go_to_image": "转到图像",
+    "open_in_gt_compare": "在 GT 比较中打开"
   },
   "export": {
     "title": "导出",
@@ -323,6 +394,7 @@
     "format.sog_supersplat": "SOG（SuperSplat）",
     "format.spz_niantic": "SPZ（Niantic）",
     "format.usd_openusd": "USD (OpenUSD)",
+    "format.usdz_nurec": "USDZ (NuRec)",
     "format.html_viewer": "HTML查看器",
     "select_models": "选择模型：",
     "all": "全部",
@@ -372,6 +444,8 @@
     "step": "步骤",
     "loss": "损失",
     "eta": "预计剩余时间",
+    "psnr": "PSNR",
+    "ssim": "SSIM",
     "unknown": "未知",
     "dataset_no_trainer": "数据集（无训练器）",
     "dataset_ready": "数据集（就绪）",
@@ -439,6 +513,7 @@
     "equirectangular": "等距柱状投影",
     "gut_mode": "GUT（3DGUT）",
     "mip_filter": "Mip滤波器",
+    "camera_metrics": "相机指标",
     "appearance_correction": "PPISP Correction",
     "ppisp_mode": "Mode",
     "ppisp_mode_manual": "Manual",
@@ -472,7 +547,11 @@
     "mesh_shadow_enabled": "阴影",
     "mesh_shadow_resolution": "阴影分辨率",
     "camera_frustum_scale": "视锥体缩放",
-    "voxel_size": "体素大小"
+    "voxel_size": "体素大小",
+    "theme_vignette": "暗角",
+    "theme_vignette_intensity": "暗角强度",
+    "theme_vignette_radius": "暗角半径",
+    "theme_vignette_softness": "暗角柔和度"
   },
   "toolbar": {
     "selection": "选择 (1)",
@@ -507,7 +586,8 @@
     "perspective": "透视",
     "orthographic": "正交",
     "sequencer": "序列器",
-    "ellipsoid": "Ellipsoid"
+    "ellipsoid": "Ellipsoid",
+    "histogram": "Histogram"
   },
   "transform": {
     "node": "节点：%s",
@@ -550,7 +630,8 @@
     "idle": "空闲",
     "running": "运行中",
     "finished": "已完成",
-    "save_steps": "保存步骤",
+    "save_steps": "保存/评估步骤",
+    "save_eval_steps": "保存/评估步骤",
     "new_step": "新建步骤",
     "no_save_steps": "未配置保存步骤",
     "sparsity": "稀疏性设置",
@@ -575,6 +656,18 @@
     "ppisp_gamma_channel": "每通道伽马偏移",
     "ppisp_crf_toe": "阴影压缩（CRF曲线的脚趾）",
     "ppisp_crf_shoulder": "高光滚降（CRF曲线的肩部）",
+    "theme_vignette": "启用视口边缘变暗",
+    "theme_vignette_intensity": "调整暗角暗度 (0-1)",
+    "theme_vignette_radius": "调整暗角开始的位置 (0-1)",
+    "theme_vignette_softness": "调整暗角边缘的柔和度 (0-1)",
+    "simplify_source": "用作简化输入的已选 splat 节点",
+    "simplify_target": "简化结果中要保留的目标高斯数量",
+    "simplify_knn_k": "用于评估合并候选的邻域大小",
+    "simplify_merge_cap": "单次迭代中允许合并的高斯最大比例",
+    "simplify_opacity_prune": "在合并前剪除低于该不透明度阈值的高斯",
+    "simplify_output": "将要添加到场景中的新简化 splat 节点名称",
+    "simplify_apply": "根据所选来源创建一个新的简化 splat 节点",
+    "simplify_cancel": "取消当前正在运行的 splat 简化任务",
     "render_scale": "查看器分辨率（越低=越少VRAM）",
     "point_cloud_forced": "训练开始前强制启用",
     "desaturate_unselected": "使未选择的PLY变暗",
@@ -597,9 +690,13 @@
     "selection_colors": "选区可视化颜色",
     "seq_camera_path": "切换相机路径可视化",
     "seq_first": "跳转到第一个关键帧",
+    "seq_prev_keyframe": "跳转到上一个关键帧",
+    "seq_prev": "跳转到上一个关键帧",
     "seq_stop": "停止播放",
     "seq_play": "播放动画",
     "seq_pause": "暂停动画",
+    "seq_next_keyframe": "跳转到下一个关键帧",
+    "seq_next": "跳转到下一个关键帧",
     "seq_last": "跳转到最后一个关键帧",
     "seq_loop_off": "启用循环播放",
     "seq_loop_on": "禁用循环播放",
@@ -615,8 +712,75 @@
     "seq_quality": "CRF质量（值越低 = 质量越高，文件越大）",
     "seq_export": "从相机路径导出视频",
     "seq_clear": "删除所有关键帧",
+    "seq_dock": "停靠序列器",
+    "seq_undock": "取消停靠序列器",
     "seq_interval": "网格对齐间隔",
-    "seq_preview_size": "画中画预览缩放"
+    "seq_preview_size": "画中画预览缩放",
+    "transform_position_axis": "沿此轴平移所选对象",
+    "transform_rotation_axis": "围绕此轴旋转所选对象（度）",
+    "transform_scale_axis": "沿此轴缩放所选对象",
+    "transform_scale_uniform": "所有轴上的统一缩放",
+    "transform_reset": "重置变换为单位变换",
+    "environment_mode": "背景来源：纯色或 HDRI",
+    "environment_map_path": "选择 HDRI 环境贴图",
+    "environment_exposure": "HDRI 曝光（EV 档位）",
+    "environment_rotation": "围绕垂直轴旋转 HDRI",
+    "voxel_size": "用于空间查询的体素单元大小",
+    "axes_size": "坐标轴线长度",
+    "grid_plane": "绘制网格的平面",
+    "grid_opacity": "网格线不透明度",
+    "camera_frustum_scale": "相机视锥的显示大小",
+    "camera_metrics_mode": "在训练相机上显示图像质量指标",
+    "selection_color_committed": "已提交选择的颜色",
+    "selection_color_preview": "选择预览的颜色",
+    "selection_color_center_marker": "选择中心标记的颜色",
+    "mesh_wireframe": "以线框方式渲染网格",
+    "mesh_wireframe_color": "线框颜色",
+    "mesh_wireframe_width": "线框线宽",
+    "mesh_light_intensity": "网格光照强度",
+    "mesh_ambient": "网格环境光贡献",
+    "mesh_backface_culling": "不渲染背面三角形",
+    "mesh_shadow_enabled": "网格投射和接收阴影",
+    "mesh_shadow_resolution": "阴影贴图分辨率",
+    "ppisp_vignette_enabled": "在校正中应用暗角",
+    "ppisp_vignette_strength": "角落暗角强度",
+    "opt": {
+      "environment_mode": {
+        "solid_color": "使用纯色背景渲染",
+        "equirect": "使用 360° HDR 环境贴图渲染"
+      },
+      "environment_map_preset": {
+        "kloofendal": "内置：Kloofendal Pure Sky",
+        "alps": "内置：Alps Field",
+        "custom": "最近加载的自定义 HDRI"
+      },
+      "grid_plane": {
+        "yz": "在 YZ 平面显示网格（右视图）",
+        "xz": "在 XZ 平面显示网格（顶视图）",
+        "xy": "在 XY 平面显示网格（前视图）"
+      },
+      "sh_degree": {
+        "0": "仅漫反射 — 无视角相关光照",
+        "1": "一阶 SH — 基础视角相关光照",
+        "2": "二阶 SH — 更多方向细节",
+        "3": "三阶 SH — 最佳视角相关质量"
+      },
+      "camera_metrics": {
+        "off": "隐藏质量指标",
+        "psnr": "显示每个训练相机的 PSNR",
+        "psnr_ssim": "显示每个训练相机的 PSNR 和 SSIM"
+      },
+      "shadow_resolution": {
+        "512": "512×512 阴影贴图（低质量，快）",
+        "1024": "1024×1024 阴影贴图（平衡）",
+        "2048": "2048×2048 阴影贴图（高质量）",
+        "4096": "4096×4096 阴影贴图（最佳质量，慢）"
+      },
+      "ppisp_mode": {
+        "manual": "手动：直接调整校正滑块",
+        "auto": "自动：使用训练好的控制器进行校正"
+      }
+    }
   },
   "exit_popup": {
     "title": "退出应用程序？",
@@ -766,7 +930,8 @@
     "ppisp_freeze_gaussians": "冻结高斯:",
     "disabled": "已禁用",
     "ppisp_freeze_from_sidecar": "Frozen Sidecar:",
-    "ppisp_sidecar_path": "Sidecar Path:"
+    "ppisp_sidecar_path": "Sidecar Path:",
+    "enable_eval": "Enable Eval:"
   },
   "image_preview": {
     "title": "图像预览",
@@ -826,7 +991,10 @@
     "no_image": "无图像",
     "zoom": "缩放",
     "fit": "适配",
-    "storage_section": "存储"
+    "storage_section": "存储",
+    "color_picker": "取色",
+    "rotate_left": "向左旋转 90°",
+    "rotate_right": "向右旋转 90°"
   },
   "startup": {
     "supported_by": "支持：",
@@ -969,7 +1137,9 @@
     "sort.popularity_desc": "热门优先",
     "sort.popularity_asc": "冷门优先",
     "downloads": "下载量",
-    "load_on_startup": "启动时加载"
+    "load_on_startup": "启动时加载",
+    "view.grid": "网格视图",
+    "view.list": "列表视图"
   },
   "sequencer": {
     "edit_focal_length": "编辑焦距...",
@@ -1005,7 +1175,16 @@
     "keyframe_preview": "关键帧 {} 预览"
   },
   "rendering_panel": {
-    "fov_format": "FOV：{hfov:.1f}° H / {vfov:.1f}° V"
+    "fov_format": "FOV：{hfov:.1f}° H / {vfov:.1f}° V",
+    "section_simplify": "Splat 简化",
+    "simplify_source": "来源",
+    "simplify_select_source": "选择一个 splat 节点",
+    "simplify_target": "目标",
+    "simplify_knn_k": "kNN K",
+    "simplify_merge_cap": "合并上限",
+    "simplify_opacity_prune": "不透明度剪枝",
+    "simplify_original": "原始",
+    "simplify_output": "输出"
   },
   "scripts_panel": {
     "actions": "操作",
@@ -1095,5 +1274,135 @@
     "clear_confirm": "清除所有关键帧？",
     "confirm": "确认",
     "cancel": "取消"
+  },
+  "histogram": {
+    "title_eyebrow": "Gaussian Analysis",
+    "field": "Field",
+    "log_scale": "对数刻度",
+    "samples": "Samples",
+    "range": "Range",
+    "mean": "Mean",
+    "median": "Median",
+    "p95": "P95",
+    "peak_bin": "Peak Bin",
+    "bin_count": "{count} bins",
+    "bins": "分箱",
+    "compare_x_bins": "X 分箱",
+    "compare_y_bins": "Y 分箱",
+    "marked": "Marked",
+    "count": "Count",
+    "clear": "Clear",
+    "delete": "Delete",
+    "no_marked_range": "No marked range",
+    "gaussian_count": "{count} Gaussians",
+    "range_value": "{min} to {max}",
+    "status_drag_delete": "Left-drag across the histogram to mark a range, then delete it.",
+    "status_selection": "Marked range becomes the active Gaussian selection.",
+    "summary": "{metric} distribution across {count} Gaussians",
+    "bin_tooltip": "Bin {index}: {left} to {right} | {count} Gaussians",
+    "compare_with": "Compare With",
+    "compare_bin_count": "{x_count} x {y_count} 分箱",
+    "compare": {
+      "off": "Off",
+      "summary": "{x_metric} vs {y_metric} across {count} Gaussians",
+      "range_value": "X {x_range} | Y {y_range}",
+      "status_selection": "Marked compare region becomes the active Gaussian selection.",
+      "bin_tooltip": "X {x_range} | Y {y_range} | {count} Gaussians",
+      "empty": {
+        "title": "Compare unavailable",
+        "message": "Choose a second metric to see how two Gaussian properties cluster together.",
+        "metric_unavailable": {
+          "title": "Compare metric unavailable",
+          "message": "The comparison metric could not be read from the combined Gaussian model."
+        },
+        "no_visible_values": {
+          "title": "No comparable values",
+          "message": "The selected metric pair does not contain any visible finite samples to visualize."
+        }
+      }
+    },
+    "delete_failed": {
+      "title": "Delete Failed",
+      "status": "Delete failed: {message}",
+      "unexpected": "The delete pipeline raised an unexpected error.",
+      "invalid_result": "The delete pipeline returned an invalid result.",
+      "reported_failure": "The delete pipeline reported a failure."
+    },
+    "empty": {
+      "unavailable": {
+        "title": "Histogram unavailable",
+        "message": "Switch to a view or edit scene with Gaussian splats to inspect a distribution."
+      },
+      "no_scene": {
+        "title": "No scene loaded",
+        "message": "Load a Gaussian scene, then reopen the histogram panel."
+      },
+      "no_visible_gaussians": {
+        "title": "No visible Gaussians",
+        "message": "The histogram only works when the active scene exposes a visible Gaussian model."
+      },
+      "metric_unavailable": {
+        "title": "Metric unavailable",
+        "message": "The selected metric could not be read from the combined Gaussian model."
+      },
+      "no_visible_values": {
+        "title": "No visible values",
+        "message": "The selected metric does not contain any visible finite samples to visualize."
+      }
+    },
+    "metric": {
+      "opacity": {
+        "label": "Opacity",
+        "description": "Activated Gaussian opacity in [0, 1]."
+      },
+      "position_x": {
+        "label": "Position X",
+        "description": "Gaussian world-space center on the X axis."
+      },
+      "position_y": {
+        "label": "Position Y",
+        "description": "Gaussian world-space center on the Y axis."
+      },
+      "position_z": {
+        "label": "Position Z",
+        "description": "Gaussian world-space center on the Z axis."
+      },
+      "scale_x": {
+        "label": "Scale X",
+        "description": "Activated Gaussian scale on the X axis."
+      },
+      "scale_y": {
+        "label": "Scale Y",
+        "description": "Activated Gaussian scale on the Y axis."
+      },
+      "scale_z": {
+        "label": "Scale Z",
+        "description": "Activated Gaussian scale on the Z axis."
+      },
+      "scale_max": {
+        "label": "Scale Max",
+        "description": "Largest activated scale component per Gaussian."
+      },
+      "volume": {
+        "label": "Volume",
+        "description": "Ellipsoid volume derived from activated Gaussian scales."
+      },
+      "anisotropy": {
+        "label": "Anisotropy",
+        "description": "Ratio of largest to smallest activated scale. 1 is sphere-like; larger values are spikier."
+      },
+      "erank": {
+        "label": "有效秩",
+        "description": "基于熵的已激活高斯尺度有效秩。1 表示线状，2 表示片状，3 表示球状。"
+      },
+      "distance": {
+        "label": "Distance",
+        "description": "Distance from the current scene center."
+      }
+    },
+    "undo": "Undo",
+    "redo": "Redo",
+    "undo_named": "Undo: {name}",
+    "redo_named": "Redo: {name}"
   }
 }

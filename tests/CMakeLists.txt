@@ -165,6 +165,7 @@ set(TEST_FILES
     test_dataloader_lfs.cpp
     test_bilateral_grid.cpp
     test_sparsity_debug.cpp
+    test_sparsity_optimizer.cpp
     test_dtype_operations_comprehensive.cpp
     test_tensor_bugs.cpp
     test_densification_performance.cpp
@@ -196,6 +197,7 @@ set(TEST_FILES
     test_spz_format.cpp
     test_converter_usd.cpp
     test_usd_format.cpp
+    test_nurec_usdz_format.cpp
     test_unicode_paths_windows.cpp
     test_interleaved_slice_copy.cpp
     test_densification_tensor_ops.cpp
@@ -205,8 +207,10 @@ set(TEST_FILES
     test_parameter_manager.cpp
     test_mcp_protocol.cpp
     test_mcp_app_utils.cpp
+    test_mcp_shared_scene_tools.cpp
     test_mcp_sequencer_tools.cpp
     test_video_export_utils.cpp
+    test_visualizer_post_work.cpp
     test_video_color_convert.cpp
     test_python_integration.cpp
     test_python_lsp_client.cpp
@@ -245,6 +249,7 @@ set(TEST_FILES
     test_rendering_refactor_services.cpp
     test_viewport.cpp
     test_input_controller_focus.cpp
+    test_input_controller_dataset_load.cpp
     test_selection_service_interactions.cpp
     test_undo_history.cpp
     test_selection_command_dispatch.cpp
@@ -254,6 +259,7 @@ set(TEST_FILES
     test_background_image.cpp
     test_operator_return_value.cpp
     test_sdl_rml_key_mapping.cpp
+    test_rml_path_utils.cpp
     test_sequencer_regressions.cpp
     test_tensor_storage_version.cpp
     test_modal_registry_regression.cpp
@@ -266,6 +272,7 @@ set(TEST_FILES
     test_ppisp_cuda_vs_torch.cpp
     test_controller_memory.cpp
     test_undistort.cpp
+    test_viewport_region_utils.cpp
     test_mesh_data.cpp
     test_openmesh_bridge.cpp
     test_mesh_loader.cpp

@@ -10,11 +10,13 @@
 #include "core/logger.hpp"
 #include "gui/gui_focus_state.hpp"
 #include "gui/panel_layout.hpp"
+#include "gui/rmlui/rml_document_utils.hpp"
 #include "gui/rmlui/rml_panel_host.hpp"
 #include "gui/rmlui/rml_theme.hpp"
 #include "gui/rmlui/rml_tooltip.hpp"
 #include "gui/rmlui/rmlui_manager.hpp"
 #include "gui/rmlui/rmlui_render_interface.hpp"
+#include "gui/rmlui/sdl_rml_key_mapping.hpp"
 #include "internal/resource_paths.hpp"
 #include "python/python_runtime.hpp"
 #include "python/ui_hooks.hpp"
@@ -42,12 +44,13 @@ namespace lfs::vis::gui {
 
         try {
             const auto rml_path = lfs::vis::getAssetPath("rmlui/viewport_overlay.rml");
-            document_ = rml_context_->LoadDocument(rml_path.string());
+            document_ = rml_documents::loadDocument(rml_context_, rml_path);
             if (!document_) {
                 LOG_ERROR("RmlViewportOverlay: failed to load viewport_overlay.rml");
                 return;
             }
             document_->Show();
+            applyGTMetricsOverlay();
         } catch (const std::exception& e) {
             LOG_ERROR("RmlViewportOverlay: resource not found: {}", e.what());
             return;
@@ -89,6 +92,10 @@ namespace lfs::vis::gui {
         const auto overlay_panel_border = colorToRmlAlpha(t.palette.border, 0.45f);
         const auto overlay_text = colorToRml(t.palette.text);
         const auto overlay_text_dim = colorToRml(t.palette.text_dim);
+        const auto metrics_bg = colorToRmlAlpha(t.palette.background, 0.92f);
+        const auto metrics_border = colorToRmlAlpha(t.palette.primary, 0.55f);
+        const auto metrics_label = colorToRml(t.palette.text_dim);
+        const auto metrics_value = colorToRml(t.palette.text);
 
         return std::format(
             ".toolbar-container {{ background-color: {}; border-radius: {:.0f}dp; }}\n"
@@ -98,6 +105,9 @@ namespace lfs::vis::gui {
             ".icon-btn.selected {{ background-color: {}; }}\n"
             ".icon-btn.selected:hover {{ background-color: {}; }}\n"
             ".icon-btn.selected img {{ image-color: {}; }}\n"
+            ".viewport-metrics-card {{ background-color: {}; border-color: {}; }}\n"
+            ".viewport-metrics-label {{ color: {}; }}\n"
+            ".viewport-metrics-value {{ color: {}; }}\n"
             ".viewport-status-backdrop {{ background-color: {}; }}\n"
             ".viewport-status-panel {{ background-color: {}; border-color: {}; border-radius: {:.0f}dp; }}\n"
             ".viewport-status-title {{ color: {}; }}\n"
@@ -108,6 +118,7 @@ namespace lfs::vis::gui {
             icon_dim,
             hover_bg,
             selected_bg, selected_bg_hover, selected_icon,
+            metrics_bg, metrics_border, metrics_label, metrics_value,
             overlay_backdrop,
             overlay_panel_bg, overlay_panel_border, t.sizes.window_rounding,
             overlay_text, overlay_text_dim, overlay_text_dim);
@@ -174,6 +185,23 @@ namespace lfs::vis::gui {
         updateToolbarRoots();
     }
 
+    void RmlViewportOverlay::setGTMetricsOverlay(GTMetricsOverlayState state) {
+        const bool changed =
+            gt_metrics_overlay_.visible != state.visible ||
+            std::abs(gt_metrics_overlay_.x - state.x) > 0.5f ||
+            std::abs(gt_metrics_overlay_.y - state.y) > 0.5f ||
+            gt_metrics_overlay_.psnr_text != state.psnr_text ||
+            gt_metrics_overlay_.show_ssim != state.show_ssim ||
+            gt_metrics_overlay_.ssim_text != state.ssim_text;
+        if (!changed) {
+            return;
+        }
+
+        gt_metrics_overlay_ = std::move(state);
+        applyGTMetricsOverlay();
+        render_needed_ = true;
+    }
+
     void RmlViewportOverlay::updateToolbarRoots() {
         if (!document_) {
             return;
@@ -197,6 +225,27 @@ namespace lfs::vis::gui {
                    show_secondary_toolbar_ && secondary_toolbar_width_ > 0.0f);
     }
 
+    void RmlViewportOverlay::applyGTMetricsOverlay() {
+        if (!document_) {
+            return;
+        }
+
+        if (auto* const overlay = document_->GetElementById("gt-metrics-overlay")) {
+            overlay->SetClass("hidden", !gt_metrics_overlay_.visible);
+            overlay->SetProperty("left", std::format("{:.1f}px", gt_metrics_overlay_.x));
+            overlay->SetProperty("top", std::format("{:.1f}px", gt_metrics_overlay_.y));
+        }
+        if (auto* const psnr = document_->GetElementById("gt-metrics-psnr")) {
+            psnr->SetInnerRML(Rml::String(gt_metrics_overlay_.psnr_text));
+        }
+        if (auto* const ssim_row = document_->GetElementById("gt-metrics-ssim-row")) {
+            ssim_row->SetClass("hidden", !gt_metrics_overlay_.show_ssim);
+        }
+        if (auto* const ssim = document_->GetElementById("gt-metrics-ssim")) {
+            ssim->SetInnerRML(Rml::String(gt_metrics_overlay_.ssim_text));
+        }
+    }
+
     void RmlViewportOverlay::processInput(const PanelInputState& input) {
         wants_input_ = false;
         if (!rml_context_ || !document_)
@@ -214,6 +263,8 @@ namespace lfs::vis::gui {
             return;
         const float mx = input.mouse_x - vp_pos_.x;
         const float my = input.mouse_y - vp_pos_.y;
+        const int mods = sdlModsToRml(input.key_ctrl, input.key_shift,
+                                      input.key_alt, input.key_super);
         const int rml_mx = static_cast<int>(mx);
         const int rml_my = static_cast<int>(my);
         const bool was_inside = mouse_pos_valid_ &&
@@ -227,7 +278,7 @@ namespace lfs::vis::gui {
             last_mouse_x_ = rml_mx;
             last_mouse_y_ = rml_my;
             render_needed_ = true;
-            rml_context_->ProcessMouseMove(rml_mx, rml_my, 0);
+            rml_context_->ProcessMouseMove(rml_mx, rml_my, mods);
         }
 
         auto* hover = rml_context_->GetHoverElement();
@@ -241,23 +292,23 @@ namespace lfs::vis::gui {
 
             if (input.mouse_clicked[0]) {
                 render_needed_ = true;
-                rml_context_->ProcessMouseButtonDown(0, 0);
+                rml_context_->ProcessMouseButtonDown(0, mods);
             }
             if (input.mouse_released[0]) {
                 render_needed_ = true;
-                rml_context_->ProcessMouseButtonUp(0, 0);
+                rml_context_->ProcessMouseButtonUp(0, mods);
             }
             if (input.mouse_clicked[1]) {
                 render_needed_ = true;
-                rml_context_->ProcessMouseButtonDown(1, 0);
+                rml_context_->ProcessMouseButtonDown(1, mods);
             }
             if (input.mouse_released[1]) {
                 render_needed_ = true;
-                rml_context_->ProcessMouseButtonUp(1, 0);
+                rml_context_->ProcessMouseButtonUp(1, mods);
             }
             if (input.mouse_wheel != 0.0f) {
                 render_needed_ = true;
-                rml_context_->ProcessMouseWheel(Rml::Vector2f(0.0f, -input.mouse_wheel), 0);
+                rml_context_->ProcessMouseWheel(Rml::Vector2f(0.0f, -input.mouse_wheel), mods);
             }
 
             RmlPanelHost::setFrameTooltip(resolveRmlTooltip(hover), hover);

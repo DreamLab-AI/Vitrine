@@ -62,7 +62,7 @@ namespace {
             return std::unexpected("not implemented");
         }
         void consolidateModels() override {}
-        void clearScene() override {}
+        std::expected<void, std::string> clearScene() override { return {}; }
         lfs::core::Scene& getScene() override { return scene_; }
         lfs::vis::SceneManager* getSceneManager() override { return nullptr; }
         lfs::vis::RenderingManager* getRenderingManager() override { return nullptr; }

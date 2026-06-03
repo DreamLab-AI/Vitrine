@@ -129,10 +129,10 @@ TEST_F(TensorStreamTest, OperationsProduceResultWithCorrectStream) {
         b = Tensor::ones({64}, Device::CUDA);
     }
 
-    // Binary ops create result via empty(), which stamps getCurrentCUDAStream()
-    // Since no guard is active now, result gets nullptr (default stream)
+    // Without an explicit guard, eager ops should inherit the producer stream so
+    // temporaries are consumed and retired on a safe execution stream.
     auto c = a + b;
-    EXPECT_EQ(c.stream(), nullptr);
+    EXPECT_EQ(c.stream(), stream);
 
     // With guard active, result gets the guarded stream
     {
@@ -140,6 +140,9 @@ TEST_F(TensorStreamTest, OperationsProduceResultWithCorrectStream) {
         auto d = a + b;
         EXPECT_EQ(d.stream(), stream);
     }
+
+    auto e = c.sum();
+    EXPECT_EQ(e.stream(), stream);
 
     cudaStreamDestroy(stream);
 }

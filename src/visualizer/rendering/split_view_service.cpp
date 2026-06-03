@@ -5,11 +5,112 @@
 #include "split_view_service.hpp"
 #include "gt_texture_cache.hpp"
 #include "render_pass.hpp"
+#include "rendering/coordinate_conventions.hpp"
 #include "scene/scene_manager.hpp"
 #include "training/trainer.hpp"
 #include "training/training_manager.hpp"
+#include <algorithm>
 
 namespace lfs::vis {
+
+    namespace detail {
+        [[nodiscard]] glm::mat4 currentSceneTransform(SceneManager* const scene_manager,
+                                                      const int camera_uid) {
+            if (!scene_manager) {
+                return glm::mat4(1.0f);
+            }
+
+            const auto& scene = scene_manager->getScene();
+            if (const auto transform = scene.getCameraSceneTransformByUid(camera_uid)) {
+                return lfs::rendering::dataWorldTransformToVisualizerWorld(*transform);
+            }
+
+            const auto visible_nodes = scene.getNodes();
+            const lfs::core::SceneNode* single_visible_point_cloud = nullptr;
+            for (const auto* node : visible_nodes) {
+                if (!node || node->type != lfs::core::NodeType::POINTCLOUD || !node->point_cloud) {
+                    continue;
+                }
+                if (!scene.isNodeEffectivelyVisible(node->id)) {
+                    continue;
+                }
+                if (single_visible_point_cloud) {
+                    return lfs::rendering::dataWorldTransformToVisualizerWorld(glm::mat4(1.0f));
+                }
+                single_visible_point_cloud = node;
+            }
+            if (single_visible_point_cloud) {
+                return lfs::rendering::dataWorldTransformToVisualizerWorld(
+                    scene.getWorldTransform(single_visible_point_cloud->id));
+            }
+
+            const auto visible_transforms = scene.getVisibleNodeTransforms();
+            return visible_transforms.empty()
+                       ? glm::mat4(1.0f)
+                       : lfs::rendering::dataWorldTransformToVisualizerWorld(visible_transforms[0]);
+        }
+    } // namespace detail
+
+    namespace {
+        [[nodiscard]] bool equalVec2(const glm::vec2& a, const glm::vec2& b) {
+            return a.x == b.x && a.y == b.y;
+        }
+
+        [[nodiscard]] bool equalMat4(const glm::mat4& a, const glm::mat4& b) {
+            for (int col = 0; col < 4; ++col) {
+                for (int row = 0; row < 4; ++row) {
+                    if (a[col][row] != b[col][row]) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+    } // namespace
+
+    namespace detail {
+
+        std::optional<GTRenderCamera> buildGTRenderCamera(const lfs::core::Camera& cam,
+                                                          const glm::ivec2 render_size,
+                                                          const glm::mat4& scene_transform) {
+            if (render_size.x <= 0 || render_size.y <= 0) {
+                return std::nullopt;
+            }
+
+            auto R_tensor = cam.R().cpu();
+            auto T_tensor = cam.T().cpu();
+            const float* const R_data = R_tensor.ptr<float>();
+            const float* const T_data = T_tensor.ptr<float>();
+            if (!R_data || !T_data) {
+                return std::nullopt;
+            }
+
+            const auto pose = lfs::rendering::visualizerCameraPoseFromDataWorldToCamera(
+                lfs::rendering::mat3FromRowMajor3x3(R_data),
+                glm::vec3(T_data[0], T_data[1], T_data[2]),
+                scene_transform);
+
+            GTRenderCamera render_camera;
+            render_camera.rotation = pose.rotation;
+            render_camera.translation = pose.translation;
+            render_camera.equirectangular =
+                cam.camera_model_type() == lfs::core::CameraModelType::EQUIRECTANGULAR;
+
+            if (!render_camera.equirectangular) {
+                const float x_scale =
+                    static_cast<float>(render_size.x) / static_cast<float>(std::max(cam.camera_width(), 1));
+                const float y_scale =
+                    static_cast<float>(render_size.y) / static_cast<float>(std::max(cam.camera_height(), 1));
+                render_camera.intrinsics = lfs::rendering::CameraIntrinsics{
+                    .focal_x = cam.focal_x() * x_scale,
+                    .focal_y = cam.focal_y() * y_scale,
+                    .center_x = cam.center_x() * x_scale,
+                    .center_y = cam.center_y() * y_scale};
+            }
+
+            return render_camera;
+        }
+    } // namespace detail
 
     bool SplitViewService::hasValidGTContext() const {
         return gt_context_ && gt_context_->valid();
@@ -195,21 +296,22 @@ namespace lfs::vis {
             return;
         }
 
-        clearGTContext();
-
         auto* trainer_manager = scene_manager->getTrainerManager();
         if (!trainer_manager || !trainer_manager->hasTrainer()) {
+            clearGTContext();
             return;
         }
 
         const auto* trainer = trainer_manager->getTrainer();
         if (!trainer) {
+            clearGTContext();
             return;
         }
 
         const auto loader_owner = trainer->getActiveImageLoader();
         const auto cam = trainer_manager->getCamById(current_camera_id);
         if (!cam) {
+            clearGTContext();
             return;
         }
 
@@ -231,6 +333,7 @@ namespace lfs::vis {
             loader_owner.get(),
             gt_load_params_ptr);
         if (gt_info.texture_id == 0) {
+            clearGTContext();
             return;
         }
 
@@ -238,14 +341,30 @@ namespace lfs::vis {
         const glm::ivec2 aligned(
             ((dims.x + GPU_ALIGNMENT - 1) / GPU_ALIGNMENT) * GPU_ALIGNMENT,
             ((dims.y + GPU_ALIGNMENT - 1) / GPU_ALIGNMENT) * GPU_ALIGNMENT);
+        const glm::mat4 scene_transform = detail::currentSceneTransform(scene_manager, current_camera_id);
+
+        if (gt_context_ &&
+            gt_context_->camera_id == current_camera_id &&
+            gt_context_->gt_texture_id == gt_info.texture_id &&
+            gt_context_->dimensions == dims &&
+            gt_context_->gpu_aligned_dims == aligned &&
+            equalVec2(gt_context_->gt_texcoord_scale, gt_info.texcoord_scale) &&
+            gt_context_->gt_texture_origin == gt_info.origin &&
+            equalMat4(gt_context_->scene_transform, scene_transform)) {
+            request_viewport_prerender = hasValidGTContext() && !has_viewport_output;
+            return;
+        }
 
         gt_context_ = GTComparisonContext{
             .gt_texture_id = gt_info.texture_id,
+            .camera_id = current_camera_id,
             .dimensions = dims,
             .gpu_aligned_dims = aligned,
             .render_texcoord_scale = glm::vec2(dims) / glm::vec2(aligned),
             .gt_texcoord_scale = gt_info.texcoord_scale,
-            .gt_needs_flip = gt_info.needs_flip};
+            .gt_texture_origin = gt_info.origin,
+            .scene_transform = scene_transform,
+            .render_camera = detail::buildGTRenderCamera(*cam, dims, scene_transform)};
 
         request_viewport_prerender = hasValidGTContext() && !has_viewport_output;
     }

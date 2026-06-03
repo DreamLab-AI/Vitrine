@@ -74,6 +74,25 @@ namespace lfs::vis {
         }
     }
 
+    void ParameterManager::clearSession() {
+        if (const auto result = ensureLoaded(); !result) {
+            LOG_ERROR("Failed to load params: {}", result.error());
+            return;
+        }
+
+        std::lock_guard lock(params_mutex_);
+        active_strategy_ = std::string(lfs::core::param::kStrategyMRNF);
+        mcmc_session_ = lfs::core::param::OptimizationParameters::mcmc_defaults();
+        mcmc_current_ = mcmc_session_;
+        mrnf_session_ = lfs::core::param::OptimizationParameters::mrnf_defaults();
+        mrnf_current_ = mrnf_session_;
+        igs_session_ = lfs::core::param::OptimizationParameters::igs_plus_defaults();
+        igs_current_ = igs_session_;
+        dataset_config_ = lfs::core::param::DatasetConfig{};
+        dataset_config_.loading_params = lfs::core::param::LoadingParams{};
+        dirty_.store(false, std::memory_order_release);
+    }
+
     void ParameterManager::setSessionDefaults(const lfs::core::param::TrainingParameters& params) {
         if (const auto result = ensureLoaded(); !result) {
             LOG_ERROR("Failed to load params: {}", result.error());

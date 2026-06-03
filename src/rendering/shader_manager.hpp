@@ -41,7 +41,7 @@ namespace lfs::rendering {
 
         template <typename T>
         Result<void> set(std::string_view uniform, const T& value,
-                         std::source_location loc = std::source_location::current()) {
+                         [[maybe_unused]] std::source_location loc = std::source_location::current()) {
             if (!shader_) {
                 LOG_ERROR("Null shader '{}' when setting '{}'", name_, uniform);
                 return std::unexpected(std::format("Shader '{}' is not initialized", name_));

@@ -32,10 +32,15 @@ namespace lfs::python {
 
     std::optional<std::tuple<float, float>> PyGizmoContext::world_to_screen(std::tuple<float, float, float> pos) const {
         const auto [wx, wy, wz] = pos;
-        if (wz <= 0.0f)
+
+        // Match the documented visualizer-world convention with a default camera
+        // at +Z looking along -Z.
+        const float view_z = wz - DEFAULT_CAMERA_Z;
+        if (view_z >= -1e-6f)
             return std::nullopt;
-        const float sx = DEFAULT_VIEWPORT_WIDTH / 2.0f + wx * PROJECTION_SCALE / wz;
-        const float sy = DEFAULT_VIEWPORT_HEIGHT / 2.0f - wy * PROJECTION_SCALE / wz;
+        const float depth = -view_z;
+        const float sx = DEFAULT_VIEWPORT_WIDTH / 2.0f + wx * PROJECTION_SCALE / depth;
+        const float sy = DEFAULT_VIEWPORT_HEIGHT / 2.0f - wy * PROJECTION_SCALE / depth;
         return std::make_tuple(sx, sy);
     }
 
@@ -292,12 +297,12 @@ namespace lfs::python {
         nb::class_<PyGizmoContext>(m, "GizmoContext")
             .def(nb::init<>())
             .def_prop_ro("has_selection", &PyGizmoContext::has_selection, "Whether any gaussians are selected")
-            .def_prop_ro("selection_center", &PyGizmoContext::selection_center, "Selection center in world space (x, y, z)")
+            .def_prop_ro("selection_center", &PyGizmoContext::selection_center, "Selection center in visualizer-world space (x, y, z)")
             .def_prop_ro("selection_center_screen", &PyGizmoContext::selection_center_screen, "Selection center in screen space (x, y)")
-            .def_prop_ro("camera_position", &PyGizmoContext::camera_position, "Camera position in world space (x, y, z)")
+            .def_prop_ro("camera_position", &PyGizmoContext::camera_position, "Camera position in visualizer-world space (x, y, z)")
             .def_prop_ro("camera_forward", &PyGizmoContext::camera_forward, "Camera forward direction (x, y, z)")
-            .def("world_to_screen", &PyGizmoContext::world_to_screen, nb::arg("pos"), "Project world position to screen coordinates")
-            .def("screen_to_world_ray", &PyGizmoContext::screen_to_world_ray, nb::arg("pos"), "Get world-space ray direction from screen point")
+            .def("world_to_screen", &PyGizmoContext::world_to_screen, nb::arg("pos"), "Project visualizer-world position to screen coordinates")
+            .def("screen_to_world_ray", &PyGizmoContext::screen_to_world_ray, nb::arg("pos"), "Get visualizer-world ray direction from screen point")
             .def("draw_line", &PyGizmoContext::draw_line_2d, nb::arg("start"), nb::arg("end"),
                  nb::arg("color"), nb::arg("thickness") = 1.0f, "Draw a 2D line")
             .def("draw_circle", &PyGizmoContext::draw_circle_2d, nb::arg("center"), nb::arg("radius"),

@@ -83,6 +83,10 @@
     min-height: 0;
 }
 
+#image-container.picker-active {
+    cursor: pipette;
+}
+
 #image-viewport {
     position: absolute;
     top: 0;
@@ -316,6 +320,66 @@
     font-size: 9dp;
     margin-right: 16dp;
     letter-spacing: 0.5dp;
+}
+
+#view-controls {
+    display: flex;
+    align-items: center;
+    gap: 4dp;
+    margin-right: 12dp;
+}
+
+#view-controls.hidden {
+    display: none;
+}
+
+.view-btn {
+    width: 20dp;
+    height: 20dp;
+    padding: 0;
+    border-width: 1dp;
+    border-color: rgba(88, 91, 112, 110);
+    border-radius: 3dp;
+    background-color: rgba(255, 255, 255, 13);
+    cursor: pointer;
+    color: rgba(205, 214, 244, 220);
+    font-size: 11dp;
+    text-align: center;
+    line-height: 18dp;
+    transition: background-color 0.12s quadratic-out, border-color 0.12s quadratic-out,
+                color 0.12s quadratic-out, opacity 0.12s quadratic-out;
+}
+
+.view-btn--icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.view-btn--icon img {
+    width: 14dp;
+    height: 14dp;
+}
+
+.view-btn:hover {
+    background-color: rgba(255, 255, 255, 26);
+    border-color: rgba(137, 180, 250, 110);
+    color: rgba(245, 247, 255, 255);
+}
+
+.view-btn:active {
+    background-color: rgba(255, 255, 255, 38);
+    border-color: rgba(137, 180, 250, 150);
+}
+
+.view-btn:focus-visible {
+    border-color: rgba(137, 180, 250, 160);
+    box-shadow: 0 0 0 1dp rgba(137, 180, 250, 100);
+}
+
+.view-btn:disabled {
+    opacity: 0.35;
+    cursor: default;
 }
 
 .status-keys {

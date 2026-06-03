@@ -52,7 +52,7 @@ def plugin_marketplace_module(monkeypatch):
         module,
         "PluginMarketplaceCatalog",
         lambda: SimpleNamespace(
-            snapshot=lambda: ([], False),
+            snapshot=lambda: ([], False, False),
             refresh_async=lambda force=False: None,
         ),
     )
@@ -72,6 +72,7 @@ class _ElementStub:
         self.text = ""
         self.classes = {}
         self.attributes = {}
+        self.inner_rml = ""
         self._parent = None
 
     def set_text(self, value):
@@ -91,6 +92,9 @@ class _ElementStub:
 
     def has_attribute(self, name):
         return name in self.attributes
+
+    def set_inner_rml(self, value):
+        self.inner_rml = value
 
     def parent(self):
         return self._parent
@@ -237,3 +241,174 @@ def test_plugin_marketplace_install_uses_git_transport_when_selected(plugin_mark
 
     assert calls["url"] == "https://github.com/owner/repo"
     assert calls["transport"] == "git"
+
+
+def test_plugin_marketplace_list_view_marks_selected_toggle(plugin_marketplace_module):
+    module, _state = plugin_marketplace_module
+
+    panel = module.PluginMarketplacePanel()
+    doc = _DocStub({
+        "view-cards-btn": _ElementStub(),
+        "view-list-btn": _ElementStub(),
+    })
+
+    panel._doc = doc
+    panel._set_view_mode("list")
+
+    assert panel._view_mode == "list"
+    assert panel._entries_dirty is True
+    assert doc.get_element_by_id("view-cards-btn").classes["selected"] is False
+    assert doc.get_element_by_id("view-list-btn").classes["selected"] is True
+
+
+def test_plugin_marketplace_renders_list_markup(plugin_marketplace_module):
+    module, state = plugin_marketplace_module
+    state.translations["plugin_marketplace.local_install"] = "Local Installation"
+
+    panel = module.PluginMarketplacePanel()
+    markup = panel._build_list_markup({
+        "card_id": "sample-card",
+        "name": "Sample Plugin",
+        "description": "Plugin description",
+        "has_error": False,
+        "has_version": True,
+        "version_label": "v1.0.0",
+        "has_repo": True,
+        "repo_label": "owner/repo",
+        "has_metrics": True,
+        "metrics_text": "Stars: 10",
+        "has_tags": True,
+        "tags_text": "Utility",
+        "is_local": True,
+        "is_installed": True,
+        "status_text": "Status: active",
+        "summary_status_text": "Status: active",
+        "status_class": "status-success",
+        "summary_marker": "●",
+        "summary_marker_class": "plugin-list-marker--local",
+        "plugin_name": "sample_plugin",
+        "show_install": False,
+        "show_load": False,
+        "show_unload": True,
+        "show_reload": True,
+        "show_update": False,
+        "show_uninstall": True,
+        "show_startup": True,
+        "startup_checked": True,
+        "show_git_checkout": True,
+        "git_checkout_selected": True,
+    })
+
+    assert 'class="plugin-list-row"' in markup
+    assert 'data-action="toggle-expand"' in markup
+    assert 'plugin-list-toggle' not in markup
+    assert 'type="checkbox"' not in markup
+    assert 'data-action="unload"' in markup
+    assert 'class="plugin-list-detail-meta"' in markup
+    assert 'data-action="unload"' in markup
+    assert 'data-action="reload"' in markup
+    assert "Local Installation" in markup
+
+
+def test_plugin_marketplace_collapsed_list_row_marks_details_hidden(plugin_marketplace_module):
+    module, _state = plugin_marketplace_module
+
+    panel = module.PluginMarketplacePanel()
+    markup = panel._build_list_markup({
+        "card_id": "sample-card",
+        "name": "Sample Plugin",
+        "description": "Plugin description",
+        "has_error": False,
+        "has_version": False,
+        "has_repo": False,
+        "has_metrics": False,
+        "has_tags": False,
+        "is_local": False,
+        "summary_status_text": "",
+        "status_class": "status-muted",
+        "summary_marker": "★",
+        "summary_marker_class": "plugin-list-marker--remote",
+        "show_install": True,
+        "show_load": False,
+        "show_unload": False,
+        "show_reload": False,
+        "show_update": False,
+        "show_uninstall": False,
+        "show_startup": False,
+        "show_git_checkout": False,
+    })
+
+    assert 'class="plugin-list-details hidden"' in markup
+    assert '>▶<' in markup
+
+
+def test_plugin_marketplace_unload_failure_sets_dismissable_error(plugin_marketplace_module):
+    module, state = plugin_marketplace_module
+    state.translations["plugin_manager.status.unload_failed"] = "Unload failed"
+
+    panel = module.PluginMarketplacePanel()
+
+    class _ManagerStub:
+        def get_state(self, name):
+            assert name == "sample_plugin"
+            return module.PluginState.ACTIVE
+
+        def unload(self, name):
+            assert name == "sample_plugin"
+            return False
+
+    panel._unload_plugin(_ManagerStub(), "sample_plugin", "sample-card")
+
+    op_state = panel._card_ops["sample-card"]
+    assert op_state.phase == module.CardOpPhase.ERROR
+    assert op_state.message == "Unload failed"
+    assert op_state.finished_at > 0.0
+
+
+def test_plugin_marketplace_error_state_auto_dismisses_and_collapses_row(
+    plugin_marketplace_module,
+    monkeypatch,
+):
+    module, _state = plugin_marketplace_module
+
+    panel = module.PluginMarketplacePanel()
+    panel._card_ops["sample-card"] = module.CardOpState(
+        phase=module.CardOpPhase.ERROR,
+        message="Unload failed",
+        finished_at=10.0,
+    )
+
+    monkeypatch.setattr(
+        module.time,
+        "monotonic",
+        lambda: 10.0 + module.ERROR_DISMISS_SEC + 0.1,
+    )
+
+    current_state = panel._get_card_state("sample-card")
+
+    assert current_state.phase == module.CardOpPhase.IDLE
+    assert current_state.message == ""
+    assert panel._is_list_row_expanded("sample-card") is False
+
+
+def test_plugin_marketplace_auto_expanded_row_can_be_collapsed_and_reopened(
+    plugin_marketplace_module,
+    monkeypatch,
+):
+    module, _state = plugin_marketplace_module
+
+    panel = module.PluginMarketplacePanel()
+    panel._card_ops["sample-card"] = module.CardOpState(
+        phase=module.CardOpPhase.ERROR,
+        message="Unload failed",
+        finished_at=10.0,
+    )
+    monkeypatch.setattr(module.time, "monotonic", lambda: 10.0)
+
+    assert panel._is_list_row_expanded("sample-card") is True
+
+    panel._set_list_row_expanded("sample-card", False, rerender=False)
+    assert panel._is_list_row_expanded("sample-card") is False
+
+    panel._set_list_row_expanded("sample-card", True, rerender=False)
+    assert panel._is_list_row_expanded("sample-card") is True

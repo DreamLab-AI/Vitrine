@@ -18,6 +18,7 @@ class ExportFormat(IntEnum):
     SPZ = 2
     HTML_VIEWER = 3
     USD = 4
+    NUREC_USDZ = 5
 
 
 FORMAT_INFO = (
@@ -25,6 +26,7 @@ FORMAT_INFO = (
     (ExportFormat.SOG, "export.format.sog_supersplat"),
     (ExportFormat.SPZ, "export.format.spz_niantic"),
     (ExportFormat.USD, "export.format.usd_openusd"),
+    (ExportFormat.NUREC_USDZ, "export.format.usdz_nurec"),
     (ExportFormat.HTML_VIEWER, "export.format.html_viewer"),
 )
 
@@ -386,6 +388,8 @@ class ExportPanel(Panel):
             return lf.ui.save_spz_file_dialog(default_name)
         if self._format == ExportFormat.USD:
             return lf.ui.save_usd_file_dialog(default_name)
+        if self._format == ExportFormat.NUREC_USDZ:
+            return lf.ui.save_usdz_file_dialog(default_name)
         if self._format == ExportFormat.HTML_VIEWER:
             return lf.ui.save_html_file_dialog(default_name)
         return None

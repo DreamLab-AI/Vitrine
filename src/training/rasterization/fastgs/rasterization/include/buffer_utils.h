@@ -151,7 +151,8 @@ namespace fast_lfs::rasterization {
             obtain(blob, buffers.n_buckets, n_tiles, 128);
             obtain(blob, buffers.bucket_offsets, n_tiles, 128);
             obtain(blob, buffers.max_n_contributions, n_tiles, 128);
-            obtain(blob, buffers.n_contributions, n_tiles * config::block_size_blend, 128);
+            obtain(blob, buffers.n_contributions,
+                   static_cast<std::size_t>(n_tiles) * static_cast<std::size_t>(config::block_size_blend), 128);
             cub::DeviceScan::InclusiveSum(
                 nullptr, buffers.cub_workspace_size,
                 buffers.n_buckets, buffers.bucket_offsets,
@@ -168,7 +169,8 @@ namespace fast_lfs::rasterization {
         static PerBucketBuffers from_blob(char*& blob, int n_buckets) {
             PerBucketBuffers buffers;
             obtain(blob, buffers.tile_index, n_buckets, 128);
-            obtain(blob, buffers.checkpoint_uint8, n_buckets * config::block_size_blend, 128);
+            obtain(blob, buffers.checkpoint_uint8,
+                   static_cast<std::size_t>(n_buckets) * static_cast<std::size_t>(config::block_size_blend), 128);
             return buffers;
         }
     };

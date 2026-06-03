@@ -106,7 +106,8 @@ namespace lfs::io {
     }
 
     std::tuple<std::vector<CameraData>, lfs::core::Tensor, std::optional<std::tuple<std::vector<std::string>, std::vector<std::string>>>> read_transforms_cameras_and_images(
-        const std::filesystem::path& transPath) {
+        const std::filesystem::path& transPath,
+        const LoadOptions& options) {
 
         LOG_TIMER_TRACE("Read transforms file");
 
@@ -127,6 +128,8 @@ namespace lfs::io {
             throw std::runtime_error(lfs::core::path_to_utf8(transformsFile) + " is not a valid file");
         }
 
+        throw_if_load_cancel_requested(options, "Transforms dataset load cancelled");
+
         LOG_DEBUG("Reading transforms from: {}", lfs::core::path_to_utf8(transformsFile));
         std::ifstream trans_file;
         if (!lfs::core::open_file_for_read(transformsFile, trans_file)) {
@@ -137,6 +140,7 @@ namespace lfs::io {
 
         // should throw if parse fails
         nlohmann::json transforms = nlohmann::json::parse(trans_file, nullptr, true, true);
+        throw_if_load_cancel_requested(options, "Transforms dataset parse cancelled");
         int w = -1, h = -1;
         if (!transforms.contains("w") or !transforms.contains("h")) {
 
@@ -261,6 +265,9 @@ namespace lfs::io {
             LOG_DEBUG("Processing {} frames", transforms["frames"].size());
 
             for (size_t frameInd = 0; frameInd < transforms["frames"].size(); ++frameInd) {
+                if ((frameInd % 64) == 0) {
+                    throw_if_load_cancel_requested(options, "Transforms camera assembly cancelled");
+                }
                 CameraData camdata;
                 auto& frame = transforms["frames"][frameInd];
                 if (!frame.contains("transform_matrix")) {
@@ -298,6 +305,17 @@ namespace lfs::io {
                 // fix so that the z direction will be the same (currently it is faceing downward)
                 Tensor fixMat = createYRotationMatrix(static_cast<float>(M_PI));
                 w2c = w2c.mm(fixMat);
+
+                // In the post-efd822c4 coordinate refactor, transforms datasets convert their point cloud
+                // into the repo's "data/COLMAP" world basis by flipping Y/Z. To keep cameras and points
+                // consistent for training (especially GUT/3DGRUT which assumes OpenCV-style camera coords),
+                // apply the same world-basis flip to the camera extrinsics.
+                //
+                // This is a world-basis change, so it must be right-multiplied into the world->camera matrix.
+                Tensor worldAxesFlip = lfs::core::Tensor::eye(4, Device::CPU);
+                worldAxesFlip[1][1] = -1.0f;
+                worldAxesFlip[2][2] = -1.0f;
+                w2c = w2c.mm(worldAxesFlip);
 
                 // Extract rotation matrix R (transposed due to 'glm' in CUDA code)
                 // R = np.transpose(w2c[:3,:3])
@@ -352,6 +370,7 @@ namespace lfs::io {
 
         if (std::filesystem::is_regular_file(dir_path / "train.txt") &&
             std::filesystem::is_regular_file(dir_path / "test.txt")) {
+            throw_if_load_cancel_requested(options, "Transforms split metadata load cancelled");
             LOG_DEBUG("Found train.txt and test.txt files, loading image splits");
 
             std::ifstream train_file;
@@ -403,7 +422,8 @@ namespace lfs::io {
         return PointCloud(positions, colors);
     }
 
-    PointCloud load_simple_ply_point_cloud(const std::filesystem::path& filepath) {
+    PointCloud load_simple_ply_point_cloud(const std::filesystem::path& filepath,
+                                           const LoadOptions& options) {
         LOG_DEBUG("Loading simple PLY point cloud from: {}", lfs::core::path_to_utf8(filepath));
 
         if (!std::filesystem::exists(filepath)) {
@@ -419,6 +439,7 @@ namespace lfs::io {
 
             // Parse PLY header
             tinyply::PlyFile file;
+            throw_if_load_cancel_requested(options, "Transforms PLY header parse cancelled");
             file.parse_header(ss);
 
             // Request vertex positions (x, y, z)
@@ -441,7 +462,9 @@ namespace lfs::io {
             }
 
             // Read the actual data
+            throw_if_load_cancel_requested(options, "Transforms PLY read cancelled");
             file.read(ss);
+            throw_if_load_cancel_requested(options, "Transforms PLY read cancelled");
 
             // Get vertex count
             const size_t vertex_count = vertices->count;
@@ -461,6 +484,9 @@ namespace lfs::io {
             case tinyply::Type::FLOAT64: {
                 const double* vertex_data = reinterpret_cast<const double*>(vertices->buffer.get());
                 for (size_t i = 0; i < vertex_count * 3; ++i) {
+                    if ((i % 4096) == 0) {
+                        throw_if_load_cancel_requested(options, "Transforms PLY vertex conversion cancelled");
+                    }
                     pos_ptr[i] = static_cast<float>(vertex_data[i]);
                 }
                 break;
@@ -468,6 +494,9 @@ namespace lfs::io {
             case tinyply::Type::INT32: {
                 const int32_t* vertex_data = reinterpret_cast<const int32_t*>(vertices->buffer.get());
                 for (size_t i = 0; i < vertex_count * 3; ++i) {
+                    if ((i % 4096) == 0) {
+                        throw_if_load_cancel_requested(options, "Transforms PLY vertex conversion cancelled");
+                    }
                     pos_ptr[i] = static_cast<float>(vertex_data[i]);
                 }
                 break;
@@ -475,6 +504,9 @@ namespace lfs::io {
             case tinyply::Type::UINT8: {
                 const uint8_t* vertex_data = reinterpret_cast<const uint8_t*>(vertices->buffer.get());
                 for (size_t i = 0; i < vertex_count * 3; ++i) {
+                    if ((i % 4096) == 0) {
+                        throw_if_load_cancel_requested(options, "Transforms PLY vertex conversion cancelled");
+                    }
                     pos_ptr[i] = static_cast<float>(vertex_data[i]);
                 }
                 break;
@@ -514,6 +546,7 @@ namespace lfs::io {
             }
 
             LOG_INFO("Successfully loaded PLY point cloud with {} points", vertex_count);
+            throw_if_load_cancel_requested(options, "Transforms PLY upload cancelled");
 
             // Move to CUDA for GPU rendering
             return PointCloud(positions.cuda(), color_tensor.cuda());
@@ -521,6 +554,24 @@ namespace lfs::io {
         } catch (const std::exception& e) {
             throw std::runtime_error(std::format("Failed to load PLY file {}: {}", lfs::core::path_to_utf8(filepath), e.what()));
         }
+    }
+
+    PointCloud convert_transforms_point_cloud_to_colmap_world(PointCloud point_cloud) {
+        if (!point_cloud.means.is_valid() || point_cloud.size() == 0) {
+            return point_cloud;
+        }
+
+        const auto device = point_cloud.means.device();
+        auto means_cpu = point_cloud.means.cpu().contiguous();
+        auto acc = means_cpu.accessor<float, 2>();
+        const size_t point_count = means_cpu.size(0);
+        for (size_t i = 0; i < point_count; ++i) {
+            acc(i, 1) = -acc(i, 1);
+            acc(i, 2) = -acc(i, 2);
+        }
+
+        point_cloud.means = means_cpu.to(device).contiguous();
+        return point_cloud;
     }
 
 } // namespace lfs::io

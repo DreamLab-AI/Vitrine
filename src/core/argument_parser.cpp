@@ -94,6 +94,7 @@ namespace {
             ::args::Group paths_group(parser, "TRAINING PATHS:");
             ::args::ValueFlag<std::string> data_path(paths_group, "data_path", "Path to training data", {'d', "data-path"});
             ::args::ValueFlag<std::string> output_path(paths_group, "output_path", "Path to output", {'o', "output-path"});
+            ::args::ValueFlag<std::string> output_name(paths_group, "output_name", "Output filename (replaces default splat_ITER.ply stem)", {"output-name"});
             ::args::ValueFlag<std::string> config_file(paths_group, "config_file", "LichtFeldStudio config file (json)", {"config"});
             ::args::ValueFlag<std::string> init_path(paths_group, "path", "Initialize from splat file (.ply, .sog, .spz, .usd, .usda, .usdc, .usdz, .resume)", {"init"});
 
@@ -167,7 +168,7 @@ namespace {
             ::args::Group sparsity_sep(parser, " ");
             ::args::Group sparsity_group(parser, "SPARSITY OPTIMIZATION:");
             ::args::Flag enable_sparsity(sparsity_group, "enable_sparsity", "Enable sparsity optimization", {"enable-sparsity"});
-            ::args::ValueFlag<int> sparsify_steps(sparsity_group, "sparsify_steps", "Number of steps for sparsification (default: 15000)", {"sparsify-steps"});
+            ::args::ValueFlag<int> sparsify_steps(sparsity_group, "sparsify_steps", "Number of sparsification steps to run after regular training (default: 15000)", {"sparsify-steps"});
             ::args::ValueFlag<float> init_rho(sparsity_group, "init_rho", "Initial ADMM penalty parameter (default: 0.0005)", {"init-rho"});
             ::args::ValueFlag<float> prune_ratio(sparsity_group, "prune_ratio", "Final pruning ratio for sparsity (default: 0.6)", {"prune-ratio"});
 
@@ -570,7 +571,8 @@ namespace {
                                         invert_masks_flag = bool(invert_masks),
                                         no_alpha_as_mask_flag = bool(no_alpha_as_mask),
                                         use_error_map_flag = bool(use_error_map),
-                                        use_edge_map_flag = bool(use_edge_map)]() {
+                                        use_edge_map_flag = bool(use_edge_map),
+                                        output_name_val = cli_option_present({"--output-name"}) ? std::optional<std::string>(::args::get(output_name)) : std::optional<std::string>()]() {
                 auto& opt = params.optimization;
                 auto& ds = params.dataset;
 
@@ -605,6 +607,7 @@ namespace {
                 setVal(strategy_val, opt.strategy);
                 setVal(timelapse_images_val, ds.timelapse_images);
                 setVal(timelapse_every_val, ds.timelapse_every);
+                setVal(output_name_val, ds.output_name);
                 setVal(tile_mode_val, opt.tile_mode);
 
                 // Sparsity parameters
@@ -675,7 +678,8 @@ namespace {
             return;
 
         if (opt.ppisp_controller_activation_step < 0) {
-            opt.ppisp_controller_activation_step = opt.resolved_ppisp_controller_activation_step();
+            opt.ppisp_controller_activation_step =
+                opt.resolved_ppisp_controller_activation_step(opt.resolved_total_iterations());
         }
     }
 

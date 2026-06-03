@@ -114,7 +114,7 @@ _classes = [TrainingMonitorPanel]
 _post_step_handler = None
 
 
-def _on_post_step():
+def _on_post_step(_hook):
     ctx = lf.context()
     if ctx.iteration % 100 == 0:
         lf.log.info(

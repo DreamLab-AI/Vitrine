@@ -19,9 +19,9 @@
 #include <core/path_utils.hpp>
 
 #include "gil.hpp"
+#include "python_compat.hpp"
 #include "python_runtime.hpp"
 #include "training/control/control_boundary.hpp"
-#include <Python.h>
 #include <atomic>
 #include <mutex>
 #ifndef _WIN32
@@ -43,8 +43,23 @@ namespace lfs::python {
     static std::mutex g_output_mutex;
     static std::mutex g_plugin_init_mutex;
     static std::atomic<bool> g_python_bridge_ready{false};
+    static std::atomic<bool> g_python_bridge_failed{false};
+    static std::mutex g_python_bridge_failure_mutex;
+    static std::string g_python_bridge_failure_detail;
     static std::atomic<bool> g_plugin_preload_scheduled{false};
-    static std::thread g_plugin_preload_thread;
+
+    // RAII wrapper for the plugin preload thread that ensures proper cleanup
+    // at static destruction time to avoid crashes from std::thread::~thread()
+    // calling std::terminate() on a joinable thread.
+    struct PluginPreloadThread {
+        std::thread thread;
+        ~PluginPreloadThread() {
+            if (thread.joinable()) {
+                thread.join();
+            }
+        }
+    };
+    static PluginPreloadThread g_plugin_preload_thread;
 
     // Python C extension for capturing output
     static PyObject* capture_write(PyObject* self, PyObject* args) {
@@ -181,6 +196,102 @@ _add_dll_dirs()
             return default_value;
         }
 
+        std::string consume_python_error_detailed() {
+            PyObject* type = nullptr;
+            PyObject* value = nullptr;
+            PyObject* tb = nullptr;
+            PyErr_Fetch(&type, &value, &tb);
+            PyErr_NormalizeException(&type, &value, &tb);
+
+            std::string message = "(unknown error)";
+
+            auto pyobject_to_utf8 = [](PyObject* obj) -> std::string {
+                if (!obj) {
+                    return {};
+                }
+                PyObject* str = PyObject_Str(obj);
+                if (!str) {
+                    return {};
+                }
+                std::string result;
+                if (const char* text = PyUnicode_AsUTF8(str)) {
+                    result = text;
+                }
+                Py_DECREF(str);
+                return result;
+            };
+
+            PyObject* traceback_module = PyImport_ImportModule("traceback");
+            if (traceback_module) {
+                PyObject* format_exception = PyObject_GetAttrString(traceback_module, "format_exception");
+                if (format_exception && PyCallable_Check(format_exception)) {
+                    PyObject* args = PyTuple_Pack(3, type ? type : Py_None, value ? value : Py_None, tb ? tb : Py_None);
+                    PyObject* lines = args ? PyObject_CallObject(format_exception, args) : nullptr;
+                    if (lines) {
+                        PyObject* empty = PyUnicode_FromString("");
+                        PyObject* joined = empty ? PyUnicode_Join(empty, lines) : nullptr;
+                        if (joined) {
+                            if (const char* text = PyUnicode_AsUTF8(joined)) {
+                                message = text;
+                            }
+                            Py_DECREF(joined);
+                        }
+                        Py_XDECREF(empty);
+                        Py_DECREF(lines);
+                    }
+                    Py_XDECREF(args);
+                }
+                Py_XDECREF(format_exception);
+                Py_DECREF(traceback_module);
+            }
+
+            if (message == "(unknown error)" || message.empty()) {
+                if (const auto value_text = pyobject_to_utf8(value); !value_text.empty()) {
+                    message = value_text;
+                } else if (const auto type_text = pyobject_to_utf8(type); !type_text.empty()) {
+                    message = type_text;
+                }
+            }
+
+            Py_XDECREF(type);
+            Py_XDECREF(value);
+            Py_XDECREF(tb);
+            return message;
+        }
+
+        void remember_python_bridge_failure(const std::string& detail) {
+            bool expected = false;
+            if (g_python_bridge_failed.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+                std::lock_guard lock(g_python_bridge_failure_mutex);
+                g_python_bridge_failure_detail = detail;
+            }
+        }
+
+        std::string python_bridge_failure_detail() {
+            std::lock_guard lock(g_python_bridge_failure_mutex);
+            return g_python_bridge_failure_detail;
+        }
+
+        PyObject* import_lichtfeld_module(const char* context, const bool latch_failure = false) {
+            if (g_python_bridge_failed.load(std::memory_order_acquire)) {
+                LOG_ERROR("{}: skipping lichtfeld import after previous initialization failure. Restart required. {}",
+                          context, python_bridge_failure_detail());
+                return nullptr;
+            }
+
+            PyObject* lf = PyImport_ImportModule("lichtfeld");
+            if (!lf) {
+                const std::string detail = consume_python_error_detailed();
+                LOG_ERROR("{}: {}", context, detail);
+                if (latch_failure) {
+                    remember_python_bridge_failure(detail);
+                }
+                return nullptr;
+            }
+
+            return lf;
+        }
+
         bool ensure_python_bridge_ready_locked() {
             if (g_python_bridge_ready.load(std::memory_order_acquire)) {
                 return true;
@@ -189,9 +300,8 @@ _add_dll_dirs()
             add_dll_directories();
 
             LOG_INFO("Attempting to import lichtfeld module...");
-            PyObject* lf = PyImport_ImportModule("lichtfeld");
+            PyObject* lf = import_lichtfeld_module("Failed to import lichtfeld", true);
             if (!lf) {
-                LOG_ERROR("Failed to import lichtfeld: {}", extract_python_error());
                 return false;
             }
             LOG_INFO("lichtfeld module imported successfully");
@@ -248,9 +358,8 @@ _add_dll_dirs()
         std::vector<std::string> discover_enabled_plugins_locked() {
             std::vector<std::string> names;
 
-            PyObject* lf = PyImport_ImportModule("lichtfeld");
+            PyObject* lf = import_lichtfeld_module("Failed to import lichtfeld for plugin discovery");
             if (!lf) {
-                LOG_ERROR("Failed to import lichtfeld for plugin discovery: {}", extract_python_error());
                 return names;
             }
 
@@ -345,7 +454,7 @@ _add_dll_dirs()
         }
 
         bool load_single_plugin_locked(const std::string& name) {
-            PyObject* lf = PyImport_ImportModule("lichtfeld");
+            PyObject* lf = import_lichtfeld_module("Failed to import lichtfeld while loading plugin");
             if (!lf)
                 return false;
 
@@ -509,7 +618,7 @@ _add_dll_dirs()
             return;
         }
 
-        g_plugin_preload_thread = std::thread([]() {
+        g_plugin_preload_thread.thread = std::thread([]() {
             ensure_plugins_loaded();
         });
     }
@@ -545,8 +654,8 @@ _add_dll_dirs()
     }
 
     void join_plugin_preload() {
-        if (g_plugin_preload_thread.joinable()) {
-            g_plugin_preload_thread.join();
+        if (g_plugin_preload_thread.thread.joinable()) {
+            g_plugin_preload_thread.thread.join();
         }
     }
 
@@ -788,10 +897,9 @@ _repl_out.close()
 
         // Pre-import lichtfeld module to catch any initialization errors early
         {
-            PyObject* lf_module = PyImport_ImportModule("lichtfeld");
+            PyObject* lf_module = import_lichtfeld_module("Failed to pre-import lichtfeld module");
             if (!lf_module) {
-                PyErr_Print();
-                return std::unexpected("Failed to import lichtfeld module - check build output");
+                return std::unexpected("Failed to import lichtfeld module - see startup log for traceback");
             }
             Py_DECREF(lf_module);
             LOG_INFO("Successfully pre-imported lichtfeld module");
@@ -863,12 +971,47 @@ _repl_out.close()
         static constexpr const char* FORMAT_CODE = R"(
 def _lfs_format_code(code):
     import importlib
+    import re
     import textwrap
     importlib.invalidate_caches()
     try:
         import black
     except ImportError as e:
         return (None, f"ImportError: {e}")
+
+    def _looks_like_code_line(stripped):
+        if not stripped:
+            return False
+        if stripped.startswith('#'):
+            return True
+        if stripped.startswith((
+            'import ', 'from ', 'def ', 'class ', '@',
+            'if ', 'for ', 'while ', 'try', 'with ',
+            'async ', 'match ', 'case ', 'return ',
+            'raise ', 'pass', 'break', 'continue',
+            'global ', 'nonlocal ', 'assert ', 'yield ',
+            'del ', 'elif ', 'else:', 'except', 'finally:'
+        )):
+            return True
+        if stripped[:1] in ('"', "'", '(', '[', '{'):
+            return True
+        if re.match(r'[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*\\s*[:=([{.]', stripped):
+            return True
+        return False
+
+    def _comment_leading_preamble(source):
+        lines = source.split('\n')
+        changed = False
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if _looks_like_code_line(stripped):
+                break
+            indent = line[:len(line) - len(line.lstrip(' '))]
+            lines[i] = indent + '# ' + stripped
+            changed = True
+        return ('\n'.join(lines), changed)
 
     def _indent_width(line):
         return len(line) - len(line.lstrip(' '))
@@ -925,6 +1068,8 @@ def _lfs_format_code(code):
 
                 lines[idx] = new_line
                 changed = True
+            except SyntaxError:
+                break
 
         return ('\n'.join(lines), changed)
 
@@ -958,6 +1103,7 @@ def _lfs_format_code(code):
 
     # Convert tabs to spaces consistently
     cleaned = '\n'.join(line.replace('\t', '    ') for line in lines)
+    cleaned, _ = _comment_leading_preamble(cleaned)
 
     try:
         return (black.format_str(cleaned, mode=black.Mode()), None)
@@ -998,10 +1144,19 @@ def _lfs_format_code(code):
 
         FormatResult result{code, "", false};
         PyObject* const py_code = PyUnicode_FromString(code.c_str());
+        if (!py_code) {
+            result.error = consume_python_error_detailed();
+            return result;
+        }
         PyObject* const py_result = PyObject_CallFunctionObjArgs(format_func, py_code, nullptr);
         Py_DECREF(py_code);
 
-        if (py_result && PyTuple_Check(py_result) && PyTuple_Size(py_result) == 2) {
+        if (!py_result) {
+            result.error = consume_python_error_detailed();
+            return result;
+        }
+
+        if (PyTuple_Check(py_result) && PyTuple_Size(py_result) == 2) {
             PyObject* formatted = PyTuple_GetItem(py_result, 0);
             PyObject* error = PyTuple_GetItem(py_result, 1);
 
@@ -1023,10 +1178,9 @@ def _lfs_format_code(code):
 
             Py_DECREF(py_result);
         } else {
-            if (PyErr_Occurred()) {
-                PyErr_Clear();
-            }
-            result.error = "Format function returned unexpected result";
+            result.error = std::format("Format function returned unexpected result of type {}",
+                                       Py_TYPE(py_result)->tp_name ? Py_TYPE(py_result)->tp_name : "<unknown>");
+            Py_DECREF(py_result);
         }
 
         return result;
@@ -1072,9 +1226,8 @@ def _lfs_format_code(code):
         const GilAcquire gil;
         CapabilityResult result;
 
-        PyObject* lichtfeld = PyImport_ImportModule("lichtfeld");
+        PyObject* lichtfeld = import_lichtfeld_module("Failed to import lichtfeld while invoking capability");
         if (!lichtfeld) {
-            PyErr_Print();
             return {false, "", "Failed to import lichtfeld"};
         }
         Py_DECREF(lichtfeld);

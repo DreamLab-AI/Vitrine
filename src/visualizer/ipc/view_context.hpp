@@ -63,6 +63,7 @@ namespace lfs::vis {
         bool mip_filter = false;
         int sh_degree = 3;
         float render_scale = 1.0f;
+        int camera_metrics_mode = 0;
         bool show_crop_box = false;
         bool use_crop_box = false;
         bool show_ellipsoid = false;
@@ -72,6 +73,11 @@ namespace lfs::vis {
         bool hide_outside_depth_box = false;
         bool crop_filter_for_selection = false;
         std::array<float, 3> background_color{0.0f, 0.0f, 0.0f};
+        int environment_mode = 0;
+        std::string environment_map_path{
+            std::string(kDefaultEnvironmentMapPath)};
+        float environment_exposure = 0.0f;
+        float environment_rotation_degrees = 0.0f;
         bool show_coord_axes = false;
         float axes_size = 2.0f;
         std::array<bool, 3> axes_visibility = {true, true, true};
@@ -117,6 +123,8 @@ namespace lfs::vis {
         bool depth_filter_enabled = false;
         std::array<float, 3> depth_filter_min{-50.0f, -10000.0f, 0.0f};
         std::array<float, 3> depth_filter_max{50.0f, 10000.0f, 100.0f};
+        std::array<float, 4> depth_filter_rotation{1.0f, 0.0f, 0.0f, 0.0f};
+        std::array<float, 3> depth_filter_translation{0.0f, 0.0f, 0.0f};
     };
 
     using GetRenderSettingsCallback = std::function<std::optional<RenderSettingsProxy>()>;

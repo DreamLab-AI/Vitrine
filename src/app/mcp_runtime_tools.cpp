@@ -218,6 +218,8 @@ namespace lfs::app {
                 return "html_viewer";
             case core::ExportFormat::USD:
                 return "usd";
+            case core::ExportFormat::NUREC_USDZ:
+                return "usdz_nurec";
             }
             return "unknown";
         }

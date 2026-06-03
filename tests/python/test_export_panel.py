@@ -51,6 +51,7 @@ def _install_lf_stub(monkeypatch):
         save_sog_file_dialog=lambda default_name: f"/tmp/{default_name}.sog",
         save_spz_file_dialog=lambda default_name: f"/tmp/{default_name}.spz",
         save_usd_file_dialog=lambda default_name: f"/tmp/{default_name}.usd",
+        save_usdz_file_dialog=lambda default_name: f"/tmp/{default_name}.usdz",
         save_html_file_dialog=lambda default_name: f"/tmp/{default_name}.html",
     )
     lf_stub.get_scene = lambda: SimpleNamespace(get_nodes=lambda: list(state.nodes))
@@ -110,6 +111,7 @@ def test_export_panel_builds_format_and_model_records(export_panel_module):
         {"index": "1", "label": "export.format.sog_supersplat", "selected": False},
         {"index": "2", "label": "export.format.spz_niantic", "selected": True},
         {"index": "4", "label": "export.format.usd_openusd", "selected": False},
+        {"index": "5", "label": "export.format.usdz_nurec", "selected": False},
         {"index": "3", "label": "export.format.html_viewer", "selected": False},
     ]
     assert panel._handle.records["models"] == [
@@ -182,4 +184,19 @@ def test_export_panel_uses_usd_dialog_and_format_id(export_panel_module):
 
     assert state.export_calls == [
         (int(module.ExportFormat.USD), "/tmp/Tree.usd", ("Tree",), 3),
+    ]
+
+
+def test_export_panel_uses_nurec_usdz_dialog_and_format_id(export_panel_module):
+    module, state = export_panel_module
+    panel = module.ExportPanel()
+    panel._handle = _HandleStub()
+    panel._format = module.ExportFormat.NUREC_USDZ
+    panel._selected_nodes = {"Tree"}
+    state.nodes = [_make_node(module.lf.scene.NodeType.SPLAT, "Tree", 128)]
+
+    panel._do_export()
+
+    assert state.export_calls == [
+        (int(module.ExportFormat.NUREC_USDZ), "/tmp/Tree.usdz", ("Tree",), 3),
     ]

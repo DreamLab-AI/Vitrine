@@ -35,6 +35,7 @@ namespace lfs::rendering {
             glm::vec3 view_translation;
             glm::ivec2 viewport_size;
             float focal_length_mm = DEFAULT_FOCAL_LENGTH_MM;
+            std::optional<CameraIntrinsics> intrinsics_override;
             float scaling_modifier = 1.0f;
             bool antialiasing = false;
             bool mip_filter = false;
@@ -91,9 +92,18 @@ namespace lfs::rendering {
             bool orthographic = false;
             float ortho_scale = DEFAULT_ORTHO_SCALE;
             PointCloudCropParams point_cloud_crop_params;
+            bool transparent_background = false;
+
+            [[nodiscard]] glm::mat4 getViewMatrix() const {
+                return makeViewMatrix(view_rotation, view_translation);
+            }
 
             [[nodiscard]] glm::mat4 getProjectionMatrix(const float near_plane = DEFAULT_NEAR_PLANE,
                                                         const float far_plane = DEFAULT_FAR_PLANE) const {
+                if (intrinsics_override.has_value() && !orthographic) {
+                    return createProjectionMatrixFromIntrinsics(
+                        viewport_size, *intrinsics_override, near_plane, far_plane);
+                }
                 const float vfov = focalLengthToVFov(focal_length_mm);
                 return createProjectionMatrix(viewport_size, vfov, orthographic, ortho_scale, near_plane, far_plane);
             }
@@ -105,10 +115,15 @@ namespace lfs::rendering {
             bool valid = false;
             bool depth_is_ndc = false;         // True if depth is already NDC (0-1), e.g., from OpenGL
             GLuint external_depth_texture = 0; // If set, use this OpenGL texture directly (zero-copy)
+            glm::vec2 depth_texcoord_scale{1.0f, 1.0f};
+            // Presentation orientation for the screen quad. GUT/3DGUT outputs are produced
+            // in top-left image coordinates, while the viewer presents OpenGL-style textures.
+            bool flip_y = false;
             // Depth conversion parameters (needed for view-space to NDC conversion)
             float near_plane = DEFAULT_NEAR_PLANE;
             float far_plane = DEFAULT_FAR_PLANE;
             bool orthographic = false;
+            bool color_has_alpha = false;
         };
 
         struct DualImageRenderResult {

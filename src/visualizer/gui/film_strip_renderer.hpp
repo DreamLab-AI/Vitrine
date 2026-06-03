@@ -23,12 +23,17 @@ namespace lfs::vis::gui {
     public:
         static constexpr int THUMB_WIDTH = 128;
         static constexpr int THUMB_HEIGHT = 72;
-        static constexpr int MAX_SLOTS = 32;
+        static constexpr int MAX_SLOTS = 64;
         static constexpr int MAX_RENDERS_PER_FRAME = 6;
         static constexpr int BURST_RENDERS_PER_FRAME = 20;
         static constexpr int BURST_FRAMES = 3;
         static constexpr float STRIP_HEIGHT = 56.0f;
         static constexpr float THUMB_PADDING = 4.0f;
+        static constexpr float SPROCKET_W = 4.0f;
+        static constexpr float SPROCKET_H = 3.0f;
+        static constexpr float SPROCKET_SPACING = 10.0f;
+        static constexpr float SPROCKET_ROUNDING = 1.0f;
+        static constexpr float SPROCKET_INSET = 0.5f;
 
         struct RenderOptions {
             float panel_x = 0.0f;
@@ -58,11 +63,37 @@ namespace lfs::vis::gui {
             bool over_thumbnail = false;
         };
 
+        struct ThumbInfo {
+            float time = 0.0f;
+            float interval_start_time = 0.0f;
+            float interval_end_time = 0.0f;
+            float screen_x = 0.0f;
+            float screen_width = 0.0f;
+            float screen_center_x = 0.0f;
+            int slot_idx = -1;
+            float priority = 0.0f;
+            bool contains_selected = false;
+            bool contains_hovered_keyframe = false;
+            bool hovered = false;
+            bool stale = true;
+        };
+
+        struct ExactMarkerInfo {
+            float time = 0.0f;
+            float screen_x = 0.0f;
+            bool selected = false;
+            bool hovered = false;
+        };
+
         void render(const SequencerController& controller,
                     RenderingManager* rm, SceneManager* sm,
                     const RenderOptions& options);
 
         [[nodiscard]] const std::optional<HoverState>& hoverState() const { return hover_state_; }
+        [[nodiscard]] const std::vector<ThumbInfo>& thumbs() const { return thumbs_; }
+        [[nodiscard]] const std::vector<ExactMarkerInfo>& markers() const { return exact_markers_; }
+        [[nodiscard]] unsigned int textureIdForSlot(const int slot_idx) const;
+        [[nodiscard]] bool slotIsCurrentGeneration(const int slot_idx) const;
 
         void invalidateAll();
         void destroyGLResources();
@@ -76,37 +107,19 @@ namespace lfs::vis::gui {
             bool valid = false;
         };
 
-        struct ThumbInfo {
-            float time = 0.0f;
-            float interval_start_time = 0.0f;
-            float interval_end_time = 0.0f;
-            float screen_x = 0.0f;
-            float screen_width = 0.0f;
-            float screen_center_x = 0.0f;
-            int slot_idx = -1;
-            float priority = 0.0f;
-            bool contains_selected = false;
-            bool contains_hovered_keyframe = false;
-            bool hovered = false;
-        };
-
-        struct ExactMarkerInfo {
-            float time = 0.0f;
-            float screen_x = 0.0f;
-            bool selected = false;
-            bool hovered = false;
-        };
-
         struct RenderRequest {
             size_t index = 0;
+            int visible_index = -1;
             float time = 0.0f;
             float tolerance = 0.0f;
             float priority = 0.0f;
+            int preferred_slot = -1;
         };
 
         void initGL();
-        int findSlot(float time, float tolerance) const;
-        int allocateSlot();
+        int findSlot(float time, float tolerance,
+                     const std::array<bool, MAX_SLOTS>& claimed_slots) const;
+        int allocateSlot(const std::array<bool, MAX_SLOTS>& claimed_slots);
         bool renderThumbnail(int slot_idx, float time,
                              const SequencerController& controller,
                              RenderingManager* rm, SceneManager* sm);
@@ -121,16 +134,11 @@ namespace lfs::vis::gui {
         std::vector<ThumbInfo> thumbs_;
         std::vector<ExactMarkerInfo> exact_markers_;
         std::vector<RenderRequest> render_requests_;
+        std::vector<int> visible_slot_assignments_;
         uint32_t generation_ = 0;
         int burst_remaining_ = 0;
         std::optional<HoverState> hover_state_;
         std::optional<float> last_hover_focus_time_;
-
-        static constexpr float SPROCKET_W = 4.0f;
-        static constexpr float SPROCKET_H = 3.0f;
-        static constexpr float SPROCKET_SPACING = 10.0f;
-        static constexpr float SPROCKET_ROUNDING = 1.0f;
-        static constexpr float SPROCKET_INSET = 0.5f;
     };
 
 } // namespace lfs::vis::gui

@@ -1030,7 +1030,7 @@ struct EquirectangularCameraModel : BaseCameraModel<EquirectangularCameraModel> 
         valid &= image_point_in_image_bounds_margin(
             p, parameters.resolution, margin_factor);
 
-        return {p, true};
+        return {p, valid};
     }
 
     inline __device__ CameraRay image_point_to_camera_ray(glm::fvec2 image_point) const {
@@ -1218,6 +1218,20 @@ struct SigmaPoints {
     std::array<float, 2 * 3 + 1> weights_covariance;
 };
 
+inline __device__ glm::fvec3 apply_row_major_transform_point(
+    const float* const transform_row_major_4x4,
+    glm::fvec3 const& point) {
+    // transform_row_major_4x4 is a row-major affine matrix with translation in [3,7,11].
+    return glm::fvec3{
+        transform_row_major_4x4[0] * point.x + transform_row_major_4x4[1] * point.y +
+            transform_row_major_4x4[2] * point.z + transform_row_major_4x4[3],
+        transform_row_major_4x4[4] * point.x + transform_row_major_4x4[5] * point.y +
+            transform_row_major_4x4[6] * point.z + transform_row_major_4x4[7],
+        transform_row_major_4x4[8] * point.x + transform_row_major_4x4[9] * point.y +
+            transform_row_major_4x4[10] * point.z + transform_row_major_4x4[11],
+    };
+}
+
 inline __device__ auto world_gaussian_sigma_points(
     UnscentedTransformParameters const& unscented_transform_parameters,
     glm::fvec3 const& gaussian_world_mean,
@@ -1283,13 +1297,22 @@ world_gaussian_to_image_gaussian_unscented_transform_shutter_pose(
     UnscentedTransformParameters const& unscented_transform_parameters,
     glm::fvec3 const& gaussian_world_mean,
     glm::fvec3 const& gaussian_world_scale,
-    glm::fquat const& gaussian_world_rot) -> ImageGaussianReturn {
+    glm::fquat const& gaussian_world_rot,
+    const float* const model_transform_row_major_4x4 = nullptr) -> ImageGaussianReturn {
     // Compute sigma points for input distribution
-    auto const sigma_points = world_gaussian_sigma_points(
+    auto sigma_points = world_gaussian_sigma_points(
         unscented_transform_parameters,
         gaussian_world_mean,
         gaussian_world_scale,
         gaussian_world_rot);
+
+    if (model_transform_row_major_4x4 != nullptr) {
+#pragma unroll
+        for (auto i = 0u; i < sigma_points.points.size(); ++i) {
+            sigma_points.points[i] = apply_row_major_transform_point(
+                model_transform_row_major_4x4, sigma_points.points[i]);
+        }
+    }
 
     // Transform sigma points / compute approximation of output distribution via
     // sample mean / covariance

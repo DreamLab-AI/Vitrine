@@ -146,6 +146,8 @@ add_library(lfs_io STATIC
         formats/spz.cpp
         formats/usd.hpp
         formats/usd.cpp
+        formats/nurec_usdz.hpp
+        formats/nurec_usdz.cpp
 
         # Concrete loader implementations
         loaders/loader_utils.hpp
@@ -238,6 +240,7 @@ target_link_libraries(lfs_io
         ${WEBP_DECODE_LIB}     # WebP for SOG decompression
         ${WEBP_ENCODE_LIB}     # WebP for SOG/HTML export
         ${ARCHIVE_LIB}         # LibArchive for SOG bundle support
+        ZLIB::ZLIB             # gzip/msgpack payloads inside NuRec USDZ
         CUDA::cudart           # CUDA runtime for nvImageCodec
         lfs_io_cuda            # IO-specific CUDA kernels (morton, k-means)
         lfs_core_cuda          # Core CUDA utilities (lanczos_resize for nvcodec)

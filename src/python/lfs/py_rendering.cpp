@@ -8,13 +8,18 @@
 #include "core/tensor.hpp"
 #include "py_scene.hpp"
 #include "python/python_runtime.hpp"
+#include "rendering/coordinate_conventions.hpp"
 #include "rendering/gs_rasterizer_tensor.hpp"
+#include "rendering/image_layout.hpp"
 #include "training/dataset.hpp"
 #include "visualizer/ipc/view_context.hpp"
+#include "visualizer/visualizer.hpp"
 
+#include <atomic>
 #include <cassert>
 #include <cmath>
 #include <cstring>
+#include <future>
 #include <numbers>
 
 #include <glm/glm.hpp>
@@ -31,6 +36,7 @@ namespace lfs::python {
                 return std::nullopt;
 
             auto image = clone_for_async ? render->image->clone() : *render->image;
+            image = rendering::flipImageVertical(image, rendering::ImageLayout::CHW);
             image = image.permute({1, 2, 0});
 
             std::optional<PyTensor> screen_pos;
@@ -45,6 +51,46 @@ namespace lfs::python {
                 .image = PyTensor(std::move(image), true),
                 .screen_positions = std::move(screen_pos),
             };
+        }
+
+        [[nodiscard]] std::optional<vis::ViewportRender> captureViewportRenderThreadSafe() {
+            auto invoke_capture = []() -> std::optional<vis::ViewportRender> {
+                return vis::capture_viewport_render();
+            };
+
+            auto* const viewer = get_visualizer();
+            if (!viewer || viewer->isOnViewerThread()) {
+                return invoke_capture();
+            }
+            if (!viewer->acceptsPostedWork()) {
+                return std::nullopt;
+            }
+
+            auto promise = std::make_shared<std::promise<std::optional<vis::ViewportRender>>>();
+            auto future = promise->get_future();
+            auto completed = std::make_shared<std::atomic_bool>(false);
+
+            auto finish = [promise, completed](std::optional<vis::ViewportRender> result) mutable {
+                if (!completed->exchange(true)) {
+                    promise->set_value(std::move(result));
+                }
+            };
+
+            const bool posted = viewer->postWork(vis::Visualizer::WorkItem{
+                .run =
+                    [invoke_capture, finish]() mutable {
+                        finish(invoke_capture());
+                    },
+                .cancel =
+                    [finish]() mutable {
+                        finish(std::nullopt);
+                    }});
+            if (!posted) {
+                return std::nullopt;
+            }
+
+            nb::gil_scoped_release release;
+            return future.get();
         }
     } // namespace
 
@@ -158,8 +204,33 @@ namespace lfs::python {
             group.properties.push_back(std::move(meta));
         };
 
+        auto add_string = [&](std::string Proxy::*member, const std::string& id, const std::string& name,
+                              const std::string& desc, const std::string& default_val) {
+            PropertyMeta meta;
+            meta.id = id;
+            meta.name = name;
+            meta.description = desc;
+            meta.type = PropType::String;
+            meta.default_string = default_val;
+            meta.getter = [member](const PropertyObjectRef& ref) -> std::any {
+                return static_cast<const Proxy*>(ref.ptr)->*member;
+            };
+            meta.setter = [member](PropertyObjectRef& ref, const std::any& val) {
+                static_cast<Proxy*>(ref.ptr)->*member = std::any_cast<std::string>(val);
+            };
+            group.properties.push_back(std::move(meta));
+        };
+
         // Background
         add_color3(&Proxy::background_color, "background_color", "Color", "Viewport background color", {0.0, 0.0, 0.0});
+        add_int_enum(&Proxy::environment_mode, "environment_mode", "Environment", "Viewport background mode",
+                     {{"Solid Color", "SOLID_COLOR", 0}, {"Equirectangular HDRI", "EQUIRECTANGULAR", 1}}, 0);
+        add_string(&Proxy::environment_map_path, "environment_map_path", "Preset",
+                   "Relative asset path or absolute HDRI path for the environment background",
+                   std::string(vis::kDefaultEnvironmentMapPath));
+        add_float(&Proxy::environment_exposure, "environment_exposure", "Exposure", "Environment exposure in EV", 0.0, -6.0, 6.0);
+        add_float(&Proxy::environment_rotation_degrees, "environment_rotation_degrees", "Rotation",
+                  "Environment yaw rotation in degrees", 0.0, -180.0, 180.0);
 
         // Coordinate Axes
         add_bool(&Proxy::show_coord_axes, "show_coord_axes", "Show Coordinate Axes",
@@ -211,6 +282,9 @@ namespace lfs::python {
         add_bool(&Proxy::gut, "gut", "GUT Mode", "Enable GUT rendering mode", false);
         add_bool(&Proxy::mip_filter, "mip_filter", "Mip Filter", "Enable mip-map filtering", false);
         add_float(&Proxy::render_scale, "render_scale", "Render Scale", "Render resolution scale", 1.0, 0.25, 1.0);
+        add_int_enum(&Proxy::camera_metrics_mode, "camera_metrics_mode", "Camera Metrics",
+                     "Compute metrics when jumping to a source camera",
+                     {{"Off", "OFF", 0}, {"PSNR", "PSNR", 1}, {"PSNR + SSIM", "PSNR_SSIM", 2}}, 0);
 
         add_bool(&Proxy::apply_appearance_correction, "apply_appearance_correction", "Appearance Correction",
                  "Enable PPISP appearance correction", false);
@@ -302,6 +376,7 @@ namespace lfs::python {
     void PyRenderSettings::set(const std::string& name, nb::object value) {
         prop_.setattr(name, value);
         vis::update_render_settings(settings_);
+        request_redraw();
     }
 
     void PyRenderSettings::prop_setattr(const std::string& name, nb::object value) {
@@ -452,67 +527,218 @@ namespace {
     constexpr float DEFAULT_FOV = 60.0f;
     constexpr float DEFAULT_SCALE_THRESHOLD = 0.01f;
 
+    struct SceneRenderInputs {
+        std::unique_ptr<lfs::core::Tensor> model_transforms;
+        std::unique_ptr<lfs::core::Tensor> transform_indices;
+        std::vector<bool> node_visibility_mask;
+    };
+
+    lfs::core::Tensor tensor_from_mat3_row_major(const glm::mat3& matrix) {
+        auto tensor = lfs::core::Tensor::empty({3, 3}, lfs::core::Device::CPU, lfs::core::DataType::Float32);
+        auto* ptr = static_cast<float*>(tensor.data_ptr());
+        for (int row = 0; row < 3; ++row) {
+            for (int col = 0; col < 3; ++col) {
+                ptr[row * 3 + col] = matrix[col][row];
+            }
+        }
+        return tensor;
+    }
+
+    lfs::core::Tensor tensor_from_vec3(const glm::vec3& value) {
+        return lfs::core::Tensor::from_vector({value.x, value.y, value.z}, {3}, lfs::core::Device::CPU);
+    }
+
+    lfs::core::Tensor tensor_from_mat4_row_major(const glm::mat4& matrix) {
+        auto tensor = lfs::core::Tensor::empty({4, 4}, lfs::core::Device::CPU, lfs::core::DataType::Float32);
+        auto* ptr = static_cast<float*>(tensor.data_ptr());
+        for (int row = 0; row < 4; ++row) {
+            for (int col = 0; col < 4; ++col) {
+                ptr[row * 4 + col] = matrix[col][row];
+            }
+        }
+        return tensor;
+    }
+
+    glm::mat3 mat3_from_row_major_tensor(const lfs::core::Tensor& tensor) {
+        const auto cpu = tensor.cpu().contiguous();
+        return lfs::rendering::mat3FromRowMajor3x3(static_cast<const float*>(cpu.data_ptr()));
+    }
+
+    glm::vec3 vec3_from_tensor(const lfs::core::Tensor& tensor) {
+        const auto cpu = tensor.cpu().contiguous();
+        const auto* ptr = static_cast<const float*>(cpu.data_ptr());
+        return {ptr[0], ptr[1], ptr[2]};
+    }
+
     float fov_to_focal(float fov_degrees, int pixels) {
         return static_cast<float>(pixels) / (2.0f * std::tan(fov_degrees * std::numbers::pi_v<float> / 360.0f));
     }
 
-    std::unique_ptr<lfs::core::Camera> create_camera(const lfs::core::Tensor& R, const lfs::core::Tensor& T, int width,
-                                                     int height, float fov_degrees) {
+    float vertical_fov_to_horizontal_fov(float vertical_fov_degrees, int width, int height) {
+        if (width <= 0 || height <= 0) {
+            return vertical_fov_degrees;
+        }
+
+        const float aspect = static_cast<float>(width) / static_cast<float>(height);
+        const float half_vertical_fov_radians = vertical_fov_degrees * std::numbers::pi_v<float> / 360.0f;
+        return std::atan(std::tan(half_vertical_fov_radians) * aspect) * 360.0f / std::numbers::pi_v<float>;
+    }
+
+    std::unique_ptr<lfs::core::Camera> create_camera_from_w2c(const glm::mat3& rotation,
+                                                              const glm::vec3& translation,
+                                                              int width,
+                                                              int height,
+                                                              float fov_degrees) {
         const float focal = fov_to_focal(fov_degrees, height);
         const float cx = static_cast<float>(width) / 2.0f;
         const float cy = static_cast<float>(height) / 2.0f;
 
+        auto R = tensor_from_mat3_row_major(rotation);
+        auto T = tensor_from_vec3(translation);
         auto radial = lfs::core::Tensor::zeros({6}, lfs::core::Device::CUDA, lfs::core::DataType::Float32);
         auto tangential = lfs::core::Tensor::zeros({2}, lfs::core::Device::CUDA, lfs::core::DataType::Float32);
 
         auto camera =
-            std::make_unique<lfs::core::Camera>(R.clone(), T.clone(), focal, focal, cx, cy, std::move(radial),
+            std::make_unique<lfs::core::Camera>(std::move(R), std::move(T), focal, focal, cx, cy, std::move(radial),
                                                 std::move(tangential), lfs::core::CameraModelType::PINHOLE,
                                                 "virtual_camera", "", "", width, height, -1);
         camera->set_image_dimensions(width, height);
         return camera;
     }
 
+    std::unique_ptr<lfs::core::Camera> create_camera_from_visualizer_pose(const glm::mat3& visualizer_rotation,
+                                                                          const glm::vec3& visualizer_translation,
+                                                                          int width,
+                                                                          int height,
+                                                                          float fov_degrees) {
+        const glm::mat3 raster_camera_to_world =
+            lfs::rendering::rasterCameraToWorldFromVisualizerRotation(visualizer_rotation);
+        const glm::mat3 world_to_camera = glm::transpose(raster_camera_to_world);
+        return create_camera_from_w2c(
+            world_to_camera,
+            -world_to_camera * visualizer_translation,
+            width,
+            height,
+            fov_degrees);
+    }
+
+    std::unique_ptr<lfs::core::Camera> create_camera_from_visualizer_pose(const lfs::core::Tensor& rotation,
+                                                                          const lfs::core::Tensor& translation,
+                                                                          int width,
+                                                                          int height,
+                                                                          float fov_degrees) {
+        return create_camera_from_visualizer_pose(
+            mat3_from_row_major_tensor(rotation),
+            vec3_from_tensor(translation),
+            width,
+            height,
+            fov_degrees);
+    }
+
     lfs::core::SplatData* get_model(lfs::core::Scene* scene) {
         return scene ? const_cast<lfs::core::SplatData*>(scene->getCombinedModel()) : nullptr;
     }
 
-    std::pair<lfs::core::Tensor, lfs::core::Tensor> compute_w2c(
+    SceneRenderInputs get_scene_render_inputs(lfs::core::Scene* scene, const size_t gaussian_count) {
+        SceneRenderInputs inputs;
+        if (!scene) {
+            return inputs;
+        }
+
+        auto model_transforms = scene->getVisibleNodeTransforms();
+        for (auto& transform : model_transforms) {
+            transform = lfs::rendering::dataWorldTransformToVisualizerWorld(transform);
+        }
+
+        if (!model_transforms.empty()) {
+            std::vector<float> transform_data(model_transforms.size() * 16);
+            for (size_t i = 0; i < model_transforms.size(); ++i) {
+                const auto transform_tensor = tensor_from_mat4_row_major(model_transforms[i]);
+                std::memcpy(transform_data.data() + i * 16, transform_tensor.data_ptr(), 16 * sizeof(float));
+            }
+            inputs.model_transforms = std::make_unique<lfs::core::Tensor>(
+                lfs::core::Tensor::from_vector(
+                    transform_data,
+                    {model_transforms.size(), 4, 4},
+                    lfs::core::Device::CPU)
+                    .cuda());
+        }
+
+        if (auto transform_indices = scene->getTransformIndices();
+            transform_indices && transform_indices->is_valid() && transform_indices->numel() == gaussian_count) {
+            inputs.transform_indices = std::make_unique<lfs::core::Tensor>(
+                transform_indices->device() == lfs::core::Device::CUDA ? *transform_indices : transform_indices->cuda());
+        }
+
+        inputs.node_visibility_mask = scene->getNodeVisibilityMask();
+        return inputs;
+    }
+
+    std::tuple<lfs::core::Tensor, lfs::core::Tensor> rasterize_scene(const lfs::core::Camera& camera,
+                                                                     const lfs::core::SplatData& model,
+                                                                     const lfs::core::Tensor& bg_color,
+                                                                     const SceneRenderInputs& scene_inputs,
+                                                                     lfs::core::Tensor* screen_positions_out = nullptr) {
+        return lfs::rendering::rasterize_tensor(
+            camera,
+            model,
+            bg_color,
+            -1,
+            false,
+            DEFAULT_SCALE_THRESHOLD,
+            scene_inputs.model_transforms.get(),
+            scene_inputs.transform_indices.get(),
+            nullptr,
+            screen_positions_out,
+            false,
+            0.0f,
+            0.0f,
+            0.0f,
+            true,
+            nullptr,
+            false,
+            0.0f,
+            false,
+            nullptr,
+            nullptr,
+            nullptr,
+            false,
+            false,
+            -1,
+            nullptr,
+            nullptr,
+            false,
+            false,
+            -1,
+            nullptr,
+            nullptr,
+            nullptr,
+            false,
+            nullptr,
+            nullptr,
+            -1,
+            lfs::rendering::DEFAULT_FAR_PLANE,
+            {},
+            false,
+            scene_inputs.node_visibility_mask);
+    }
+
+    std::pair<lfs::core::Tensor, lfs::core::Tensor> compute_visualizer_pose(
         const std::tuple<float, float, float>& eye,
         const std::tuple<float, float, float>& target,
         const std::tuple<float, float, float>& up) {
         auto [ex, ey, ez] = eye;
         auto [tx, ty, tz] = target;
         auto [ux, uy, uz] = up;
-
-        glm::vec3 e{ex, ey, ez}, t{tx, ty, tz}, u{ux, uy, uz};
-        assert(glm::length(t - e) > 1e-6f);
-
-        glm::vec3 forward = glm::normalize(t - e);
-        glm::vec3 right_unnorm = glm::cross(u, forward);
-        assert(glm::length(right_unnorm) > 1e-6f);
-
-        glm::vec3 right = glm::normalize(right_unnorm);
-        glm::vec3 cam_up = glm::cross(forward, right);
-
-        glm::mat3 c2w(right, cam_up, forward);
-        glm::mat3 w2c_r = glm::transpose(c2w);
-        glm::vec3 w2c_t = -w2c_r * e;
-
-        auto R = lfs::core::Tensor::empty({3, 3}, lfs::core::Device::CPU, lfs::core::DataType::Float32);
-        auto T = lfs::core::Tensor::empty({3}, lfs::core::Device::CPU, lfs::core::DataType::Float32);
-        auto* r_ptr = static_cast<float*>(R.data_ptr());
-        auto* t_ptr = static_cast<float*>(T.data_ptr());
-
-        for (int i = 0; i < 3; ++i)
-            for (int j = 0; j < 3; ++j)
-                r_ptr[i * 3 + j] = w2c_r[j][i];
-
-        t_ptr[0] = w2c_t.x;
-        t_ptr[1] = w2c_t.y;
-        t_ptr[2] = w2c_t.z;
-
-        return {R.cuda(), T.cuda()};
+        const glm::vec3 eye_vec{ex, ey, ez};
+        return {
+            tensor_from_mat3_row_major(
+                lfs::rendering::makeVisualizerLookAtRotation(
+                    eye_vec,
+                    glm::vec3{tx, ty, tz},
+                    glm::vec3{ux, uy, uz}))
+                .cuda(),
+            tensor_from_vec3(eye_vec).cuda()};
     }
 
 } // namespace
@@ -526,12 +752,14 @@ namespace lfs::python {
         if (!model)
             return std::nullopt;
 
-        auto camera = create_camera(rotation.tensor(), translation.tensor(), width, height, fov_degrees);
+        auto camera = create_camera_from_visualizer_pose(rotation.tensor(), translation.tensor(), width, height, fov_degrees);
+        auto scene_inputs = get_scene_render_inputs(scene, model->size());
 
         const auto bg = bg_color ? bg_color->tensor().clone()
                                  : core::Tensor::zeros({3}, core::Device::CUDA, core::DataType::Float32);
 
-        auto [image, alpha] = rendering::rasterize_tensor(*camera, *model, bg);
+        auto [image, alpha] = rasterize_scene(*camera, *model, bg, scene_inputs);
+        image = rendering::flipImageVertical(image, rendering::ImageLayout::CHW);
         return PyTensor(image.permute({1, 2, 0}), true);
     }
 
@@ -542,12 +770,12 @@ namespace lfs::python {
         if (!model)
             return std::nullopt;
 
-        auto camera = create_camera(rotation.tensor(), translation.tensor(), width, height, fov_degrees);
+        auto camera = create_camera_from_visualizer_pose(rotation.tensor(), translation.tensor(), width, height, fov_degrees);
+        auto scene_inputs = get_scene_render_inputs(scene, model->size());
         const auto bg = core::Tensor::zeros({3}, core::Device::CUDA, core::DataType::Float32);
 
         core::Tensor screen_positions;
-        rendering::rasterize_tensor(*camera, *model, bg, -1, false, DEFAULT_SCALE_THRESHOLD, nullptr, nullptr, nullptr,
-                                    &screen_positions);
+        rasterize_scene(*camera, *model, bg, scene_inputs, &screen_positions);
 
         return PyTensor(std::move(screen_positions), true);
     }
@@ -568,7 +796,7 @@ namespace lfs::python {
             .translation = PyTensor(T.cuda(), true),
             .width = view_info->width,
             .height = view_info->height,
-            .fov_x = view_info->fov,
+            .fov_x = vertical_fov_to_horizontal_fov(view_info->fov, view_info->width, view_info->height),
             .fov_y = view_info->fov,
         };
     }
@@ -578,13 +806,13 @@ namespace lfs::python {
     }
 
     std::optional<PyViewportRender> capture_viewport() {
-        return toPyViewportRender(vis::capture_viewport_render(), true);
+        return toPyViewportRender(captureViewportRenderThreadSafe(), true);
     }
 
     std::tuple<PyTensor, PyTensor> look_at(const std::tuple<float, float, float>& eye,
                                            const std::tuple<float, float, float>& target,
                                            const std::tuple<float, float, float>& up) {
-        auto [R, T] = compute_w2c(eye, target, up);
+        auto [R, T] = compute_visualizer_pose(eye, target, up);
         return {PyTensor(std::move(R), true), PyTensor(std::move(T), true)};
     }
 
@@ -592,19 +820,10 @@ namespace lfs::python {
                                       const std::tuple<float, float, float>& target, int width, int height,
                                       float fov_degrees, const std::tuple<float, float, float>& up,
                                       const PyTensor* bg_color) {
-        auto* scene = get_render_scene();
-        auto* model = get_model(scene);
-        if (!model)
-            return std::nullopt;
-
-        auto [R, T] = compute_w2c(eye, target, up);
-        auto camera = create_camera(R, T, width, height, fov_degrees);
-
-        const auto bg = bg_color ? bg_color->tensor().clone()
-                                 : core::Tensor::zeros({3}, core::Device::CUDA, core::DataType::Float32);
-
-        auto [image, alpha] = rendering::rasterize_tensor(*camera, *model, bg);
-        return PyTensor(image.permute({1, 2, 0}), true);
+        auto [R, T] = compute_visualizer_pose(eye, target, up);
+        PyTensor rotation(std::move(R), true);
+        PyTensor translation(std::move(T), true);
+        return render_view(rotation, translation, width, height, fov_degrees, bg_color);
     }
 
     void register_rendering(nb::module_& m) {
@@ -639,11 +858,11 @@ namespace lfs::python {
 Render scene from arbitrary camera parameters.
 
 Args:
-    rotation: [3, 3] camera rotation matrix
-    translation: [3] camera position
+    rotation: [3, 3] camera-to-world rotation in visualizer coordinates
+    translation: [3] camera position in visualizer world coordinates
     width: Render width in pixels
     height: Render height in pixels
-    fov: Field of view in degrees (default: 60)
+    fov: Vertical field of view in degrees (default: 60)
     bg_color: Optional [3] RGB background color
 
 Returns:
@@ -656,17 +875,17 @@ Returns:
 Compute screen positions of all Gaussians for a given camera view.
 
 Args:
-    rotation: [3, 3] camera rotation matrix
-    translation: [3] camera position
+    rotation: [3, 3] camera-to-world rotation in visualizer coordinates
+    translation: [3] camera position in visualizer world coordinates
     width: Viewport width in pixels
     height: Viewport height in pixels
-    fov: Field of view in degrees (default: 60)
+    fov: Vertical field of view in degrees (default: 60)
 
 Returns:
     Tensor [N, 2] with (x, y) pixel coordinates for each Gaussian
 )doc");
 
-        m.def("get_current_view", &get_current_view, "Get current viewport camera info (None if not available)");
+        m.def("get_current_view", &get_current_view, "Get current viewport camera pose (None if not available)");
 
         nb::class_<PyCameraState>(m, "CameraState")
             .def_ro("eye", &PyCameraState::eye)
@@ -688,7 +907,7 @@ Returns:
 
         m.def("look_at", &look_at, nb::arg("eye"), nb::arg("target"),
               nb::arg("up") = std::make_tuple(0.0f, 1.0f, 0.0f),
-              "Compute (rotation, translation) camera matrices for render_view from eye/target position.");
+              "Compute a visualizer camera pose tuple (rotation, translation) for render_view from eye/target.");
 
         m.def("render_at", &render_at, nb::arg("eye"), nb::arg("target"), nb::arg("width"), nb::arg("height"),
               nb::arg("fov") = DEFAULT_FOV, nb::arg("up") = std::make_tuple(0.0f, 1.0f, 0.0f),

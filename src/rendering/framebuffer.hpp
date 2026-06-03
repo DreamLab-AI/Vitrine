@@ -63,8 +63,8 @@ namespace lfs::rendering {
             // --- Color texture ---
             glGenTextures(1, &texture);
             glBindTexture(GL_TEXTURE_2D, texture);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0,
-                         GL_RGB, GL_UNSIGNED_BYTE, nullptr);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0,
+                         GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -109,8 +109,8 @@ namespace lfs::rendering {
 
             // Resize color texture
             glBindTexture(GL_TEXTURE_2D, texture);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0,
-                         GL_RGB, GL_UNSIGNED_BYTE, nullptr);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0,
+                         GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -142,7 +142,7 @@ namespace lfs::rendering {
             glBindTexture(GL_TEXTURE_2D, 0);
         }
 
-        void uploadImage(const unsigned char* data, int width_, int height_) {
+        void uploadImage(const unsigned char* data, int width_, int height_, const int channels = 3) {
             if (width != width_ || height != height_) {
                 resize(width_, height_);
             }
@@ -152,8 +152,9 @@ namespace lfs::rendering {
 
             glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
             glBindTexture(GL_TEXTURE_2D, texture);
+            const GLenum format = channels == 4 ? GL_RGBA : GL_RGB;
             glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height,
-                            GL_RGB, GL_UNSIGNED_BYTE, data);
+                            format, GL_UNSIGNED_BYTE, data);
         }
 
         void uploadDepth(const float* depth_data, int width_, int height_) {
@@ -172,7 +173,8 @@ namespace lfs::rendering {
         void uploadImageAndDepth(const unsigned char* rgb_data,
                                  const float* depth_data,
                                  int new_width,
-                                 int new_height) {
+                                 int new_height,
+                                 const int channels = 3) {
             if (width != new_width || height != new_height) {
                 resize(new_width, new_height);
             }
@@ -181,8 +183,9 @@ namespace lfs::rendering {
             LOG_TRACE("Uploading image and depth data: {}x{}", new_width, new_height);
 
             glBindTexture(GL_TEXTURE_2D, texture);
+            const GLenum format = channels == 4 ? GL_RGBA : GL_RGB;
             glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height,
-                            GL_RGB, GL_UNSIGNED_BYTE, rgb_data);
+                            format, GL_UNSIGNED_BYTE, rgb_data);
             glBindTexture(GL_TEXTURE_2D, depthTexture);
             glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height,
                             GL_RED, GL_FLOAT, depth_data);

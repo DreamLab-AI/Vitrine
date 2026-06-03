@@ -14,7 +14,7 @@
 #include <mutex>
 #include <unordered_set>
 
-#include <Python.h>
+#include "python_compat.hpp"
 
 namespace lfs::python {
 
@@ -108,6 +108,7 @@ namespace lfs::python {
         core::Scene* g_scene_for_python = nullptr;
 
         ApplicationSceneContext g_app_scene_context;
+        std::atomic<vis::Visualizer*> g_visualizer{nullptr};
         std::atomic<vis::TrainerManager*> g_trainer_manager{nullptr};
         std::atomic<vis::ParameterManager*> g_parameter_manager{nullptr};
         std::atomic<vis::RenderingManager*> g_rendering_manager{nullptr};
@@ -170,7 +171,7 @@ namespace lfs::python {
 
         // Redraw request flag
         std::atomic<bool> g_redraw_requested{false};
-        RedrawWakeupCallback g_redraw_wakeup_callback = nullptr;
+        MainLoopWakeCallback g_main_loop_wake_callback = nullptr;
     } // namespace
 
     // Bridge API
@@ -206,16 +207,16 @@ namespace lfs::python {
     // Redraw request mechanism
     void request_redraw() {
         const bool was_requested = g_redraw_requested.exchange(true, std::memory_order_acq_rel);
-        if (!was_requested && g_redraw_wakeup_callback)
-            g_redraw_wakeup_callback();
+        if (!was_requested && g_main_loop_wake_callback)
+            g_main_loop_wake_callback();
     }
 
     bool consume_redraw_request() {
         return g_redraw_requested.exchange(false, std::memory_order_acq_rel);
     }
 
-    void set_redraw_wakeup_callback(RedrawWakeupCallback cb) {
-        g_redraw_wakeup_callback = cb;
+    void set_main_loop_wake_callback(MainLoopWakeCallback cb) {
+        g_main_loop_wake_callback = cb;
     }
 
     // Operation context (short-lived)
@@ -224,6 +225,9 @@ namespace lfs::python {
 
     void set_trainer_manager(vis::TrainerManager* tm) { g_trainer_manager.store(tm); }
     vis::TrainerManager* get_trainer_manager() { return g_trainer_manager.load(); }
+
+    void set_visualizer(vis::Visualizer* viewer) { g_visualizer.store(viewer); }
+    vis::Visualizer* get_visualizer() { return g_visualizer.load(); }
 
     void set_parameter_manager(vis::ParameterManager* pm) { g_parameter_manager.store(pm); }
     vis::ParameterManager* get_parameter_manager() { return g_parameter_manager.load(); }

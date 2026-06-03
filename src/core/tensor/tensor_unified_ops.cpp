@@ -21,8 +21,32 @@
 #include <curand.h>
 #include <format>
 #include <numeric>
+#include <optional>
 
 namespace lfs::core {
+
+    namespace {
+
+        cudaStream_t resolve_cuda_execution_stream(const Tensor& tensor) {
+            cudaStream_t execution_stream = getCurrentCUDAStream();
+            if (execution_stream == nullptr && tensor.device() == Device::CUDA) {
+                execution_stream = tensor.stream();
+            }
+            return execution_stream;
+        }
+
+        Tensor empty_on_tensor_stream(const TensorShape& shape, Device device, DataType dtype, const Tensor& tensor) {
+            if (device != Device::CUDA) {
+                return Tensor::empty(shape, device, dtype);
+            }
+
+            const cudaStream_t execution_stream = resolve_cuda_execution_stream(tensor);
+            waitForCUDAStream(execution_stream, tensor.stream());
+            CUDAStreamGuard guard(execution_stream);
+            return Tensor::empty(shape, device, dtype);
+        }
+
+    } // namespace
 
     // ============= CORE UNIFIED OPERATIONS =============
     constexpr static DataType promote_types(DataType a, DataType b) {
@@ -676,16 +700,18 @@ namespace lfs::core {
                     const size_t n = fused_source.numel();
                     Tensor result;
                     {
-                        CUDAStreamGuard guard(fused_source.stream());
-                        result = Tensor::empty(TensorShape(args.keepdim
-                                                               ? std::vector<size_t>(shape_.rank(), 1)
-                                                               : std::vector<size_t>{}),
-                                               Device::CUDA, DataType::Float32);
+                        const cudaStream_t execution_stream = resolve_cuda_execution_stream(fused_source);
+                        waitForCUDAStream(execution_stream, fused_source.stream());
+                        CUDAStreamGuard guard(execution_stream);
+                        result = Tensor::empty(
+                            TensorShape(args.keepdim
+                                            ? std::vector<size_t>(shape_.rank(), 1)
+                                            : std::vector<size_t>{}),
+                            Device::CUDA, DataType::Float32);
+                        tensor_ops::launch_fused_transform_reduce(
+                            fused_source.ptr<float>(), result.ptr<float>(), n,
+                            chain, op, result.stream());
                     }
-
-                    tensor_ops::launch_fused_transform_reduce(
-                        fused_source.ptr<float>(), result.ptr<float>(), n,
-                        chain, op, result.stream());
 
                     internal::lazy_executor_diagnostics_counters_increment_fused();
                     internal::lazy_executor_diagnostics_counters_increment_fused_reduce();
@@ -737,12 +763,14 @@ namespace lfs::core {
 
                     Tensor result;
                     {
-                        CUDAStreamGuard guard(fused_source.stream());
+                        const cudaStream_t execution_stream = resolve_cuda_execution_stream(fused_source);
+                        waitForCUDAStream(execution_stream, fused_source.stream());
+                        CUDAStreamGuard guard(execution_stream);
                         result = Tensor::empty(TensorShape(out_shape), Device::CUDA, DataType::Float32);
+                        tensor_ops::launch_fused_segmented_transform_reduce(
+                            fused_source.ptr<float>(), result.ptr<float>(),
+                            num_segments, segment_size, chain, op, result.stream());
                     }
-                    tensor_ops::launch_fused_segmented_transform_reduce(
-                        fused_source.ptr<float>(), result.ptr<float>(),
-                        num_segments, segment_size, chain, op, result.stream());
 
                     internal::lazy_executor_diagnostics_counters_increment_fused();
                     internal::lazy_executor_diagnostics_counters_increment_fused_reduce();
@@ -771,7 +799,7 @@ namespace lfs::core {
                 size_t N = shape_[1]; // cols (output size)
 
                 std::vector<size_t> out_shape = args.keepdim ? std::vector<size_t>{1, N} : std::vector<size_t>{N};
-                auto result = Tensor::empty(TensorShape(out_shape), device_, dtype_);
+                auto result = empty_on_tensor_stream(TensorShape(out_shape), device_, dtype_, *this);
 
                 LOG_DEBUG("[COLUMN REDUCE] M={}, N={}, op={}", M, N, static_cast<int>(op));
                 tensor_ops::launch_column_reduce(ptr<float>(), result.ptr<float>(), M, N, op, result.stream());
@@ -923,6 +951,13 @@ namespace lfs::core {
         } else if (input->dtype_ == DataType::Bool) {
             // Bool reductions return Int64 (PyTorch behavior)
             out_dtype = DataType::Int64;
+        }
+
+        std::optional<CUDAStreamGuard> execution_guard;
+        if (input->device_ == Device::CUDA) {
+            const cudaStream_t execution_stream = resolve_cuda_execution_stream(*input);
+            waitForCUDAStream(execution_stream, input->stream());
+            execution_guard.emplace(execution_stream);
         }
 
         auto result = Tensor::empty(TensorShape(out_shape), input->device_, out_dtype);

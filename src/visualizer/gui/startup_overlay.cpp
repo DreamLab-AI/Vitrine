@@ -11,7 +11,8 @@
 #include "core/image_io.hpp"
 #include "core/logger.hpp"
 #include "gui/gui_focus_state.hpp"
-#include "gui/rmlui/rml_panel_host.hpp"
+#include "gui/rmlui/rml_document_utils.hpp"
+#include "gui/rmlui/rml_input_utils.hpp"
 #include "gui/rmlui/rml_theme.hpp"
 #include "gui/rmlui/rmlui_manager.hpp"
 #include "gui/rmlui/rmlui_render_interface.hpp"
@@ -96,7 +97,7 @@ namespace lfs::vis::gui {
 
         try {
             const auto rml_path = lfs::vis::getAssetPath("rmlui/startup.rml");
-            document_ = rml_context_->LoadDocument(rml_path.string());
+            document_ = rml_documents::loadDocument(rml_context_, rml_path);
             if (!document_) {
                 LOG_ERROR("StartupOverlay: failed to load startup.rml");
                 return;
@@ -111,7 +112,8 @@ namespace lfs::vis::gui {
         updateLocalizedText();
 
         link_listener_ = new LinkClickListener();
-        for (const char* id : {"link-discord", "link-x", "link-donate"}) {
+        for (const char* id : {"link-discord", "link-x", "link-donate", "link-core11",
+                               "link-volinga"}) {
             auto* el = document_->GetElementById(id);
             if (el)
                 el->AddEventListener(Rml::EventId::Click, link_listener_);
@@ -237,7 +239,7 @@ namespace lfs::vis::gui {
             is_light ? "lichtfeld-splash-logo-dark.png" : "lichtfeld-splash-logo.png");
         auto* logo = document_->GetElementById("logo");
         if (logo) {
-            logo->SetAttribute("src", logo_path.string());
+            logo->SetAttribute("src", rml_theme::pathToRmlImageSource(logo_path));
             auto [w, h, c] = lfs::core::get_image_info(logo_path);
             if (w > 0 && h > 0) {
                 logo->SetProperty("width", std::format("{:.0f}dp", w * 1.3f));
@@ -249,7 +251,7 @@ namespace lfs::vis::gui {
             is_light ? "core11-logo-dark.png" : "core11-logo.png");
         auto* core11 = document_->GetElementById("core11-logo");
         if (core11) {
-            core11->SetAttribute("src", core11_path.string());
+            core11->SetAttribute("src", rml_theme::pathToRmlImageSource(core11_path));
             auto [w, h, c] = lfs::core::get_image_info(core11_path);
             if (w > 0 && h > 0) {
                 core11->SetProperty("width", std::format("{:.0f}dp", w * 0.5f));
@@ -257,11 +259,25 @@ namespace lfs::vis::gui {
             }
         }
 
+        const auto volinga_path = lfs::vis::getAssetPath(
+            is_light ? "volinga-logo-dark.png" : "volinga-logo.png");
+        auto* volinga = document_->GetElementById("volinga-logo");
+        if (volinga) {
+            volinga->SetAttribute("src", rml_theme::pathToRmlImageSource(volinga_path));
+            auto [w, h, c] = lfs::core::get_image_info(volinga_path);
+            if (w > 0 && h > 0) {
+                constexpr float TARGET_HEIGHT_DP = 24.0f;
+                const float scale = TARGET_HEIGHT_DP / static_cast<float>(h);
+                volinga->SetProperty("width", std::format("{:.0f}dp", w * scale));
+                volinga->SetProperty("height", std::format("{:.0f}dp", h * scale));
+            }
+        }
+
         auto base_rcss = rml_theme::loadBaseRCSS("rmlui/startup.rcss");
         rml_theme::applyTheme(document_, base_rcss, rml_theme::generateAllThemeMedia([this](const auto& th) { return generateThemeRCSS(th); }));
     }
 
-    void StartupOverlay::forwardInput(const PanelInputState& input, float overlay_x,
+    bool StartupOverlay::forwardInput(const PanelInputState& input, float overlay_x,
                                       float overlay_y, float overlay_w, float overlay_h) {
         assert(rml_context_);
         if (rml_manager_) {
@@ -277,17 +293,47 @@ namespace lfs::vis::gui {
                              local_x < overlay_w && local_y < overlay_h;
 
         if (hovered) {
+            const int mods = sdlModsToRml(input.key_ctrl, input.key_shift,
+                                          input.key_alt, input.key_super);
             rml_context_->ProcessMouseMove(static_cast<int>(local_x),
-                                           static_cast<int>(local_y), 0);
+                                           static_cast<int>(local_y), mods);
 
             if (input.mouse_clicked[0])
-                rml_context_->ProcessMouseButtonDown(0, 0);
+                rml_context_->ProcessMouseButtonDown(0, mods);
             if (input.mouse_released[0])
-                rml_context_->ProcessMouseButtonUp(0, 0);
+                rml_context_->ProcessMouseButtonUp(0, mods);
 
             if (input.mouse_wheel != 0.0f)
-                rml_context_->ProcessMouseWheel(Rml::Vector2f(0.0f, -input.mouse_wheel), 0);
+                rml_context_->ProcessMouseWheel(Rml::Vector2f(0.0f, -input.mouse_wheel), mods);
         }
+
+        bool escape_consumed = false;
+        if (!input.viewport_keyboard_focus &&
+            rml_input::hasFocusedKeyboardTarget(rml_context_->GetFocusElement())) {
+            const int mods = sdlModsToRml(input.key_ctrl, input.key_shift,
+                                          input.key_alt, input.key_super);
+            for (int sc : input.keys_pressed) {
+                if (sc == SDL_SCANCODE_ESCAPE && rml_input::cancelFocusedElement(*rml_context_)) {
+                    escape_consumed = true;
+                    continue;
+                }
+
+                const auto rml_key = sdlScancodeToRml(static_cast<SDL_Scancode>(sc));
+                if (rml_key != Rml::Input::KI_UNKNOWN)
+                    rml_context_->ProcessKeyDown(rml_key, mods);
+            }
+
+            for (int sc : input.keys_released) {
+                if (escape_consumed && sc == SDL_SCANCODE_ESCAPE)
+                    continue;
+
+                const auto rml_key = sdlScancodeToRml(static_cast<SDL_Scancode>(sc));
+                if (rml_key != Rml::Input::KI_UNKNOWN)
+                    rml_context_->ProcessKeyUp(rml_key, mods);
+            }
+        }
+
+        return escape_consumed;
     }
 
     void StartupOverlay::render(const ViewportLayout& viewport, bool drag_hovering) {
@@ -305,7 +351,14 @@ namespace lfs::vis::gui {
         focus.want_capture_mouse = true;
         focus.want_capture_keyboard = true;
 
-        if (!rml_manager_->shouldDeferFboUpdate(fbo_)) {
+        bool escape_consumed = false;
+        const bool defer_fbo_update = rml_manager_->shouldDeferFboUpdate(fbo_);
+        if (defer_fbo_update && input_) {
+            escape_consumed = forwardInput(*input_, viewport.pos.x, viewport.pos.y,
+                                           viewport.size.x, viewport.size.y);
+        }
+
+        if (!defer_fbo_update) {
             updateTheme();
             updateLocalizedText();
 
@@ -322,8 +375,8 @@ namespace lfs::vis::gui {
                 return;
 
             if (input_) {
-                forwardInput(*input_, viewport.pos.x, viewport.pos.y,
-                             viewport.size.x, viewport.size.y);
+                escape_consumed = forwardInput(*input_, viewport.pos.x, viewport.pos.y,
+                                               viewport.size.x, viewport.size.y);
             }
 
             auto* render = rml_manager_->getRenderInterface();
@@ -383,7 +436,8 @@ namespace lfs::vis::gui {
         if (shown_frames_ > 2 && !rml_select_open && !drag_hovering && input_) {
             const bool mouse_clicked =
                 input_->mouse_clicked[0] || input_->mouse_clicked[1] || input_->mouse_clicked[2];
-            const bool key_action = hasKey(input_->keys_pressed, SDL_SCANCODE_ESCAPE) ||
+            const bool key_action = (!escape_consumed &&
+                                     hasKey(input_->keys_pressed, SDL_SCANCODE_ESCAPE)) ||
                                     hasKey(input_->keys_pressed, SDL_SCANCODE_SPACE) ||
                                     hasKey(input_->keys_pressed, SDL_SCANCODE_RETURN) ||
                                     hasKey(input_->keys_pressed, SDL_SCANCODE_KP_ENTER);

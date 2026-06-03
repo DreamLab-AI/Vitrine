@@ -71,8 +71,8 @@ namespace lfs::python {
                                            const std::string& section,
                                            Rml::ElementDocument* document,
                                            PyHookPosition position) {
-        std::vector<nb::object> callbacks;
         nb::gil_scoped_acquire gil;
+        std::vector<nb::object> callbacks;
         {
             std::lock_guard lock(mutex_);
             const std::string key = panel + ":" + section;

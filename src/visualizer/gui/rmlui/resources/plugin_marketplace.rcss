@@ -40,8 +40,16 @@
 .mp-controls {
     display: flex;
     align-items: center;
+    justify-content: space-between;
     gap: 6dp;
     margin-bottom: 6dp;
+}
+
+.mp-controls-main {
+    display: flex;
+    align-items: center;
+    gap: 6dp;
+    min-width: 0;
 }
 
 .mp-select {
@@ -54,6 +62,68 @@
 
 .mp-select-sort {
     min-width: 150dp;
+}
+
+.mp-view-toggle {
+    display: flex;
+    align-items: center;
+    gap: 4dp;
+    margin-left: auto;
+    flex-shrink: 0;
+}
+
+.mp-view-btn {
+    width: 22dp;
+    min-width: 22dp;
+    height: 20dp;
+    padding: 0;
+    line-height: 18dp;
+    font-size: 11dp;
+    text-align: center;
+}
+
+.mp-view-btn.selected {
+    background-color: rgba(88, 91, 112, 180);
+    border-color: rgba(137, 180, 250, 140);
+    color: #cdd6f4;
+}
+
+.mp-view-btn.selected:hover {
+    background-color: rgba(108, 112, 134, 180);
+    border-color: rgba(137, 180, 250, 180);
+}
+
+.mp-icon-grid {
+    display: inline-flex;
+    flex-wrap: wrap;
+    width: 11dp;
+    height: 11dp;
+    gap: 1dp;
+    vertical-align: middle;
+}
+
+.mp-icon-grid > span {
+    display: block;
+    width: 5dp;
+    height: 5dp;
+    background-color: #cdd6f4;
+}
+
+.mp-icon-list {
+    display: inline-flex;
+    flex-direction: column;
+    justify-content: center;
+    width: 11dp;
+    height: 11dp;
+    gap: 2dp;
+    vertical-align: middle;
+}
+
+.mp-icon-list > span {
+    display: block;
+    width: 11dp;
+    height: 1.5dp;
+    background-color: #cdd6f4;
 }
 
 /* ── Manual URL install ───────────────────────────────── */
@@ -97,6 +167,11 @@
     display: block;
     min-width: 0;
     margin-bottom: 8dp;
+}
+
+.card-grid.card-grid--list {
+    border-width: 1dp;
+    border-color: rgba(88, 91, 112, 140);
 }
 
 .card-row {
@@ -258,6 +333,186 @@
 .card-progress-text {
     font-size: 11dp;
     display: block;
+}
+
+/* ── List layout ──────────────────────────────────────── */
+
+.plugin-list-row {
+    display: block;
+    min-width: 0;
+    border-top-width: 1dp;
+    border-top-color: rgba(88, 91, 112, 128);
+    border-left-width: 2dp;
+    border-left-color: transparent;
+    transition: background-color 0.18s quadratic-out, border-left-color 0.18s quadratic-out;
+}
+
+.plugin-list-row:first-child {
+    border-top-width: 0;
+}
+
+.plugin-list-row:hover {
+    background-color: rgba(137, 180, 250, 20);
+}
+
+.plugin-list-row.card--in-progress { border-left-color: #89b4fa; }
+.plugin-list-row.card--success     { border-left-color: #a6e3a1; }
+.plugin-list-row.card--error       { border-left-color: #f38ba8; }
+
+.plugin-list-summary {
+    display: flex;
+    align-items: center;
+    gap: 6dp;
+    min-width: 0;
+    min-height: 24dp;
+    padding: 3dp 8dp 3dp 8dp;
+}
+
+.plugin-list-disclosure {
+    width: 14dp;
+    min-width: 14dp;
+    padding: 0;
+    border-width: 0;
+    background-color: transparent;
+    color: #a6adc8;
+    text-align: center;
+    line-height: 14dp;
+    flex-shrink: 0;
+}
+
+.plugin-list-disclosure:hover,
+.plugin-list-name-btn:hover,
+.plugin-list-link:hover {
+    background-color: rgba(88, 91, 112, 77);
+}
+
+.plugin-list-name-btn {
+    display: flex;
+    align-items: center;
+    gap: 6dp;
+    flex: 1;
+    min-width: 0;
+    padding: 0;
+    border-width: 0;
+    background-color: transparent;
+    text-align: left;
+    color: #cdd6f4;
+}
+
+.plugin-list-name {
+    font-size: 12dp;
+    font-weight: bold;
+    min-width: 0;
+}
+
+.plugin-list-version {
+    font-size: 11dp;
+    flex-shrink: 0;
+}
+
+.plugin-list-summary-right {
+    display: flex;
+    align-items: center;
+    gap: 10dp;
+    margin-left: auto;
+    flex-shrink: 0;
+}
+
+.plugin-list-summary-status {
+    min-width: 112dp;
+    font-size: 11dp;
+    text-align: right;
+}
+
+.plugin-list-marker {
+    width: 10dp;
+    min-width: 10dp;
+    font-size: 11dp;
+    text-align: center;
+}
+
+.plugin-list-marker--remote {
+    color: #cdd6f4;
+}
+
+.plugin-list-marker--local {
+    color: #a6adc8;
+}
+
+.plugin-list-details {
+    display: flex;
+    flex-direction: column;
+    gap: 6dp;
+    padding: 0 10dp 8dp 34dp;
+}
+
+.plugin-list-details.hidden {
+    display: none;
+}
+
+.plugin-list-detail-meta {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8dp;
+}
+
+.plugin-list-meta-item {
+    font-size: 11dp;
+}
+
+.plugin-list-link {
+    padding: 0 4dp;
+    border-width: 0;
+    background-color: transparent;
+    color: #a6adc8;
+    font-size: 11dp;
+}
+
+.plugin-list-description,
+.plugin-list-error {
+    display: block;
+    font-size: 11dp;
+}
+
+.plugin-list-feedback {
+    margin-top: 0;
+}
+
+.plugin-list-options {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8dp;
+}
+
+.plugin-list-option-row {
+    min-height: 18dp;
+}
+
+.plugin-list-option-row label {
+    display: flex;
+    align-items: center;
+    gap: 4dp;
+}
+
+.plugin-list-option-row input[type="checkbox"] {
+    margin: 0;
+}
+
+.plugin-list-option-label {
+    font-size: 11dp;
+}
+
+.plugin-list-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4dp;
+}
+
+.plugin-list-buttons .btn {
+    min-width: 64dp;
+    padding: 2dp 6dp;
 }
 
 /* ── Confirm overlay ──────────────────────────────────── */

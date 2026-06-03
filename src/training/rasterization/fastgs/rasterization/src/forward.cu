@@ -8,8 +8,20 @@
 #include "kernels_forward.cuh"
 #include "rasterization_config.h"
 #include "utils.h"
+#include <cstdint>
 #include <cub/cub.cuh>
 #include <functional>
+#include <limits>
+#include <stdexcept>
+
+namespace {
+    int checked_to_int(uint64_t value, const char* message) {
+        if (value > static_cast<uint64_t>(std::numeric_limits<int>::max())) {
+            throw std::overflow_error(message);
+        }
+        return static_cast<int>(value);
+    }
+} // namespace
 
 // sorting is done separately for depth and tile as proposed in https://github.com/m-schuetz/Splatshop
 std::tuple<int, int, int, int, int> fast_lfs::rasterization::forward(
@@ -42,7 +54,8 @@ std::tuple<int, int, int, int, int> fast_lfs::rasterization::forward(
 
     const dim3 grid(div_round_up(width, config::tile_width), div_round_up(height, config::tile_height), 1);
     const dim3 block(config::tile_width, config::tile_height, 1);
-    const int n_tiles = grid.x * grid.y;
+    const uint64_t n_tiles_u64 = static_cast<uint64_t>(grid.x) * static_cast<uint64_t>(grid.y);
+    const int n_tiles = checked_to_int(n_tiles_u64, "n_tiles exceeds int range");
 
     // Allocate per-tile buffers through arena
     char* per_tile_buffers_blob = per_tile_buffers_func(required<PerTileBuffers>(n_tiles));
@@ -106,10 +119,15 @@ std::tuple<int, int, int, int, int> fast_lfs::rasterization::forward(
         mip_filter);
     CHECK_CUDA(config::debug, "preprocess")
 
-    int n_visible_primitives;
-    cudaMemcpy(&n_visible_primitives, per_primitive_buffers.n_visible_primitives, sizeof(uint), cudaMemcpyDeviceToHost);
-    int n_instances;
-    cudaMemcpy(&n_instances, per_primitive_buffers.n_instances, sizeof(uint), cudaMemcpyDeviceToHost);
+    uint32_t n_visible_primitives_u32;
+    cudaMemcpy(&n_visible_primitives_u32, per_primitive_buffers.n_visible_primitives, sizeof(n_visible_primitives_u32), cudaMemcpyDeviceToHost);
+    CHECK_CUDA(config::debug, "cudaMemcpy(n_visible_primitives)")
+    const int n_visible_primitives = checked_to_int(n_visible_primitives_u32, "n_visible_primitives exceeds int range");
+
+    uint32_t n_instances_u32;
+    cudaMemcpy(&n_instances_u32, per_primitive_buffers.n_instances, sizeof(n_instances_u32), cudaMemcpyDeviceToHost);
+    CHECK_CUDA(config::debug, "cudaMemcpy(n_instances)")
+    const int n_instances = checked_to_int(n_instances_u32, "n_instances exceeds int range");
 
     const int alloc_instances = std::max(n_instances, 1);
     const int end_bit = extract_end_bit(static_cast<uint>(n_tiles - 1));
@@ -198,8 +216,10 @@ std::tuple<int, int, int, int, int> fast_lfs::rasterization::forward(
     CHECK_CUDA(config::debug, "cub::DeviceScan::InclusiveSum (Bucket Counts)")
 
     // Get number of buckets
-    int n_buckets;
-    cudaMemcpy(&n_buckets, per_tile_buffers.bucket_offsets + n_tiles - 1, sizeof(uint), cudaMemcpyDeviceToHost);
+    uint32_t n_buckets_u32;
+    cudaMemcpy(&n_buckets_u32, per_tile_buffers.bucket_offsets + n_tiles - 1, sizeof(n_buckets_u32), cudaMemcpyDeviceToHost);
+    CHECK_CUDA(config::debug, "cudaMemcpy(n_buckets)")
+    const int n_buckets = checked_to_int(n_buckets_u32, "n_buckets exceeds int range");
 
     const int alloc_buckets = std::max(n_buckets, 1);
     char* per_bucket_buffers_blob = per_bucket_buffers_func(required<PerBucketBuffers>(alloc_buckets));

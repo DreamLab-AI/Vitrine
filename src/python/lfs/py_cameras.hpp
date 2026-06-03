@@ -5,6 +5,7 @@
 #pragma once
 
 #include "core/camera.hpp"
+#include "core/path_utils.hpp"
 #include "py_tensor.hpp"
 #include "training/dataset.hpp"
 #include <memory>
@@ -26,47 +27,44 @@ namespace lfs::python {
         }
 
         // Intrinsics
-        float focal_x() const { return cam_->focal_x(); }
-        float focal_y() const { return cam_->focal_y(); }
-        float center_x() const { return cam_->center_x(); }
-        float center_y() const { return cam_->center_y(); }
-        float fov_x() const { return cam_->FoVx(); }
-        float fov_y() const { return cam_->FoVy(); }
+        float focal_x() const;
+        float focal_y() const;
+        float center_x() const;
+        float center_y() const;
+        float fov_x() const;
+        float fov_y() const;
 
         // Image info
-        int image_width() const { return cam_->image_width(); }
-        int image_height() const { return cam_->image_height(); }
-        int camera_width() const { return cam_->camera_width(); }
-        int camera_height() const { return cam_->camera_height(); }
-        std::string image_name() const { return cam_->image_name(); }
-        std::string image_path() const { return cam_->image_path().string(); }
-        std::string mask_path() const { return cam_->mask_path().string(); }
-        bool has_mask() const { return cam_->has_mask(); }
-        int uid() const { return cam_->uid(); }
+        int image_width() const;
+        int image_height() const;
+        int camera_width() const;
+        int camera_height() const;
+        std::string image_name() const;
+        std::string image_path() const;
+        std::string mask_path() const;
+        bool has_mask() const;
+        int uid() const;
 
-        // Transforms (return PyTensor)
-        PyTensor R() const { return PyTensor(cam_->R(), false); }
-        PyTensor T() const { return PyTensor(cam_->T(), false); }
-        PyTensor K() const { return PyTensor(cam_->K(), true); }
-        PyTensor world_view_transform() const {
-            return PyTensor(cam_->world_view_transform(), false);
-        }
-        PyTensor cam_position() const {
-            return PyTensor(cam_->cam_position(), false);
-        }
+        // Render/view contract: visualizer camera pose and derived view matrix.
+        PyTensor rotation() const;
+        PyTensor translation() const;
+        PyTensor K() const;
+        PyTensor view_matrix() const;
+
+        // Deprecated raw dataset-camera properties kept as compatibility shims.
+        PyTensor R() const;
+        PyTensor T() const;
+        PyTensor world_view_transform() const;
+        PyTensor cam_position() const;
 
         // Load image/mask
-        PyTensor load_image(int resize_factor = 1, int max_width = 3840) {
-            return PyTensor(cam_->load_and_get_image(resize_factor, max_width), true);
-        }
+        PyTensor load_image(int resize_factor = 1, int max_width = 3840);
         PyTensor load_mask(int resize_factor = 1, int max_width = 3840,
-                           bool invert = false, float threshold = 0.5f) {
-            return PyTensor(cam_->load_and_get_mask(resize_factor, max_width, invert, threshold), true);
-        }
+                           bool invert = false, float threshold = 0.5f);
 
         // Access underlying camera
-        core::Camera* camera() { return cam_; }
-        const core::Camera* camera() const { return cam_; }
+        core::Camera* camera();
+        const core::Camera* camera() const;
 
     private:
         core::Camera* cam_;
@@ -85,8 +83,7 @@ namespace lfs::python {
             if (index >= dataset_->size()) {
                 throw std::out_of_range("Camera index out of range");
             }
-            auto example = dataset_->get(index);
-            return PyCamera(example.data.camera);
+            return PyCamera(dataset_->get_camera(index));
         }
 
         std::optional<PyCamera> get_camera_by_filename(const std::string& filename) {

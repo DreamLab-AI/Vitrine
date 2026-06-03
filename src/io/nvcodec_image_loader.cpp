@@ -143,16 +143,11 @@ namespace lfs::io {
             }
 
             // List extension files
-            std::vector<std::string> extension_files;
             std::vector<std::string> dll_files;
             std::error_code ec;
 
-            for (const auto& entry : std::filesystem::directory_iterator(ext_dir, ec)) {
-                if (ec) {
-                    LOG_ERROR("[nvImageCodec Diagnostics] Failed to iterate extensions dir: {}", ec.message());
-                    break;
-                }
-                const auto& path = entry.path();
+            for (std::filesystem::directory_iterator it(ext_dir, ec), end; !ec && it != end; it.increment(ec)) {
+                const auto& path = it->path();
                 std::string ext = path.extension().string();
                 std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
 
@@ -165,6 +160,10 @@ namespace lfs::io {
                     dll_files.push_back(lfs::core::path_to_utf8(path.filename()));
                 }
 #endif
+            }
+
+            if (ec) {
+                LOG_ERROR("[nvImageCodec Diagnostics] Failed to iterate extensions dir: {}", ec.message());
             }
 
             if (dll_files.empty()) {

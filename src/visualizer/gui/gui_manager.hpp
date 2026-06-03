@@ -36,6 +36,8 @@
 #include <unordered_map>
 #include <imgui.h>
 
+struct SDL_Cursor;
+
 namespace lfs::vis {
     class VisualizerImpl;
 
@@ -135,6 +137,9 @@ namespace lfs::vis {
             void loadImGuiSettings();
             void saveImGuiSettings() const;
             void persistImGuiSettingsIfNeeded();
+            void initCustomCursors();
+            void destroyCustomCursors();
+            void applyRmlCursorRequest(RmlCursorRequest req);
 
             // Core dependencies
             VisualizerImpl* viewer_;
@@ -201,6 +206,7 @@ namespace lfs::vis {
 
             // RmlUI integration
             RmlUIManager rmlui_manager_;
+            SDL_Cursor* pipette_cursor_ = nullptr;
 
             // Native panel wrapper storage (registered with PanelRegistry)
             std::vector<std::shared_ptr<IPanel>> native_panel_storage_;
@@ -211,9 +217,11 @@ namespace lfs::vis {
             float last_ui_layout_right_panel_w_ = -1.0f;
             float last_ui_layout_scene_ratio_ = -1.0f;
             float last_ui_layout_python_console_w_ = -1.0f;
+            float last_ui_layout_bottom_dock_h_ = -1.0f;
             bool last_ui_layout_show_main_panel_ = false;
             bool last_ui_layout_ui_hidden_ = false;
             bool last_ui_layout_python_console_visible_ = false;
+            bool last_ui_layout_bottom_dock_visible_ = false;
             std::string last_ui_layout_active_tab_;
         };
     } // namespace gui

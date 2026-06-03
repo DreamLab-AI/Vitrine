@@ -26,6 +26,9 @@ namespace gsplat_fwd {
         const float* backgrounds,
         const bool* masks,
         const float* depths,
+        const float* model_transforms, // [num_transforms, 4, 4] row-major optional
+        const int* transform_indices,  // [N_total] optional
+        int num_transforms,
         uint32_t C,
         uint32_t N,
         uint32_t n_isects,

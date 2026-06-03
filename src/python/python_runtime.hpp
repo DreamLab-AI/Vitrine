@@ -6,7 +6,7 @@
 
 #include "core/mesh2splat.hpp"
 #include "core/modal_request.hpp"
-#include "core/splat_simplify.hpp"
+#include "core/splat_simplify_types.hpp"
 #include "visualizer/gui/panel_height_mode.hpp"
 #include "visualizer/gui/panel_space.hpp"
 
@@ -35,6 +35,7 @@ namespace lfs::core {
 } // namespace lfs::core
 
 namespace lfs::vis {
+    class Visualizer;
     class SceneManager;
     class TrainerManager;
     class ParameterManager;
@@ -89,8 +90,8 @@ namespace lfs::python {
     // UI redraw request mechanism
     LFS_PYTHON_RUNTIME_API void request_redraw();
     LFS_PYTHON_RUNTIME_API bool consume_redraw_request();
-    using RedrawWakeupCallback = void (*)();
-    LFS_PYTHON_RUNTIME_API void set_redraw_wakeup_callback(RedrawWakeupCallback cb);
+    using MainLoopWakeCallback = void (*)();
+    LFS_PYTHON_RUNTIME_API void set_main_loop_wake_callback(MainLoopWakeCallback cb);
 
     using CleanupCallback = void (*)();
     using EnsureInitializedCallback = void (*)();
@@ -281,6 +282,9 @@ namespace lfs::python {
 
     LFS_PYTHON_RUNTIME_API void set_trainer_manager(vis::TrainerManager* tm);
     LFS_PYTHON_RUNTIME_API vis::TrainerManager* get_trainer_manager();
+
+    LFS_PYTHON_RUNTIME_API void set_visualizer(vis::Visualizer* viewer);
+    LFS_PYTHON_RUNTIME_API vis::Visualizer* get_visualizer();
 
     LFS_PYTHON_RUNTIME_API void set_parameter_manager(vis::ParameterManager* pm);
     LFS_PYTHON_RUNTIME_API vis::ParameterManager* get_parameter_manager();

@@ -49,6 +49,28 @@ namespace lfs::vis::gui {
         bool is_training = false;
     };
 
+    struct FloatingPanelAnchor {
+        float x = 0.0f;
+        float y = 0.0f;
+        float width = 0.0f;
+        float height = 0.0f;
+    };
+
+    struct FloatingPanelPlacement {
+        float x = 0.0f;
+        float y = 0.0f;
+    };
+
+    [[nodiscard]] LFS_VIS_API FloatingPanelPlacement computeFloatingPanelPlacement(
+        const FloatingPanelAnchor& anchor,
+        float panel_width,
+        float panel_height,
+        float stored_x,
+        float stored_y,
+        bool auto_center,
+        float title_height,
+        float visible_fraction = 0.1f);
+
     class IPanel {
     public:
         virtual ~IPanel() = default;
@@ -86,6 +108,7 @@ namespace lfs::vis::gui {
         virtual bool wantsKeyboard() const { return false; }
         virtual bool needsAnimationFrame() const { return false; }
         virtual bool wantsExternalFloatingShadow() const { return true; }
+        virtual void setPanelSpace(PanelSpace space) { (void)space; }
     };
 
     struct PanelInfo {
@@ -107,6 +130,7 @@ namespace lfs::vis::gui {
         float original_height = 0;
         float float_x = NAN;
         float float_y = NAN;
+        bool float_auto_center = true;
         uint64_t float_stack_order = 0;
         bool float_dragging = false;
         float float_drag_ox = 0;
@@ -202,10 +226,10 @@ namespace lfs::vis::gui {
         float draw_panels_direct(PanelSpace space, float x, float y, float w, float max_h,
                                  const PanelDrawContext& ctx,
                                  const PanelInputState* input = nullptr);
-        void preload_panels_direct(PanelSpace space, float w, float max_h,
-                                   const PanelDrawContext& ctx,
-                                   float clip_y_min = -1.0f, float clip_y_max = -1.0f,
-                                   const PanelInputState* input = nullptr);
+        float preload_panels_direct(PanelSpace space, float w, float max_h,
+                                    const PanelDrawContext& ctx,
+                                    float clip_y_min = -1.0f, float clip_y_max = -1.0f,
+                                    const PanelInputState* input = nullptr);
         float draw_single_panel_direct(const std::string& id, float x, float y, float w, float h,
                                        const PanelDrawContext& ctx,
                                        float clip_y_min = -1.0f, float clip_y_max = -1.0f,

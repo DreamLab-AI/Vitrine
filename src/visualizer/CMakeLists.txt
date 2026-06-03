@@ -43,6 +43,7 @@ add_library(lfs_visualizer ${LFS_VIS_LIB_TYPE}
         rendering/viewport_appearance_correction.cpp
         rendering/viewport_request_builder.cpp
         rendering/framerate_controller.cpp
+        rendering/passes/environment_pass.cpp
         rendering/passes/overlay_pass.cpp
         rendering/passes/splat_raster_pass.cpp
         rendering/passes/mesh_pass.cpp
@@ -127,6 +128,8 @@ add_library(lfs_visualizer ${LFS_VIS_LIB_TYPE}
         # Sequencer (camera animation)
         sequencer/sequencer_controller.cpp
         sequencer/rml_sequencer_panel.cpp
+        sequencer/rml_sequencer_panel_timeline.cpp
+        sequencer/rml_sequencer_panel_timeline_input.cpp
 
         # Operator system (Blender-style)
         operator/operator_context.cpp
@@ -168,6 +171,7 @@ add_library(lfs_visualizer ${LFS_VIS_LIB_TYPE}
         gui/rmlui/rmlui_gl3_backend.cpp
         gui/rmlui/rmlui_manager.cpp
         gui/rmlui/rml_fbo.cpp
+        gui/rmlui/rml_document_utils.cpp
         gui/rmlui/rml_panel_host.cpp
         gui/rmlui/rml_theme.cpp
         gui/rmlui/elements/chromaticity_element.cpp
@@ -181,6 +185,17 @@ set_source_files_properties(
         ${CMAKE_CURRENT_SOURCE_DIR}/gui/rmlui/rmlui_gl3_backend.cpp
         PROPERTIES COMPILE_DEFINITIONS "RMLUI_GL3_CUSTOM_LOADER=<glad/glad.h>"
 )
+
+# MSVC 14.44 ICEs (C1001 in msc1.cpp:1589) on the sequencer panel TUs under
+# /std:c++latest in both Debug (/Od /RTC1) and Release (/O2 /Ob2). Pin them to
+# /std:c++23 (not "latest") and add /bigobj for the heavy tensor + RmlUI + fmt instantiations.
+if(MSVC)
+    set_source_files_properties(
+            ${CMAKE_CURRENT_SOURCE_DIR}/sequencer/rml_sequencer_panel.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/sequencer/rml_sequencer_panel_timeline.cpp
+            PROPERTIES COMPILE_OPTIONS "/std:c++23;/bigobj"
+    )
+endif()
 
 # Set include directories
 target_include_directories(lfs_visualizer
@@ -347,6 +362,16 @@ file(GLOB SEQUENCER_ICON_FILES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/gu
 foreach (ICON_FILE ${SEQUENCER_ICON_FILES})
     get_filename_component(ICON_NAME ${ICON_FILE} NAME)
     configure_file(${ICON_FILE} "${VISUALIZER_BUILD_RESOURCE_DIR}/assets/icon/sequencer/${ICON_NAME}" COPYONLY)
+endforeach ()
+
+# Copy bundled environment maps
+file(MAKE_DIRECTORY "${VISUALIZER_BUILD_RESOURCE_DIR}/assets/environments")
+file(GLOB ENVIRONMENT_ASSET_FILES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/gui/assets/environments/*")
+foreach (ENVIRONMENT_ASSET_FILE ${ENVIRONMENT_ASSET_FILES})
+    if (EXISTS ${ENVIRONMENT_ASSET_FILE} AND NOT IS_DIRECTORY ${ENVIRONMENT_ASSET_FILE})
+        get_filename_component(ENVIRONMENT_ASSET_NAME ${ENVIRONMENT_ASSET_FILE} NAME)
+        configure_file(${ENVIRONMENT_ASSET_FILE} "${VISUALIZER_BUILD_RESOURCE_DIR}/assets/environments/${ENVIRONMENT_ASSET_NAME}" COPYONLY)
+    endif ()
 endforeach ()
 
 # Copy RmlUI resources (re-copy on every build so edits are picked up)

@@ -62,6 +62,7 @@ namespace lfs::rendering {
         bool orthographic = false;
         float ortho_scale = 1.0f;
         bool mip_filter = false;
+        bool transparent_background = false;
         std::array<DualRasterizeTensorViewState, 2> view_states;
     };
 
@@ -115,7 +116,8 @@ namespace lfs::rendering {
         float emphasis_flash_intensity = 0.0f,
         bool orthographic = false,
         float ortho_scale = 1.0f,
-        bool mip_filter = false);
+        bool mip_filter = false,
+        bool transparent_background = false);
 
     DualRasterizeTensorOutput rasterize_tensor_pair(
         const std::array<lfs::core::Camera, 2>& viewpoint_cameras,
@@ -138,6 +140,7 @@ namespace lfs::rendering {
         GutCameraModel camera_model = GutCameraModel::PINHOLE,
         const Tensor* model_transforms = nullptr,
         const Tensor* transform_indices = nullptr,
-        const std::vector<bool>& node_visibility_mask = {});
+        const std::vector<bool>& node_visibility_mask = {},
+        bool transparent_background = false);
 
 } // namespace lfs::rendering

@@ -1,6 +1,7 @@
 body {
     font-family: Inter;
-    display: block;
+    display: flex;
+    flex-direction: column;
     margin: 0;
     padding: 0;
     overflow: hidden;
@@ -9,11 +10,47 @@ body {
 }
 
 #panel {
-    display: block;
+    display: flex;
+    flex-direction: column;
     width: 100%;
     height: 100%;
-    padding: 3dp 16dp 8dp 16dp;
+    min-height: 0;
+    padding: 3dp 16dp 0 16dp;
     box-sizing: border-box;
+    position: relative;
+    overflow: visible;
+}
+
+#panel.is-floating {
+    padding-top: 10dp;
+}
+
+#floating-header {
+    min-height: 28dp;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8dp;
+    padding: 0 4dp;
+    margin-bottom: 6dp;
+}
+
+#floating-title {
+    font-size: 12dp;
+    font-weight: bold;
+    color: #cdd6f4;
+}
+
+#floating-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6dp;
+    flex-shrink: 0;
+}
+
+.floating-header-action {
+    min-width: 64dp;
 }
 
 #transport-row {
@@ -290,15 +327,19 @@ body {
 }
 
 #header {
-    display: block;
+    display: flex;
     width: 100%;
-    height: 56dp;
+    min-height: 56dp;
+    flex: 1 1 56dp;
+    min-width: 0;
 }
 
 #timeline {
-    display: block;
+    display: flex;
+    flex-direction: column;
     width: 100%;
     height: 100%;
+    min-height: 0;
     position: relative;
     overflow: hidden;
 }
@@ -341,7 +382,8 @@ body {
 #track-area {
     display: block;
     width: 100%;
-    height: 28dp;
+    flex: 1;
+    min-height: 28dp;
     position: relative;
     margin-top: 4dp;
 }
@@ -350,18 +392,20 @@ body {
     display: block;
     position: absolute;
     left: 0;
-    top: 2dp;
+    top: 50%;
     width: 100%;
     height: 24dp;
+    margin-top: -12dp;
     border-radius: 4dp;
 }
 
 #hint {
     display: block;
     position: absolute;
-    top: 4dp;
+    top: 50%;
     left: 0;
     width: 100%;
+    margin-top: -6dp;
     text-align: center;
     font-size: 10dp;
 }
@@ -380,7 +424,8 @@ body {
     position: absolute;
     width: 12dp;
     height: 12dp;
-    top: 8dp;
+    top: 50%;
+    margin-top: -6dp;
     margin-left: -6dp;
     transform: rotate(45deg);
     border-radius: 1dp;
@@ -399,7 +444,8 @@ body {
     border-radius: 6dp;
     width: 10dp;
     height: 10dp;
-    top: 9dp;
+    top: 50%;
+    margin-top: -5dp;
     margin-left: -5dp;
 }
 
@@ -422,14 +468,6 @@ body {
     border-radius: 4dp;
 }
 
-#easing-stripe {
-    display: block;
-    width: 100%;
-    height: 36dp;
-    box-sizing: border-box;
-    border-top: 1dp rgba(160, 160, 180, 40);
-}
-
 #time-display {
     display: flex;
     flex-direction: row;
@@ -444,4 +482,332 @@ body {
 
 #duration {
     font-size: 11dp;
+}
+
+#easing-stripe {
+    display: block;
+    width: auto;
+    height: 36dp;
+    box-sizing: border-box;
+    border-top: 1dp rgba(160, 160, 180, 40);
+    position: relative;
+    overflow: hidden;
+    margin-left: -16dp;
+    margin-right: -16dp;
+}
+
+#easing-segments,
+#easing-curves,
+#easing-indicators {
+    display: block;
+    position: absolute;
+    left: 16dp;
+    right: 16dp;
+    top: 0;
+    height: 100%;
+    pointer-events: none;
+}
+
+.easing-segment {
+    display: block;
+    position: absolute;
+    top: 0;
+    height: 100%;
+}
+
+.easing-curve-segment {
+    display: block;
+    position: absolute;
+    height: 1.5dp;
+    border-radius: 1dp;
+    transform-origin: 0 50%;
+}
+
+.easing-dot {
+    display: block;
+    position: absolute;
+    width: 6dp;
+    height: 6dp;
+    margin-left: -3dp;
+    margin-top: -3dp;
+    border-radius: 3dp;
+}
+
+.easing-indicator {
+    display: block;
+    position: absolute;
+}
+
+.easing-indicator.ease-in,
+.easing-indicator.ease-out {
+    width: 0;
+    height: 0;
+    margin-left: -4dp;
+    border-left-width: 4dp;
+    border-left-color: rgba(0, 0, 0, 0);
+    border-right-width: 4dp;
+    border-right-color: rgba(0, 0, 0, 0);
+}
+
+.easing-indicator.ease-in {
+    border-bottom-width: 4dp;
+}
+
+.easing-indicator.ease-out {
+    border-top-width: 4dp;
+}
+
+.easing-indicator.ease-in-out {
+    width: 8dp;
+    height: 8dp;
+    margin-left: -4dp;
+    border-radius: 2dp;
+    transform: rotate(45deg);
+}
+
+#film-strip-panel {
+    display: block;
+    width: auto;
+    height: 56px;
+    position: relative;
+    margin-top: -1px;
+    margin-left: -16dp;
+    margin-right: -16dp;
+    overflow: hidden;
+}
+
+#film-strip-groove {
+    display: block;
+    position: absolute;
+    left: 12px;
+    right: 12px;
+    top: 4px;
+    bottom: 4px;
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+#film-strip-gaps,
+#film-strip-thumbs,
+#film-strip-dividers,
+#film-strip-markers,
+#film-strip-sprockets-top,
+#film-strip-sprockets-bottom {
+    display: block;
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+}
+
+.film-strip-gap {
+    display: block;
+    position: absolute;
+    top: 0;
+    bottom: 0;
+}
+
+.film-strip-gap-stripe {
+    display: block;
+    position: absolute;
+    width: 1dp;
+    transform-origin: 0 0;
+}
+
+.film-thumb {
+    display: block;
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.film-thumb-image {
+    display: block;
+    width: 100%;
+    height: 100%;
+    image-color: #ffffff;
+}
+
+.film-thumb-tint,
+.film-thumb-edge,
+.film-thumb-outline,
+.film-thumb-midline {
+    display: block;
+    position: absolute;
+    pointer-events: none;
+}
+
+.film-thumb-tint {
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+}
+
+.film-thumb-edge.top,
+.film-thumb-edge.bottom {
+    left: 0;
+    width: 100%;
+    height: 3px;
+    opacity: 0;
+}
+
+.film-thumb-edge.top {
+    top: 0;
+}
+
+.film-thumb-edge.bottom {
+    bottom: 0;
+}
+
+.film-thumb-outline {
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    border-radius: 3px;
+    border-width: 0;
+    border-color: transparent;
+}
+
+.film-thumb-midline {
+    top: 4px;
+    bottom: 4px;
+    left: 50%;
+    width: 1px;
+    margin-left: -0.5px;
+}
+
+.film-thumb-midline.shadow {
+    width: 3px;
+    margin-left: -1.5px;
+}
+
+.film-thumb.stale .film-thumb-image {
+    opacity: 0.58;
+}
+
+.film-thumb.contains-hovered-keyframe .film-thumb-tint.hovered-keyframe,
+.film-thumb.contains-selected .film-thumb-tint.selected,
+.film-thumb.contains-hovered-keyframe .film-thumb-edge,
+.film-thumb.contains-selected .film-thumb-edge {
+    opacity: 1;
+}
+
+.film-thumb.hovered .film-thumb-outline,
+.film-thumb.contains-hovered-keyframe .film-thumb-outline,
+.film-thumb.contains-selected .film-thumb-outline {
+    border-width: 1px;
+}
+
+.film-thumb.contains-selected .film-thumb-outline {
+    border-width: 2px;
+}
+
+.film-strip-divider {
+    display: block;
+    position: absolute;
+    top: 4px;
+    bottom: 4px;
+    width: 1px;
+}
+
+.film-strip-marker {
+    display: block;
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 0;
+}
+
+.film-strip-marker-line {
+    display: block;
+    position: absolute;
+    top: 4px;
+    bottom: 4px;
+    left: 0;
+}
+
+.film-strip-marker-line.shadow {
+    width: 3px;
+    margin-left: -1.5px;
+}
+
+.film-strip-marker-line.main {
+    width: 1.5px;
+    margin-left: -0.75px;
+}
+
+.film-strip-marker-cap {
+    display: block;
+    position: absolute;
+    left: -2px;
+    width: 4px;
+    height: 4px;
+    border-radius: 1.5px;
+}
+
+.film-strip-marker-cap.top {
+    top: 4px;
+}
+
+.film-strip-marker-cap.bottom {
+    bottom: 4px;
+}
+
+.film-strip-sprocket {
+    display: block;
+    position: absolute;
+    width: 4px;
+    height: 3px;
+    border-radius: 1px;
+}
+
+.film-strip-sprocket.top {
+    top: 0.5px;
+}
+
+.film-strip-sprocket.bottom {
+    bottom: 0.5px;
+}
+
+#panel-guides {
+    display: block;
+    position: absolute;
+    pointer-events: none;
+}
+
+.timeline-guide {
+    display: none;
+    position: absolute;
+    top: 0;
+    bottom: 0;
+}
+
+#timeline-tooltip {
+    display: none;
+    position: absolute;
+    min-width: 112dp;
+    max-width: 220dp;
+    padding: 7dp 10dp;
+    border-width: 1dp;
+    border-radius: 8dp;
+    pointer-events: none;
+    box-sizing: border-box;
+}
+
+.timeline-tooltip-line {
+    display: block;
+    white-space: nowrap;
+    font-size: 10dp;
+}
+
+.timeline-tooltip-line.title {
+    font-size: 11dp;
+    margin-bottom: 2dp;
 }

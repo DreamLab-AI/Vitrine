@@ -61,6 +61,28 @@ body {
     border-radius: 6dp;
 }
 
+#pip-preview-window {
+    width: 336dp;
+    padding: 4dp;
+    pointer-events: none;
+}
+
+#pip-preview-window.playing {
+    border-width: 2dp;
+}
+
+#pip-preview-title {
+    display: block;
+    font-size: 10dp;
+    margin-bottom: 4dp;
+}
+
+#pip-preview-image {
+    display: block;
+    width: 320dp;
+    height: 180dp;
+}
+
 .kf-edit-header {
     display: flex;
     justify-content: space-between;

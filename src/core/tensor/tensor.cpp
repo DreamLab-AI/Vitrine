@@ -58,6 +58,7 @@ namespace lfs::core {
     const TensorShape& TensorLeaf::shape_impl() const { return tensor_ptr_->shape(); }
     Device TensorLeaf::device_impl() const { return tensor_ptr_->device(); }
     DataType TensorLeaf::dtype_impl() const { return tensor_ptr_->dtype(); }
+    cudaStream_t TensorLeaf::stream_hint_impl() const { return tensor_ptr_ ? tensor_ptr_->stream() : nullptr; }
 
     Tensor Tensor::make_deferred_expr_tensor(TensorShape shape,
                                              Device device,
@@ -177,7 +178,9 @@ namespace lfs::core {
         if (!preserved_name.empty()) {
             state_->name = preserved_name;
         }
-        if (preserved_stream) {
+        // Keep the actual materialization stream when one exists. The deferred hint is
+        // only a fallback for materializers that do not stamp stream metadata.
+        if (state_->stream == nullptr && preserved_stream) {
             state_->stream = preserved_stream;
         }
 
@@ -1570,7 +1573,7 @@ namespace lfs::core {
             if (source_id != 0) {
                 deferred_inputs.push_back(source_id);
             }
-            return make_deferred_expr_tensor(
+            Tensor deferred = make_deferred_expr_tensor(
                 deferred_shape, device_, dtype_,
                 [source = std::move(source), deferred_shape]() mutable {
                     Tensor materialized = source;
@@ -1578,6 +1581,8 @@ namespace lfs::core {
                     return lfs::core::broadcast_to(materialized, deferred_shape);
                 },
                 std::move(deferred_inputs));
+            deferred.set_stream(source.stream());
+            return deferred;
         }
         return lfs::core::broadcast_to(*this, target_shape);
     }

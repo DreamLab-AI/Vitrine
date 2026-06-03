@@ -35,7 +35,7 @@ namespace lfs::vis {
             const std::filesystem::path& dataset_path = {},
             const std::filesystem::path& output_path = {});
         void addSplatFileToScene(const std::filesystem::path& path);
-        void clearScene();
+        [[nodiscard]] bool clearScene();
 
     private:
         void setupEventHandlers();

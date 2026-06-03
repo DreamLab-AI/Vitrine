@@ -44,6 +44,7 @@ namespace lfs::vis::gui {
             case PanelSpace::ViewportOverlay: return "viewport_overlay";
             case PanelSpace::MainPanelTab: return "main_panel_tab";
             case PanelSpace::SceneHeader: return "scene_header";
+            case PanelSpace::BottomDock: return "bottom_dock";
             case PanelSpace::StatusBar: return "status_bar";
             }
             return "unknown";
@@ -101,7 +102,57 @@ namespace lfs::vis::gui {
                    inside_corner(0.0, h - clamped_radius, clamped_radius,
                                  clamped_radius, h - clamped_radius);
         }
+
+        FloatingPanelAnchor floatingAnchorRect(const PanelDrawContext& ctx) {
+            if (ctx.viewport && ctx.viewport->size.x > 0.0f && ctx.viewport->size.y > 0.0f) {
+                return {
+                    .x = ctx.viewport->pos.x,
+                    .y = ctx.viewport->pos.y,
+                    .width = ctx.viewport->size.x,
+                    .height = ctx.viewport->size.y,
+                };
+            }
+
+            if (const auto* vp = ImGui::GetMainViewport()) {
+                return {
+                    .x = vp->WorkPos.x,
+                    .y = vp->WorkPos.y,
+                    .width = vp->WorkSize.x,
+                    .height = vp->WorkSize.y,
+                };
+            }
+
+            return {};
+        }
     } // namespace
+
+    FloatingPanelPlacement computeFloatingPanelPlacement(
+        const FloatingPanelAnchor& anchor,
+        const float panel_width,
+        const float panel_height,
+        const float stored_x,
+        const float stored_y,
+        const bool auto_center,
+        const float title_height,
+        const float visible_fraction) {
+        if (anchor.width <= 0.0f || anchor.height <= 0.0f || panel_width <= 0.0f || panel_height <= 0.0f) {
+            return {.x = stored_x, .y = stored_y};
+        }
+
+        float x = stored_x;
+        float y = stored_y;
+        if (auto_center || std::isnan(x) || std::isnan(y)) {
+            x = anchor.x + (anchor.width - panel_width) * 0.5f;
+            y = anchor.y + (anchor.height - panel_height) * 0.5f;
+        }
+
+        x = std::clamp(
+            x,
+            anchor.x - panel_width * (1.0f - visible_fraction),
+            anchor.x + anchor.width - panel_width * visible_fraction);
+        y = std::clamp(y, anchor.y, anchor.y + anchor.height - title_height);
+        return {.x = x, .y = y};
+    }
 
     PanelRegistry& PanelRegistry::instance() {
         static PanelRegistry registry;
@@ -312,17 +363,17 @@ namespace lfs::vis::gui {
                 snap.has_option(PanelOption::SELF_MANAGED))
                 return;
 
-            auto* vp = ImGui::GetMainViewport();
-            if (!vp)
+            const auto anchor = floatingAnchorRect(ctx);
+            if (anchor.width <= 0.0f || anchor.height <= 0.0f)
                 return;
 
             const float min_panel_width = 320.0f * dpi;
-            const float max_panel_width = std::max(min_panel_width, vp->WorkSize.x);
+            const float max_panel_width = std::max(min_panel_width, anchor.width);
             float w = snap.initial_width > 0 ? snap.initial_width : 560.0f * dpi;
             w = std::clamp(w, min_panel_width, max_panel_width);
             const float max_h = snap.initial_height > 0
-                                    ? std::min(snap.initial_height, vp->WorkSize.y)
-                                    : vp->WorkSize.y;
+                                    ? std::min(snap.initial_height, anchor.height)
+                                    : anchor.height;
             float drawn_h = snap.panel->getDirectDrawHeight();
             if (drawn_h <= 0.0f) {
                 float prev_h = -1.0f;
@@ -364,17 +415,16 @@ namespace lfs::vis::gui {
 
             float px = snap.float_x;
             float py = snap.float_y;
-            if (std::isnan(px) || std::isnan(py)) {
-                px = vp->WorkPos.x + (vp->WorkSize.x - w) * 0.5f;
-                py = vp->WorkPos.y + (vp->WorkSize.y - h) * 0.5f;
+            bool auto_center = true;
+            {
+                std::lock_guard lock(mutex_);
+                if (snap.index < panels_.size() && panels_[snap.index].id == snap.id)
+                    auto_center = panels_[snap.index].float_auto_center;
             }
-
-            const float vx = vp->WorkPos.x;
-            const float vy = vp->WorkPos.y;
-            const float vw = vp->WorkSize.x;
-            const float vh = vp->WorkSize.y;
-            px = std::clamp(px, vx - w * (1.0f - kVisibleFrac), vx + vw - w * kVisibleFrac);
-            py = std::clamp(py, vy, vy + vh - kTitleH);
+            const auto placement =
+                computeFloatingPanelPlacement(anchor, w, h, px, py, auto_center, kTitleH, kVisibleFrac);
+            px = placement.x;
+            py = placement.y;
 
             layout.valid = true;
             layout.width = w;
@@ -420,8 +470,10 @@ namespace lfs::vis::gui {
 
         if (space == PanelSpace::Floating) {
             for (size_t i = 0; i < snapshots.size(); ++i) {
-                if (should_draw[i])
+                if (should_draw[i]) {
+                    snapshots[i].panel->setPanelSpace(space);
                     prepare_floating_direct_layout(snapshots[i], floating_direct_layouts[i]);
+                }
             }
 
             if (input) {
@@ -445,6 +497,7 @@ namespace lfs::vis::gui {
 
             try {
                 ImGui::PushID(snap.id.c_str());
+                snap.panel->setPanelSpace(space);
 
                 switch (space) {
                 case PanelSpace::Floating: {
@@ -488,6 +541,7 @@ namespace lfs::vis::gui {
 
                                 if (interactive && layout.mouse_in_resize_grip && !any_active &&
                                     mouse_clicked_left) {
+                                    pi.float_auto_center = false;
                                     pi.float_resizing = true;
                                     pi.float_resize_start_w = w;
                                     pi.float_resize_start_h = h;
@@ -500,6 +554,7 @@ namespace lfs::vis::gui {
                                 } else if (interactive && layout.mouse_in_titlebar &&
                                            !layout.mouse_in_resize_grip && !any_active &&
                                            mouse_clicked_left) {
+                                    pi.float_auto_center = false;
                                     pi.float_dragging = true;
                                     pi.float_drag_ox = mouse_x - px;
                                     pi.float_drag_oy = mouse_y - py;
@@ -546,13 +601,11 @@ namespace lfs::vis::gui {
                                 }
                                 has_user_height = pi.float_user_height > 0.0f;
 
-                                const auto* vp = ImGui::GetMainViewport();
-                                const float vx = vp->WorkPos.x;
-                                const float vy = vp->WorkPos.y;
-                                const float vw = vp->WorkSize.x;
-                                const float vh = vp->WorkSize.y;
-                                px = std::clamp(px, vx - w * (1.0f - kVisibleFrac), vx + vw - w * kVisibleFrac);
-                                py = std::clamp(py, vy, vy + vh - kTitleH);
+                                const auto anchor = floatingAnchorRect(ctx);
+                                const auto placement = computeFloatingPanelPlacement(
+                                    anchor, w, h, px, py, false, kTitleH, kVisibleFrac);
+                                px = placement.x;
+                                py = placement.y;
 
                                 pi.float_x = px;
                                 pi.float_y = py;
@@ -637,6 +690,8 @@ namespace lfs::vis::gui {
                 case PanelSpace::SceneHeader:
                     snap.panel->draw(ctx);
                     break;
+                case PanelSpace::BottomDock:
+                    break;
                 case PanelSpace::StatusBar:
                     with_panel_input(snap.panel, [&] { snap.panel->draw(ctx); });
                     break;
@@ -680,6 +735,7 @@ namespace lfs::vis::gui {
             }
 
             try {
+                snap.panel->setPanelSpace(space);
                 snap.panel->preload(ctx);
             } catch (const std::exception& e) {
                 LOG_ERROR("Panel '{}' preload error: {}", snap.label, e.what());
@@ -760,6 +816,7 @@ namespace lfs::vis::gui {
 
             bool draw_succeeded = false;
             try {
+                snap.panel->setPanelSpace(space);
                 snap.panel->setInput(input);
                 snap.panel->drawDirect(x, y + y_offset, w, remaining, ctx);
                 snap.panel->setInput(nullptr);
@@ -775,10 +832,10 @@ namespace lfs::vis::gui {
         return y_offset;
     }
 
-    void PanelRegistry::preload_panels_direct(PanelSpace space, float w, float max_h,
-                                              const PanelDrawContext& ctx,
-                                              float clip_y_min, float clip_y_max,
-                                              const PanelInputState* input) {
+    float PanelRegistry::preload_panels_direct(PanelSpace space, float w, float max_h,
+                                               const PanelDrawContext& ctx,
+                                               float clip_y_min, float clip_y_max,
+                                               const PanelInputState* input) {
         std::vector<PanelSnapshot> snapshots;
         {
             std::lock_guard lock(mutex_);
@@ -810,6 +867,7 @@ namespace lfs::vis::gui {
             bool preload_succeeded = false;
             try {
                 snap.panel->setInputClipY(clip_y_min, clip_y_max);
+                snap.panel->setPanelSpace(space);
                 snap.panel->setInput(input);
                 snap.panel->preloadDirect(w, remaining, ctx, clip_y_min, clip_y_max, input);
                 snap.panel->setInput(nullptr);
@@ -823,11 +881,13 @@ namespace lfs::vis::gui {
 
             track_draw_result(snap, preload_succeeded);
         }
+        return y_offset;
     }
 
     void PanelRegistry::draw_single_panel(const std::string& id, const PanelDrawContext& ctx) {
         std::shared_ptr<IPanel> panel_holder;
         PanelSnapshot snap{};
+        PanelSpace panel_space = PanelSpace::Floating;
         bool found = false;
         {
             std::lock_guard lock(mutex_);
@@ -838,6 +898,7 @@ namespace lfs::vis::gui {
                             panels_[i].parent_id, panels_[i].options, panels_[i].is_native,
                             panels_[i].poll_dependencies, panels_[i].initial_width, panels_[i].initial_height,
                             panels_[i].float_x, panels_[i].float_y};
+                    panel_space = panels_[i].space;
                     found = true;
                     break;
                 }
@@ -858,6 +919,7 @@ namespace lfs::vis::gui {
         bool draw_succeeded = false;
         try {
             ImGui::PushID(snap.id.c_str());
+            snap.panel->setPanelSpace(panel_space);
             snap.panel->draw(ctx);
             ImGui::PopID();
             draw_succeeded = true;
@@ -932,6 +994,7 @@ namespace lfs::vis::gui {
                 if (enabled && p.space == PanelSpace::Floating) {
                     p.float_x = NAN;
                     p.float_y = NAN;
+                    p.float_auto_center = true;
                     resetFloatingPanelSize(p, floatingUiScale());
                     bring_floating_panel_to_front_locked(p);
                 } else if (!enabled) {
@@ -1052,6 +1115,7 @@ namespace lfs::vis::gui {
                 if (!was_floating && new_space == PanelSpace::Floating) {
                     p.float_x = NAN;
                     p.float_y = NAN;
+                    p.float_auto_center = true;
                     resetFloatingPanelSize(p, floatingUiScale());
                     bring_floating_panel_to_front_locked(p);
                 } else if (was_floating && new_space != PanelSpace::Floating) {
@@ -1152,6 +1216,7 @@ namespace lfs::vis::gui {
                                                   const PanelInputState* input) {
         std::shared_ptr<IPanel> panel_holder;
         PanelSnapshot snap{};
+        PanelSpace panel_space = PanelSpace::Floating;
         bool found = false;
         {
             std::lock_guard lock(mutex_);
@@ -1162,6 +1227,7 @@ namespace lfs::vis::gui {
                             panels_[i].parent_id, panels_[i].options, panels_[i].is_native,
                             panels_[i].poll_dependencies, panels_[i].initial_width, panels_[i].initial_height,
                             panels_[i].float_x, panels_[i].float_y};
+                    panel_space = panels_[i].space;
                     found = true;
                     break;
                 }
@@ -1181,6 +1247,7 @@ namespace lfs::vis::gui {
 
         bool draw_succeeded = false;
         try {
+            snap.panel->setPanelSpace(panel_space);
             snap.panel->setInputClipY(clip_y_min, clip_y_max);
             snap.panel->setInput(input);
             snap.panel->drawDirect(x, y, w, h, ctx);
@@ -1202,6 +1269,7 @@ namespace lfs::vis::gui {
                                                      const PanelInputState* input) {
         std::shared_ptr<IPanel> panel_holder;
         PanelSnapshot snap{};
+        PanelSpace panel_space = PanelSpace::Floating;
         bool found = false;
         {
             std::lock_guard lock(mutex_);
@@ -1212,6 +1280,7 @@ namespace lfs::vis::gui {
                             panels_[i].parent_id, panels_[i].options, panels_[i].is_native,
                             panels_[i].poll_dependencies, panels_[i].initial_width, panels_[i].initial_height,
                             panels_[i].float_x, panels_[i].float_y};
+                    panel_space = panels_[i].space;
                     found = true;
                     break;
                 }
@@ -1231,6 +1300,7 @@ namespace lfs::vis::gui {
 
         bool preload_succeeded = false;
         try {
+            snap.panel->setPanelSpace(panel_space);
             snap.panel->setInputClipY(clip_y_min, clip_y_max);
             snap.panel->setInput(input);
             snap.panel->preloadDirect(w, h, ctx, clip_y_min, clip_y_max, input);

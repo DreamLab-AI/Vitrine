@@ -6,12 +6,14 @@
 // This file contains template method implementations that require the full Tensor definition
 // It should be included at the END of tensor.hpp, after Tensor class is fully defined
 
+#include "cuda_stream_context.hpp"
 #include "lazy_config.hpp"
 #include "lazy_executor.hpp"
 #include "lazy_ir.hpp"
 #include "tensor_expr.hpp"
 #include "tensor_functors.hpp" // For ops::compose
 #include <cuda_fp16.h>
+#include <optional>
 #include <typeinfo>
 
 namespace lfs::core {
@@ -33,9 +35,12 @@ namespace lfs::core {
             return expr.eval();
         }
 
-        return Tensor::make_deferred_expr_tensor(
+        const cudaStream_t stream_hint = expr.stream_hint_impl();
+        Tensor deferred = Tensor::make_deferred_expr_tensor(
             shape, device, dtype,
             [expr = std::move(expr)]() mutable { return expr.eval(); });
+        deferred.set_stream(stream_hint);
+        return deferred;
     }
 
     // ============================================================================
@@ -44,6 +49,35 @@ namespace lfs::core {
 
     // Helper struct for eval_impl dispatch based on operation return type
     namespace detail {
+        inline cudaStream_t resolve_cuda_execution_stream(const Tensor& primary) {
+            cudaStream_t execution_stream = getCurrentCUDAStream();
+            if (execution_stream == nullptr && primary.device() == Device::CUDA) {
+                execution_stream = primary.stream();
+            }
+            return execution_stream;
+        }
+
+        inline cudaStream_t resolve_cuda_execution_stream(const Tensor& primary, const Tensor& secondary) {
+            cudaStream_t execution_stream = resolve_cuda_execution_stream(primary);
+            if (execution_stream == nullptr && secondary.device() == Device::CUDA) {
+                execution_stream = secondary.stream();
+            }
+            return execution_stream;
+        }
+
+        inline cudaStream_t prepare_cuda_execution_stream(const Tensor& primary) {
+            const cudaStream_t execution_stream = resolve_cuda_execution_stream(primary);
+            waitForCUDAStream(execution_stream, primary.stream());
+            return execution_stream;
+        }
+
+        inline cudaStream_t prepare_cuda_execution_stream(const Tensor& primary, const Tensor& secondary) {
+            const cudaStream_t execution_stream = resolve_cuda_execution_stream(primary, secondary);
+            waitForCUDAStream(execution_stream, primary.stream());
+            waitForCUDAStream(execution_stream, secondary.stream());
+            return execution_stream;
+        }
+
         // Default implementation: float -> float or Int32 -> Int32 operations
         template <typename InputExpr, typename UnaryOp, bool ReturnsBool>
         struct UnaryExprEvaluator {
@@ -53,24 +87,68 @@ namespace lfs::core {
                 // Recursively evaluate input expression
                 Tensor input_tensor = input.eval();
 
+                std::optional<CUDAStreamGuard> execution_guard;
+                if (device == Device::CUDA) {
+                    execution_guard.emplace(prepare_cuda_execution_stream(input_tensor));
+                }
+
                 // Create result tensor (needs Tensor::empty)
                 Tensor result = Tensor::empty(shape, device, dtype);
 
-                // Check dtype to determine correct template instantiation
+                // Check dtype to determine correct template instantiation.
+                // Important: keep integer-only instantiations out of float-only ops to avoid
+                // MSVC template blow-ups (and pointless double->int warning floods).
                 if (input_tensor.dtype() == DataType::Int32) {
-                    // Int32 -> Int32 operations (abs, neg, sign, etc.)
-                    if (device == Device::CUDA) {
-                        tensor_ops::launch_unary_op_generic(
-                            input_tensor.template ptr<int>(),
-                            result.template ptr<int>(),
-                            result.numel(), op, result.stream());
+                    if constexpr (ops::supports_int32_v<UnaryOp>) {
+                        // Int32 -> Int32 operations (abs, neg, sign, etc.)
+                        if (device == Device::CUDA) {
+                            tensor_ops::launch_unary_op_generic(
+                                input_tensor.template ptr<int>(),
+                                result.template ptr<int>(),
+                                result.numel(), op, result.stream());
+                        } else {
+                            // CPU fallback
+                            const int* in_ptr = input_tensor.template ptr<int>();
+                            int* out_ptr = result.template ptr<int>();
+                            const size_t n = result.numel();
+                            for (size_t i = 0; i < n; ++i) {
+                                out_ptr[i] = op(in_ptr[i]);
+                            }
+                        }
                     } else {
-                        // CPU fallback
-                        const int* in_ptr = input_tensor.template ptr<int>();
-                        int* out_ptr = result.template ptr<int>();
-                        size_t n = result.numel();
-                        for (size_t i = 0; i < n; ++i) {
-                            out_ptr[i] = op(in_ptr[i]);
+                        // Float-only op on Int32 input: evaluate in Float32 and cast if needed.
+                        if (device == Device::CUDA) {
+                            Tensor input_f = input_tensor.to(DataType::Float32);
+
+                            if (dtype == DataType::Int32) {
+                                Tensor tmp_f = Tensor::empty(shape, device, DataType::Float32);
+                                tensor_ops::launch_unary_op_generic(
+                                    input_f.template ptr<float>(),
+                                    tmp_f.template ptr<float>(),
+                                    tmp_f.numel(), op, tmp_f.stream());
+                                result = tmp_f.to(DataType::Int32);
+                            } else {
+                                // Expected Float32 output.
+                                tensor_ops::launch_unary_op_generic(
+                                    input_f.template ptr<float>(),
+                                    result.template ptr<float>(),
+                                    result.numel(), op, result.stream());
+                            }
+                        } else {
+                            // CPU fallback: cast element-wise to avoid instantiating op(int).
+                            const int* in_ptr = input_tensor.template ptr<int>();
+                            const size_t n = result.numel();
+                            if (dtype == DataType::Int32) {
+                                int* out_ptr = result.template ptr<int>();
+                                for (size_t i = 0; i < n; ++i) {
+                                    out_ptr[i] = static_cast<int>(op(static_cast<float>(in_ptr[i])));
+                                }
+                            } else {
+                                float* out_ptr = result.template ptr<float>();
+                                for (size_t i = 0; i < n; ++i) {
+                                    out_ptr[i] = op(static_cast<float>(in_ptr[i]));
+                                }
+                            }
                         }
                     }
                 } else {
@@ -84,7 +162,7 @@ namespace lfs::core {
                         // CPU fallback: apply operation element-wise
                         const float* in_ptr = input_tensor.template ptr<float>();
                         float* out_ptr = result.template ptr<float>();
-                        size_t n = result.numel();
+                        const size_t n = result.numel();
                         for (size_t i = 0; i < n; ++i) {
                             out_ptr[i] = op(in_ptr[i]);
                         }
@@ -106,6 +184,11 @@ namespace lfs::core {
                                const TensorShape& shape, Device device, DataType dtype) {
                 // Recursively evaluate input expression
                 Tensor input_tensor = input.eval();
+
+                std::optional<CUDAStreamGuard> execution_guard;
+                if (device == Device::CUDA) {
+                    execution_guard.emplace(prepare_cuda_execution_stream(input_tensor));
+                }
 
                 // Create result tensor (Bool dtype)
                 Tensor result = Tensor::empty(shape, device, dtype);
@@ -206,6 +289,11 @@ namespace lfs::core {
         // Evaluate the innermost expression only
         Tensor base = innermost_input.eval();
 
+        std::optional<CUDAStreamGuard> execution_guard;
+        if (device_ == Device::CUDA) {
+            execution_guard.emplace(detail::prepare_cuda_execution_stream(base));
+        }
+
         // Create result tensor
         Tensor result = Tensor::empty(shape_, device_, dtype_);
 
@@ -246,12 +334,25 @@ namespace lfs::core {
                 Tensor left_tensor = left.eval();
                 Tensor right_tensor = right.eval();
 
+                std::optional<CUDAStreamGuard> execution_guard;
+                if (device == Device::CUDA) {
+                    execution_guard.emplace(prepare_cuda_execution_stream(left_tensor, right_tensor));
+                }
+
                 // Create result tensor
                 Tensor result = Tensor::empty(shape, device, dtype);
 
                 // Determine if broadcasting is needed
                 bool needs_broadcast = (left_tensor.shape() != shape) ||
                                        (right_tensor.shape() != shape);
+
+                // Broadcasting kernels capture raw shape/data pointers. Materialize deferred
+                // operands first so argument evaluation cannot observe stale storage after
+                // ptr() triggers a move during materialization.
+                if (device == Device::CUDA && needs_broadcast) {
+                    (void)left_tensor.data_ptr();
+                    (void)right_tensor.data_ptr();
+                }
 
                 // Check input dtypes to determine correct template instantiation
                 if (left_tensor.dtype() == DataType::Float16 && right_tensor.dtype() == DataType::Float16) {
@@ -521,12 +622,24 @@ namespace lfs::core {
                 Tensor left_tensor = left.eval();
                 Tensor right_tensor = right.eval();
 
+                std::optional<CUDAStreamGuard> execution_guard;
+                if (device == Device::CUDA) {
+                    execution_guard.emplace(prepare_cuda_execution_stream(left_tensor, right_tensor));
+                }
+
                 // Create result tensor (Bool dtype)
                 Tensor result = Tensor::empty(shape, device, dtype);
 
                 // Determine if broadcasting is needed
                 bool needs_broadcast = (left_tensor.shape() != shape) ||
                                        (right_tensor.shape() != shape);
+
+                // See the non-bool evaluator above: broadcasting kernels need stable shape
+                // storage before any ptr() call can materialize a deferred operand.
+                if (device == Device::CUDA && needs_broadcast) {
+                    (void)left_tensor.data_ptr();
+                    (void)right_tensor.data_ptr();
+                }
 
                 // Check input dtypes to determine correct template instantiation
                 if (left_tensor.dtype() == DataType::Bool && right_tensor.dtype() == DataType::Bool) {
@@ -725,6 +838,54 @@ namespace lfs::core {
                             }
                         }
                     }
+                } else if (left_tensor.dtype() == DataType::UInt8 && right_tensor.dtype() == DataType::UInt8) {
+                    // UInt8,UInt8 -> Bool (comparison operations on UInt8 tensors)
+                    if (device == Device::CUDA) {
+                        if (needs_broadcast) {
+                            tensor_ops::launch_broadcast_binary(
+                                left_tensor.template ptr<uint8_t>(),
+                                right_tensor.template ptr<uint8_t>(),
+                                result.template ptr<unsigned char>(),
+                                left_tensor.shape().dims().data(),
+                                right_tensor.shape().dims().data(),
+                                shape.dims().data(),
+                                left_tensor.shape().rank(), right_tensor.shape().rank(), shape.rank(),
+                                result.numel(), op, result.stream());
+                        } else {
+                            tensor_ops::launch_binary_op_generic(
+                                left_tensor.template ptr<uint8_t>(),
+                                right_tensor.template ptr<uint8_t>(),
+                                result.template ptr<unsigned char>(),
+                                result.numel(), op, result.stream());
+                        }
+                    } else {
+                        // CPU fallback
+                        if (!needs_broadcast) {
+                            const uint8_t* left_ptr = left_tensor.template ptr<uint8_t>();
+                            const uint8_t* right_ptr = right_tensor.template ptr<uint8_t>();
+                            unsigned char* out_ptr = result.template ptr<unsigned char>();
+                            size_t n = result.numel();
+                            for (size_t i = 0; i < n; ++i) {
+                                out_ptr[i] = op(left_ptr[i], right_ptr[i]);
+                            }
+                        } else {
+                            Tensor left_broadcast = left_tensor;
+                            Tensor right_broadcast = right_tensor;
+                            if (left_tensor.shape() != shape) {
+                                left_broadcast = left_tensor.broadcast_to(shape);
+                            }
+                            if (right_tensor.shape() != shape) {
+                                right_broadcast = right_tensor.broadcast_to(shape);
+                            }
+                            const uint8_t* left_ptr = left_broadcast.template ptr<uint8_t>();
+                            const uint8_t* right_ptr = right_broadcast.template ptr<uint8_t>();
+                            unsigned char* out_ptr = result.template ptr<unsigned char>();
+                            size_t n = result.numel();
+                            for (size_t i = 0; i < n; ++i) {
+                                out_ptr[i] = op(left_ptr[i], right_ptr[i]);
+                            }
+                        }
+                    }
                 } else {
                     // Float32,Float32 -> Bool (comparison operations: eq, ne, lt, le, gt, ge)
                     if (device == Device::CUDA) {
@@ -797,6 +958,12 @@ namespace lfs::core {
     template <typename InputExpr, typename ScalarUnaryOp>
     Tensor ScalarUnaryExpr<InputExpr, ScalarUnaryOp>::eval_impl() const {
         Tensor input_tensor = input_.eval();
+
+        std::optional<CUDAStreamGuard> execution_guard;
+        if (device_ == Device::CUDA) {
+            execution_guard.emplace(detail::prepare_cuda_execution_stream(input_tensor));
+        }
+
         Tensor result = Tensor::empty(shape_, device_, dtype_);
 
         if (device_ == Device::CUDA) {
@@ -859,6 +1026,11 @@ namespace lfs::core {
 
         // Flatten input for gather
         Tensor flat_input = input_tensor.flatten();
+
+        std::optional<CUDAStreamGuard> execution_guard;
+        if (device_ == Device::CUDA) {
+            execution_guard.emplace(detail::prepare_cuda_execution_stream(flat_input, indices_tensor));
+        }
 
         // Create result tensor
         Tensor result = Tensor::empty(shape_, device_, dtype_);

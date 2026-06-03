@@ -1291,6 +1291,8 @@ Accessible via `scene.combined_model()` (all nodes merged) or `node.splat_data()
 | `@lf.on_post_step`          | Called after each step               |
 | `@lf.on_training_end`       | Called when training ends            |
 
+Callbacks registered with `lf.on_*` receive one positional hook payload. If you do not need it, declare the parameter as `_hook`.
+
 ### Rendering
 
 | Function                                              | Returns          | Description                |

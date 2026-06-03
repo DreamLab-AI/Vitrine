@@ -75,13 +75,19 @@ namespace lfs::core {
             scale_steps(1.0f / steps_scaler);
         }
 
-        int OptimizationParameters::resolved_ppisp_controller_activation_step() const {
+        int OptimizationParameters::resolved_total_iterations() const {
+            const int base_iters = static_cast<int>(iterations);
+            const int sparse_tail = enable_sparsity ? std::max(0, sparsify_steps) : 0;
+            return base_iters + sparse_tail;
+        }
+
+        int OptimizationParameters::resolved_ppisp_controller_activation_step(const int total_iterations) const {
             if (ppisp_controller_activation_step >= 0)
                 return ppisp_controller_activation_step;
 
             const float clamped_scaler = std::max(steps_scaler, 1.0f);
             const int tail_iters = static_cast<int>(std::lround(5000.0f * clamped_scaler));
-            return std::max(0, static_cast<int>(iterations) - tail_iters);
+            return std::max(0, total_iterations - tail_iters);
         }
 
         nlohmann::json OptimizationParameters::to_json() const {
@@ -622,6 +628,8 @@ namespace lfs::core {
             json["loading_params"] = loading_params.to_json();
             json["invert_masks"] = invert_masks;
             json["mask_threshold"] = mask_threshold;
+            if (!output_name.empty())
+                json["output_name"] = output_name;
 
             return json;
         }
@@ -637,6 +645,9 @@ namespace lfs::core {
             dataset.test_every = j["test_every"].get<int>();
             dataset.output_path = utf8_to_path(j["output_folder"].get<std::string>());
 
+            if (j.contains("output_name")) {
+                dataset.output_name = j["output_name"].get<std::string>();
+            }
             if (j.contains("loading_params")) {
                 dataset.loading_params = LoadingParams::from_json(j["loading_params"]);
             }

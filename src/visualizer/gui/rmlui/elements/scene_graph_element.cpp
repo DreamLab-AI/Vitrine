@@ -14,6 +14,7 @@
 #include "gui/string_keys.hpp"
 #include "gui/utils/native_file_dialog.hpp"
 #include "io/exporter.hpp"
+#include "rendering/rendering_manager.hpp"
 #include "scene/scene_manager.hpp"
 #include "visualizer/core/parameter_manager.hpp"
 #include "visualizer/core/services.hpp"
@@ -62,12 +63,20 @@ namespace lfs::vis::gui {
             return value.empty() ? std::string(key) : value;
         }
 
+        [[nodiscard]] std::string formatWithThousands(const uint64_t value) {
+            std::string result = std::to_string(value);
+            for (int i = static_cast<int>(result.length()) - 3; i > 0; i -= 3)
+                result.insert(i, ",");
+            return result;
+        }
+
         [[nodiscard]] std::string formatLocalizedCount(std::string pattern, const size_t count) {
+            const std::string formatted = formatWithThousands(count);
             if (const size_t pos = pattern.find("{}"); pos != std::string::npos) {
-                pattern.replace(pos, 2, std::to_string(count));
+                pattern.replace(pos, 2, formatted);
                 return pattern;
             }
-            return std::format("{} ({})", pattern, count);
+            return std::format("{} ({})", pattern, formatted);
         }
 
         [[nodiscard]] std::string lowerCopy(std::string value) {
@@ -178,17 +187,17 @@ namespace lfs::vis::gui {
             return "";
         }
 
-        [[nodiscard]] const char* typeIconPath(const core::NodeType type) {
+        [[nodiscard]] const char* typeIconSprite(const core::NodeType type) {
             switch (type) {
-            case core::NodeType::SPLAT: return "../icon/scene/splat.png";
-            case core::NodeType::POINTCLOUD: return "../icon/scene/pointcloud.png";
-            case core::NodeType::GROUP: return "../icon/scene/group.png";
-            case core::NodeType::DATASET: return "../icon/scene/dataset.png";
+            case core::NodeType::SPLAT: return "icon-splat";
+            case core::NodeType::POINTCLOUD: return "icon-pointcloud";
+            case core::NodeType::GROUP: return "icon-group";
+            case core::NodeType::DATASET: return "icon-dataset";
             case core::NodeType::CAMERA:
-            case core::NodeType::CAMERA_GROUP: return "../icon/scene/camera.png";
-            case core::NodeType::CROPBOX: return "../icon/scene/cropbox.png";
-            case core::NodeType::ELLIPSOID: return "../icon/scene/ellipsoid.png";
-            case core::NodeType::MESH: return "../icon/scene/mesh.png";
+            case core::NodeType::CAMERA_GROUP: return "icon-camera";
+            case core::NodeType::CROPBOX: return "icon-cropbox";
+            case core::NodeType::ELLIPSOID: return "icon-ellipsoid";
+            case core::NodeType::MESH: return "icon-mesh";
             case core::NodeType::KEYFRAME_GROUP:
             case core::NodeType::KEYFRAME:
             case core::NodeType::IMAGE_GROUP:
@@ -274,6 +283,7 @@ namespace lfs::vis::gui {
                 .output_path = path,
                 .binary = true,
                 .async = false,
+                .extra_attributes = {},
             };
 
             io::Result<void> result = std::unexpected(
@@ -352,6 +362,27 @@ namespace lfs::vis::gui {
         syncVisibleRows(false);
     }
 
+    void SceneGraphElement::RenameInputListener::ProcessEvent(Rml::Event& event) {
+        if (!owner)
+            return;
+        auto* target = event.GetTargetElement();
+        if (owner->rename_node_id_ == core::NULL_NODE || !owner->isTextInputTarget(target))
+            return;
+
+        const auto type = event.GetType();
+        if (type == "escapecancel") {
+            owner->cancelRename();
+            event.StopPropagation();
+        } else if (type == "keydown") {
+            const auto key =
+                static_cast<Rml::Input::KeyIdentifier>(event.GetParameter("key_identifier", 0));
+            if (key == Rml::Input::KI_RETURN) {
+                owner->confirmRename();
+                event.StopPropagation();
+            }
+        }
+    }
+
     void SceneGraphElement::ensureDom() {
         if (content_el_)
             return;
@@ -359,6 +390,10 @@ namespace lfs::vis::gui {
         auto* doc = GetOwnerDocument();
         if (!doc)
             return;
+
+        rename_input_listener_.owner = this;
+        AddEventListener("escapecancel", &rename_input_listener_);
+        AddEventListener("keydown", &rename_input_listener_, true);
 
         auto content = doc->CreateElement("div");
         content->SetClass("scene-graph-content", true);
@@ -415,7 +450,7 @@ namespace lfs::vis::gui {
             auto trash_icon = doc->CreateElement("img");
             trash_icon->SetClass("row-icon", true);
             trash_icon->SetClass("trash-icon", true);
-            trash_icon->SetAttribute("src", "../icon/scene/trash.png");
+            trash_icon->SetAttribute("sprite", "icon-trash");
             trash_icon->SetAttribute("data-action", "delete");
             slot.delete_icon = slot.content->AppendChild(std::move(trash_icon));
 
@@ -431,7 +466,7 @@ namespace lfs::vis::gui {
             auto mask_icon = doc->CreateElement("img");
             mask_icon->SetClass("row-icon", true);
             mask_icon->SetClass("mask-icon", true);
-            mask_icon->SetAttribute("src", "../icon/scene/mask.png");
+            mask_icon->SetAttribute("sprite", "icon-mask");
             slot.mask_icon = slot.content->AppendChild(std::move(mask_icon));
 
             auto expand = doc->CreateElement("span");
@@ -468,6 +503,7 @@ namespace lfs::vis::gui {
         context_menu_node_id_ = core::NULL_NODE;
         drag_source_id_ = core::NULL_NODE;
         drop_target_id_ = core::NULL_NODE;
+        pending_reveal_node_id_ = core::NULL_NODE;
         scene_has_nodes_ = false;
         root_count_ = 0;
         row_top_dp_cache_.clear();
@@ -515,6 +551,10 @@ namespace lfs::vis::gui {
             return false;
 
         selected_ids_ = std::move(selected_ids);
+        if (selected_ids_.size() == 1)
+            pending_reveal_node_id_ = *selected_ids_.begin();
+        else
+            pending_reveal_node_id_ = core::NULL_NODE;
         markStateDirty();
         return true;
     }
@@ -532,6 +572,7 @@ namespace lfs::vis::gui {
         }();
 
         const auto nodes = scene.getNodes();
+        const auto active_gaussian_counts = scene.getActiveGaussianCountsByNode();
         snapshots.reserve(nodes.size());
         root_ids.reserve(nodes.size());
 
@@ -549,20 +590,23 @@ namespace lfs::vis::gui {
 
             switch (node->type) {
             case core::NodeType::SPLAT:
-                snapshot.label = node->gaussian_count > 0
-                                     ? std::format("{}  ({})", node->name, node->gaussian_count.load())
-                                     : node->name;
+                if (const auto it = active_gaussian_counts.find(node->id);
+                    it != active_gaussian_counts.end() && it->second > 0) {
+                    snapshot.label = std::format("{}  ({})", node->name, formatWithThousands(it->second));
+                } else {
+                    snapshot.label = node->name;
+                }
                 break;
             case core::NodeType::POINTCLOUD:
                 snapshot.label = (node->point_cloud && node->point_cloud->size() > 0)
-                                     ? std::format("{}  ({})", node->name, node->point_cloud->size())
+                                     ? std::format("{}  ({})", node->name, formatWithThousands(node->point_cloud->size()))
                                      : node->name;
                 break;
             case core::NodeType::MESH:
                 snapshot.label = (node->mesh)
                                      ? std::format("{}  ({}V / {}F)", node->name,
-                                                   node->mesh->vertex_count(),
-                                                   node->mesh->face_count())
+                                                   formatWithThousands(node->mesh->vertex_count()),
+                                                   formatWithThousands(node->mesh->face_count()))
                                      : node->name;
                 break;
             case core::NodeType::KEYFRAME:
@@ -760,8 +804,47 @@ namespace lfs::vis::gui {
             changed = true;
         }
 
+        if (pending_reveal_node_id_ != core::NULL_NODE) {
+            const auto target_it = node_snapshots_.find(pending_reveal_node_id_);
+            if (target_it == node_snapshots_.end()) {
+                pending_reveal_node_id_ = core::NULL_NODE;
+            } else {
+                if (models_collapsed_) {
+                    models_collapsed_ = false;
+                    markStateDirty();
+                    changed = true;
+                }
+                if (!flat_index_by_id_.contains(pending_reveal_node_id_)) {
+                    bool expanded_any = false;
+                    for (core::NodeId ancestor = target_it->second.parent_id;
+                         ancestor != core::NULL_NODE;) {
+                        if (collapsed_ids_.erase(ancestor) > 0)
+                            expanded_any = true;
+                        const auto parent_it = node_snapshots_.find(ancestor);
+                        if (parent_it == node_snapshots_.end())
+                            break;
+                        ancestor = parent_it->second.parent_id;
+                    }
+                    if (expanded_any) {
+                        rebuildFlatRows(*scene);
+                        markStateDirty();
+                        changed = true;
+                    }
+                }
+            }
+        }
+
         if (changed)
             syncVisibleRows(true);
+
+        if (pending_reveal_node_id_ != core::NULL_NODE) {
+            if (flat_index_by_id_.contains(pending_reveal_node_id_)) {
+                scrollNodeIntoViewCentered(pending_reveal_node_id_);
+                syncVisibleRows(true);
+            }
+            pending_reveal_node_id_ = core::NULL_NODE;
+        }
+
         return changed;
     }
 
@@ -851,13 +934,13 @@ namespace lfs::vis::gui {
         setCachedAttribute(slot.delete_icon, "data-node-id", row.node_id_text);
         setCachedProperty(slot.delete_icon, "display", row.deletable ? "inline" : "none");
 
-        const std::string_view icon_path = typeIconPath(row.type);
+        const std::string_view icon_sprite = typeIconSprite(row.type);
         const std::string_view unicode = unicodeIcon(row.type);
         setCachedTypeClass(slot.type_icon, typeClass(row.type));
         setCachedTypeClass(slot.unicode_icon, typeClass(row.type));
 
-        if (!icon_path.empty()) {
-            setCachedAttribute(slot.type_icon, "src", std::string(icon_path));
+        if (!icon_sprite.empty()) {
+            setCachedAttribute(slot.type_icon, "sprite", std::string(icon_sprite));
             setCachedProperty(slot.type_icon, "display", "inline");
             setCachedProperty(slot.unicode_icon, "display", "none");
         } else if (!unicode.empty()) {
@@ -1015,6 +1098,24 @@ namespace lfs::vis::gui {
             SetScrollTop(row_bottom - view_h);
     }
 
+    void SceneGraphElement::scrollNodeIntoViewCentered(const core::NodeId node_id) {
+        const auto it = flat_index_by_id_.find(node_id);
+        if (it == flat_index_by_id_.end())
+            return;
+
+        const float view_h = GetClientHeight();
+        if (view_h <= 0.0f) {
+            scrollNodeIntoView(node_id);
+            return;
+        }
+
+        const float row_top = kHeaderHeightDp + static_cast<float>(it->second) * kRowHeightDp;
+        const float content_h = kHeaderHeightDp + static_cast<float>(flat_rows_.size()) * kRowHeightDp;
+        const float max_scroll = std::max(0.0f, content_h - view_h);
+        const float desired = row_top + 0.5f * kRowHeightDp - 0.5f * view_h;
+        SetScrollTop(std::clamp(desired, 0.0f, max_scroll));
+    }
+
     void SceneGraphElement::focusTree() {
         if (rename_node_id_ == core::NULL_NODE)
             Focus();
@@ -1051,6 +1152,7 @@ namespace lfs::vis::gui {
         rename_node_id_ = core::NULL_NODE;
         rename_buffer_.clear();
         markStateDirty();
+        syncVisibleRows(true);
     }
 
     void SceneGraphElement::cancelRename() {
@@ -1431,6 +1533,17 @@ namespace lfs::vis::gui {
                     tr(string_keys::Scene::GO_TO_CAMERA_VIEW),
                     prefixed(std::format("go_to_camera:{}", node->camera_uid))));
                 items.push_back(make_action(
+                    tr(string_keys::Scene::GO_TO_IMAGE),
+                    prefixed(std::format("go_to_image:{}", node->camera_uid))));
+                items.push_back(make_action(
+                    tr(string_keys::Scene::OPEN_IN_GT_COMPARE),
+                    prefixed(std::format("open_in_gt_compare:{}", node->camera_uid))));
+                if (!node->image_path.empty()) {
+                    items.push_back(make_action(
+                        tr(string_keys::Scene::SHOW_IN_FILE_MANAGER),
+                        prefixed(std::format("show_in_file_manager:{}", node_id))));
+                }
+                items.push_back(make_action(
                     node->training_enabled ? tr(string_keys::Scene::DISABLE_FOR_TRAINING)
                                            : tr(string_keys::Scene::ENABLE_FOR_TRAINING),
                     prefixed(std::format("{}:{}", node->training_enabled ? "disable_train" : "enable_train", node_id)),
@@ -1550,9 +1663,11 @@ namespace lfs::vis::gui {
                     !items.empty()));
             }
 
-            items.push_back(make_action(
-                tr("scene.duplicate"),
-                prefixed(std::format("duplicate:{}", node_id))));
+            if (node->type != core::NodeType::CAMERA) {
+                items.push_back(make_action(
+                    tr("scene.duplicate"),
+                    prefixed(std::format("duplicate:{}", node_id))));
+            }
 
             if (node_snapshots_.at(node_id).draggable) {
                 std::vector<std::pair<core::NodeId, std::string>> groups;
@@ -1608,6 +1723,27 @@ namespace lfs::vis::gui {
         const std::string& kind = parts[0];
         if (kind == "go_to_camera" && parts.size() >= 2) {
             cmd::GoToCamView{.cam_id = std::stoi(parts[1])}.emit();
+            Blur();
+        } else if (kind == "go_to_image" && parts.size() >= 2) {
+            cmd::OpenCameraPreview{.cam_id = std::stoi(parts[1])}.emit();
+        } else if (kind == "open_in_gt_compare" && parts.size() >= 2) {
+            const int cam_uid = std::stoi(parts[1]);
+            cmd::GoToCamView{.cam_id = cam_uid}.emit();
+            auto* const rm = services().renderingOrNull();
+            if (!rm || !rm->isGTComparisonActive())
+                cmd::ToggleGTComparison{}.emit();
+            Blur();
+        } else if (kind == "show_in_file_manager" && parts.size() >= 2) {
+            core::NodeId node_id = core::NULL_NODE;
+            if (parseNodeId(parts[1], node_id)) {
+                if (const auto* node = scene->getNodeById(node_id);
+                    node && !node->image_path.empty()) {
+                    if (!lfs::core::reveal_in_file_manager(
+                            lfs::core::utf8_to_path(node->image_path))) {
+                        LOG_WARN("Failed to reveal image in file manager: {}", node->image_path);
+                    }
+                }
+            }
         } else if ((kind == "enable_train" || kind == "disable_train") && parts.size() >= 2) {
             core::NodeId node_id = core::NULL_NODE;
             if (parseNodeId(parts[1], node_id)) {
@@ -1781,19 +1917,6 @@ namespace lfs::vis::gui {
         } else if (type == "keydown") {
             const auto key =
                 static_cast<Rml::Input::KeyIdentifier>(event.GetParameter("key_identifier", 0));
-
-            if (rename_node_id_ != core::NULL_NODE && isTextInputTarget(target)) {
-                if (key == Rml::Input::KI_RETURN) {
-                    confirmRename();
-                    event.StopPropagation();
-                    return;
-                }
-                if (key == Rml::Input::KI_ESCAPE) {
-                    cancelRename();
-                    event.StopPropagation();
-                    return;
-                }
-            }
 
             if (isTextInputTarget(target))
                 return;

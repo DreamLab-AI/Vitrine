@@ -13,6 +13,7 @@
 #include "theme/theme.hpp"
 #include "training/trainer.hpp"
 #include "training/training_manager.hpp"
+#include "viewport_region_utils.hpp"
 #include <glad/glad.h>
 #include <optional>
 #include <shared_mutex>
@@ -30,6 +31,21 @@ namespace lfs::vis {
             }
             return lock;
         }
+
+        [[nodiscard]] bool hasVisibleRenderablePointCloud(const lfs::core::Scene& scene) {
+            for (const auto* node : scene.getNodes()) {
+                if (!node || node->type != lfs::core::NodeType::POINTCLOUD || !node->point_cloud) {
+                    continue;
+                }
+                if (!scene.isNodeEffectivelyVisible(node->id)) {
+                    continue;
+                }
+                if (node->point_cloud->size() > 0) {
+                    return true;
+                }
+            }
+            return false;
+        }
     } // namespace
 
     void RenderingManager::renderFrame(const RenderContext& context) {
@@ -39,6 +55,11 @@ namespace lfs::vis {
             initialize();
         }
 
+        if (frustum_loader_dirty_.load(std::memory_order_relaxed) ||
+            frustum_loader_poll_until_ready_.load(std::memory_order_relaxed)) {
+            syncFrustumImageLoader(scene_manager);
+        }
+
         if (scene_manager && (dirty_mask_.load(std::memory_order_relaxed) & DirtyFlag::SELECTION)) {
             for (const auto& group : scene_manager->getScene().getSelectionGroups()) {
                 lfs::rendering::config::setSelectionGroupColor(
@@ -46,11 +67,11 @@ namespace lfs::vis {
             }
         }
 
-        glm::ivec2 current_size = context.viewport.windowSize;
+        const auto framebuffer_region =
+            resolveFramebufferViewportRegion(context.viewport, context.logical_screen_size, context.viewport_region);
+        glm::ivec2 current_size = context.viewport.frameBufferSize;
         if (context.viewport_region) {
-            current_size = glm::ivec2(
-                static_cast<int>(context.viewport_region->width),
-                static_cast<int>(context.viewport_region->height));
+            current_size = framebuffer_region.size;
         }
 
         if (current_size.x <= 0 || current_size.y <= 0) {
@@ -68,11 +89,13 @@ namespace lfs::vis {
         const bool resize_completed = resize_result.completed;
 
         auto render_lock = acquireLiveModelRenderLock(scene_manager);
+
         const lfs::core::SplatData* const model = scene_manager ? scene_manager->getModelForRendering() : nullptr;
         const bool has_renderable_model = hasRenderableGaussians(model);
-        const auto* const visible_point_cloud =
-            (scene_manager && !has_renderable_model) ? scene_manager->getScene().getVisiblePointCloud() : nullptr;
-        const bool has_visible_point_cloud = visible_point_cloud && visible_point_cloud->size() > 0;
+        const bool has_visible_point_cloud =
+            scene_manager && !has_renderable_model &&
+            hasVisibleRenderablePointCloud(scene_manager->getScene());
+        const bool has_renderable_content = has_renderable_model || has_visible_point_cloud;
         const size_t model_ptr = reinterpret_cast<size_t>(model);
 
         if (const auto model_change = frame_lifecycle_service_.handleModelChange(model_ptr, viewport_artifact_service_);
@@ -98,7 +121,7 @@ namespace lfs::vis {
             scene_manager,
             settings_,
             camera_interaction_service_.currentCameraId(),
-            has_renderable_model || has_visible_point_cloud,
+            has_renderable_content,
             viewport_artifact_service_.hasGpuFrame(),
             gt_texture_cache_,
             request_gt_prerender);
@@ -108,7 +131,7 @@ namespace lfs::vis {
 
         if (const DirtyMask required_dirty = frame_lifecycle_service_.requiredDirtyMask(
                 viewport_artifact_service_.hasViewportOutput(),
-                has_renderable_model || has_visible_point_cloud,
+                has_renderable_content,
                 settings_.split_view_mode);
             required_dirty) {
             dirty_mask_.fetch_or(required_dirty, std::memory_order_relaxed);
@@ -120,18 +143,26 @@ namespace lfs::vis {
         glClearColor(shell_bg.x, shell_bg.y, shell_bg.z, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
 
-        if (context.viewport_region) {
-            const GLint x = static_cast<GLint>(context.viewport_region->x);
-            const GLint y = context.viewport.frameBufferSize.y -
-                            static_cast<GLint>(context.viewport_region->y + context.viewport_region->height);
-            const GLsizei w = static_cast<GLsizei>(context.viewport_region->width);
-            const GLsizei h = static_cast<GLsizei>(context.viewport_region->height);
-            glViewport(x, y, w, h);
-            glScissor(x, y, w, h);
+        if (context.viewport_region && framebuffer_region.valid()) {
+            glViewport(framebuffer_region.gl_pos.x,
+                       framebuffer_region.gl_pos.y,
+                       framebuffer_region.size.x,
+                       framebuffer_region.size.y);
+            glScissor(framebuffer_region.gl_pos.x,
+                      framebuffer_region.gl_pos.y,
+                      framebuffer_region.size.x,
+                      framebuffer_region.size.y);
             glEnable(GL_SCISSOR_TEST);
         }
 
-        const DirtyMask frame_dirty = dirty_mask_.exchange(0);
+        DirtyMask frame_dirty = dirty_mask_.exchange(0);
+        if (!has_renderable_content &&
+            !splitViewEnabled(settings_.split_view_mode)) {
+            // The shell is cleared before render passes run. When the scene is empty, always run
+            // the viewport background pass as well so GUI/layout-only frames cannot leak the shell
+            // theme color into the viewport region.
+            frame_dirty |= DirtyFlag::BACKGROUND;
+        }
         RenderFrameCoordinator frame_coordinator{
             {.engine = *engine_,
              .pass_graph = pass_graph_,
@@ -143,11 +174,13 @@ namespace lfs::vis {
              .render_count = render_count_}};
         const auto frame_result = frame_coordinator.execute(
             {.viewport = context.viewport,
+             .logical_screen_size = context.logical_screen_size,
              .viewport_region = context.viewport_region,
              .scene_manager = scene_manager,
              .model = model,
              .render_lock_held = render_lock.has_value(),
              .settings = settings_,
+             .grid_planes = panel_grid_planes_,
              .frame_dirty = frame_dirty,
              .selection_flash_intensity = getSelectionFlashIntensity(),
              .current_camera_id = camera_interaction_service_.currentCameraId(),
@@ -167,6 +200,8 @@ namespace lfs::vis {
             glDisable(GL_SCISSOR_TEST);
         }
 
+        render_lock.reset();
+        queueCameraMetricsRefreshIfStale(scene_manager);
         viewport_interaction_context_.scene_manager = scene_manager;
     }
 

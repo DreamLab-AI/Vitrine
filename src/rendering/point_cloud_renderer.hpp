@@ -46,7 +46,8 @@ namespace lfs::rendering {
                             const std::vector<glm::mat4>& model_transforms = {},
                             const std::shared_ptr<lfs::core::Tensor>& transform_indices = nullptr,
                             bool equirectangular = false,
-                            const PointCloudCropParams& crop_params = {});
+                            const PointCloudCropParams& crop_params = {},
+                            bool transparent_background = false);
 
         Result<void> render(const lfs::core::PointCloud& point_cloud,
                             const glm::mat4& view,
@@ -56,7 +57,8 @@ namespace lfs::rendering {
                             const std::vector<glm::mat4>& model_transforms = {},
                             const std::shared_ptr<lfs::core::Tensor>& transform_indices = nullptr,
                             bool equirectangular = false,
-                            const PointCloudCropParams& crop_params = {});
+                            const PointCloudCropParams& crop_params = {},
+                            bool transparent_background = false);
 
         // Check if initialized
         bool isInitialized() const { return initialized_; }
@@ -75,7 +77,8 @@ namespace lfs::rendering {
                                     const std::vector<glm::mat4>& model_transforms,
                                     const std::shared_ptr<lfs::core::Tensor>& transform_indices,
                                     bool equirectangular,
-                                    const PointCloudCropParams& crop_params);
+                                    const PointCloudCropParams& crop_params,
+                                    bool transparent_background);
 
         // OpenGL resources using RAII
         VAO cube_vao_;

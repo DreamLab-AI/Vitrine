@@ -16,6 +16,7 @@ set(RENDERING_SOURCES
         axes_renderer.cpp
         pivot_renderer.cpp
         text_renderer.cpp
+        environment_renderer.cpp
         viewport_gizmo.cpp
         framebuffer_factory.cpp
         shader_manager.cpp
@@ -48,6 +49,7 @@ target_link_libraries(lfs_rendering
         glad::glad
         ${OPENGL_LIBRARIES}
         CUDA::cudart
+        OpenImageIO::OpenImageIO
         spdlog::spdlog
         Freetype::Freetype
 )

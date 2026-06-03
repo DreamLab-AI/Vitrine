@@ -90,7 +90,7 @@ namespace lfs::io {
         auto splat_result = is_gaussian
                                 ? load_ply(path)
                                 : [&]() -> std::expected<SplatData, std::string> {
-            const auto pc_result = load_ply_point_cloud(path);
+            const auto pc_result = load_ply_point_cloud(path, options);
             if (!pc_result)
                 return std::unexpected(pc_result.error());
 
@@ -134,6 +134,9 @@ namespace lfs::io {
         }();
 
         if (!splat_result) {
+            if (is_load_cancel_requested(options)) {
+                return make_error(ErrorCode::CANCELLED, splat_result.error(), path);
+            }
             return make_error(ErrorCode::CORRUPTED_DATA,
                               std::format("Failed to load PLY: {}", splat_result.error()), path);
         }

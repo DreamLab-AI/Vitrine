@@ -64,7 +64,8 @@ namespace lfs::rendering {
         float emphasis_flash_intensity,
         bool orthographic,
         float ortho_scale,
-        bool mip_filter) {
+        bool mip_filter,
+        const bool transparent_background) {
 
         // Get camera parameters
         const float fx = viewpoint_camera.focal_x();
@@ -179,11 +180,15 @@ namespace lfs::rendering {
             ortho_scale,
             mip_filter);
 
-        // Blend background in-place: image += (1 - alpha) * bg
-        Tensor bg = bg_color.unsqueeze(1).unsqueeze(2); // [3, 1, 1] view
-        alpha.mul_(-1.0f).add_(1.0f);                   // alpha → (1 - alpha) in-place
-        image.add_(alpha * bg);                         // 1 broadcast temp [3,H,W]
-        image.clamp_(0.0f, 1.0f);
+        if (transparent_background) {
+            image = Tensor::cat({image.clamp(0.0f, 1.0f), alpha.clamp(0.0f, 1.0f)}, 0);
+        } else {
+            // Blend background in-place: image += (1 - alpha) * bg
+            Tensor bg = bg_color.unsqueeze(1).unsqueeze(2); // [3, 1, 1] view
+            alpha.mul_(-1.0f).add_(1.0f);                   // alpha → (1 - alpha) in-place
+            image.add_(alpha * bg);                         // 1 broadcast temp [3,H,W]
+            image.clamp_(0.0f, 1.0f);
+        }
 
         LOG_TRACE("Tensor rasterization completed: {}x{}",
                   viewpoint_camera.camera_width(),
@@ -284,10 +289,16 @@ namespace lfs::rendering {
         DualRasterizeTensorOutput result;
         Tensor bg = bg_color.unsqueeze(1).unsqueeze(2);
         for (size_t i = 0; i < outputs.size(); ++i) {
-            outputs[i].alpha.mul_(-1.0f).add_(1.0f);
-            outputs[i].image.add_(outputs[i].alpha * bg);
-            outputs[i].image.clamp_(0.0f, 1.0f);
-            result.images[i] = std::move(outputs[i].image);
+            if (request.transparent_background) {
+                result.images[i] = Tensor::cat(
+                    {outputs[i].image.clamp(0.0f, 1.0f), outputs[i].alpha.clamp(0.0f, 1.0f)},
+                    0);
+            } else {
+                outputs[i].alpha.mul_(-1.0f).add_(1.0f);
+                outputs[i].image.add_(outputs[i].alpha * bg);
+                outputs[i].image.clamp_(0.0f, 1.0f);
+                result.images[i] = std::move(outputs[i].image);
+            }
             result.depths[i] = std::move(outputs[i].depth);
         }
 
@@ -303,7 +314,8 @@ namespace lfs::rendering {
         const GutCameraModel camera_model,
         const Tensor* model_transforms,
         const Tensor* transform_indices,
-        const std::vector<bool>& node_visibility_mask) {
+        const std::vector<bool>& node_visibility_mask,
+        const bool transparent_background) {
 
         const int width = camera.camera_width();
         const int height = camera.camera_height();
@@ -331,9 +343,13 @@ namespace lfs::rendering {
             w2c, K,
             sh_degree, width, height,
             camera_model,
-            nullptr, nullptr, &bg_color,
+            nullptr, nullptr, transparent_background ? nullptr : &bg_color,
             model_transforms,
             transform_indices, node_visibility_mask);
+
+        if (transparent_background) {
+            image = Tensor::cat({image.clamp(0.0f, 1.0f), alpha.clamp(0.0f, 1.0f)}, 0);
+        }
 
         return {std::move(image), std::move(depth)};
     }

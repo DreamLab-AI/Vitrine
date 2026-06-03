@@ -30,6 +30,7 @@ namespace lfs::vis::gui::panels {
     class LFS_VIS_API PythonConsoleState {
     public:
         static PythonConsoleState& getInstance();
+        static PythonConsoleState* tryGetInstance();
 
         void addOutput(const std::string& text, uint32_t color = 0xFFFFFFFF);
         void addError(const std::string& text);

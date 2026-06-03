@@ -3,6 +3,11 @@
     <link type="text/rcss" href="sequencer_overlay.rcss"/>
 </head>
 <body id="body">
+    <div id="pip-preview-window" class="overlay-panel">
+        <span id="pip-preview-title" class="overlay-text"></span>
+        <img id="pip-preview-image" src="" />
+    </div>
+
     <div id="kf-edit-overlay" class="overlay-panel">
         <div class="kf-edit-header">
             <span id="kf-edit-label" class="overlay-text"></span>

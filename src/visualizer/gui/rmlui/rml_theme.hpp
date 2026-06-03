@@ -7,6 +7,7 @@
 #include <concepts>
 #include <core/export.hpp>
 #include <cstddef>
+#include <filesystem>
 #include <functional>
 #include <string>
 
@@ -48,6 +49,7 @@ namespace lfs::vis::gui::rml_theme {
 
     LFS_VIS_API std::string colorToRml(const RmlColor& c);
     LFS_VIS_API std::string colorToRmlAlpha(const RmlColor& c, float alpha);
+    LFS_VIS_API std::string pathToRmlImageSource(const std::filesystem::path& path);
     LFS_VIS_API std::string loadBaseRCSS(const std::string& asset_name);
     LFS_VIS_API const std::string& getComponentsRCSS();
     LFS_VIS_API std::string generateComponentsThemeRCSS(const Theme& t);

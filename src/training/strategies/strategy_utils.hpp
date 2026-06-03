@@ -41,4 +41,16 @@ namespace lfs::training {
         lfs::core::SplatData& splat_data,
         std::vector<size_t> param_idxs = {0, 1, 2, 3, 4, 5});
 
+    // Returns the fused MCMC-style dead mask:
+    // opacity <= min_opacity OR ||rotation||^2 < 1e-8.
+    lfs::core::Tensor compute_dead_mask_from_opacity_and_rotation(
+        const lfs::core::Tensor& opacities,
+        const lfs::core::Tensor& rotations,
+        float min_opacity);
+
+    // Returns a mask for rows whose quaternion magnitude is near zero:
+    // ||rotation||^2 < 1e-8.
+    lfs::core::Tensor compute_near_zero_rotation_mask(
+        const lfs::core::Tensor& rotations);
+
 } // namespace lfs::training

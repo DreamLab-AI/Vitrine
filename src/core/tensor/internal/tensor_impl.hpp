@@ -700,12 +700,13 @@ namespace lfs::core {
             if (state_ && state_->has_deferred_expr) {
                 const uint64_t source_id = lazy_expr_id();
                 Tensor source = *this;
+                const cudaStream_t source_stream = source.stream();
                 TensorShape deferred_shape = new_shape;
                 std::vector<uint64_t> deferred_inputs;
                 if (source_id != 0) {
                     deferred_inputs.push_back(source_id);
                 }
-                return make_deferred_expr_tensor(
+                Tensor view = make_deferred_expr_tensor(
                     deferred_shape, device_, dtype_,
                     [source = std::move(source), deferred_shape]() mutable {
                         Tensor materialized = source;
@@ -713,6 +714,8 @@ namespace lfs::core {
                         return materialized.create_view(deferred_shape);
                     },
                     std::move(deferred_inputs));
+                view.set_stream(source_stream);
+                return view;
             }
 
             // If tensor is not contiguous, we cannot create a simple reshape view

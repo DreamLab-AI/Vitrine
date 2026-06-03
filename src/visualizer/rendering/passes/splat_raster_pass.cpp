@@ -55,8 +55,16 @@ namespace lfs::vis {
             point_cloud_request = buildPointCloudRenderRequest(ctx, ctx.render_size, ctx.scene_state.model_transforms);
             point_cloud_request->frame_view.size = render_size;
             point_cloud_request->frame_view.background_color = ctx.makeFrameView().background_color;
+            applyGTComparisonRenderCamera(
+                point_cloud_request->frame_view,
+                point_cloud_request->render.equirectangular,
+                res.gt_context);
         } else {
             gaussian_request = buildViewportRenderRequest(ctx, render_size);
+            applyGTComparisonRenderCamera(
+                gaussian_request->frame_view,
+                gaussian_request->equirectangular,
+                res.gt_context);
         }
 
         const bool need_hovered_output =
@@ -64,6 +72,10 @@ namespace lfs::vis {
         std::optional<lfs::rendering::HoveredGaussianQueryRequest> hovered_query_request;
         if (need_hovered_output) {
             hovered_query_request = buildHoveredGaussianQueryRequest(ctx, render_size);
+            applyGTComparisonRenderCamera(
+                hovered_query_request->frame_view,
+                hovered_query_request->equirectangular,
+                res.gt_context);
         }
 
         auto render_lock = acquireRenderLock(ctx);
@@ -113,7 +125,8 @@ namespace lfs::vis {
                              .external_depth_texture = gpu_frame->depth.valid() ? gpu_frame->depth.id : 0,
                              .near_plane = gpu_frame->near_plane,
                              .far_plane = gpu_frame->far_plane,
-                             .orthographic = gpu_frame->orthographic}};
+                             .orthographic = gpu_frame->orthographic,
+                             .color_has_alpha = gpu_frame->color_has_alpha}};
                 }
             }
         } else if (settings.apply_appearance_correction) {

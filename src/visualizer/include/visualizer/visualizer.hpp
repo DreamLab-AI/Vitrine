@@ -55,7 +55,7 @@ namespace lfs::vis {
         virtual std::expected<void, std::string> loadDataset(const std::filesystem::path& path) = 0;
         virtual std::expected<void, std::string> loadCheckpointForTraining(const std::filesystem::path& path) = 0;
         virtual void consolidateModels() = 0;
-        virtual void clearScene() = 0;
+        [[nodiscard]] virtual std::expected<void, std::string> clearScene() = 0;
         virtual core::Scene& getScene() = 0;
         virtual SceneManager* getSceneManager() = 0;
         virtual RenderingManager* getRenderingManager() = 0;

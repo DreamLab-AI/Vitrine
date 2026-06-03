@@ -7,6 +7,24 @@
 - vcpkg (`VCPKG_ROOT` environment variable set)
 - GCC 14+ (Linux) or Visual Studio 2022 v17.10+ (Windows)
 
+## Linux Prerequisites
+
+On Linux, LichtFeld Studio requires SDL3 to be built with at least one windowing backend (`x11` or `wayland`).
+SDL3's vcpkg port can otherwise build "successfully" and produce a binary that fails at startup with `No available video device`.
+
+Debian/Ubuntu packages used by CI:
+
+```bash
+sudo apt install \
+  git curl unzip cmake gcc-14 g++-14 ccache ninja-build zip tar pkg-config python3 python3-dev \
+  libxinerama-dev libxcursor-dev xorg-dev libglu1-mesa-dev \
+  libwayland-dev libxkbcommon-dev libegl-dev libdecor-0-dev libibus-1.0-dev libdbus-1-dev \
+  libsystemd-dev nasm autoconf autoconf-archive automake libtool
+```
+
+The configure step now fails early if neither a usable X11 stack nor a usable Wayland stack is present.
+If you intentionally want a headless or experimental build, pass `-DLFS_ENFORCE_LINUX_GUI_BACKENDS=OFF`.
+
 ## Build Options
 
 ### 1. Native Build (Development)
@@ -61,6 +79,7 @@ dist/
 | `BUILD_CUDA_PTX_ONLY` | OFF | PTX-only build (auto-enabled by PORTABLE) |
 | `BUILD_CUDA_MIN_SM` | 75 | Minimum GPU (75=Turing, 80=Ampere, 89=Ada) |
 | `BUILD_TESTS` | OFF | Build test suite |
+| `LFS_ENFORCE_LINUX_GUI_BACKENDS` | ON | Linux only. Fail configure if SDL3 would be built without both X11 and Wayland |
 
 ## Troubleshooting
 
@@ -69,3 +88,19 @@ dist/
 **"no kernel image is available"** - GPU is older than `BUILD_CUDA_MIN_SM`. Rebuild with lower value.
 
 **Missing libraries on target** - Use `run_lichtfeld.sh` (Linux) or ensure DLLs are with .exe (Windows).
+
+**"SDL3 was found, but the resolved SDL build does not expose an X11 or Wayland video backend"** - A stale vcpkg SDL3 artifact is being reused. Remove SDL3 from the local vcpkg install/build cache, then reconfigure with binary-cache bypass enabled:
+
+```bash
+lfs="$(pwd)"
+triplet="${VCPKG_TARGET_TRIPLET:-x64-linux}"
+cd "$VCPKG_ROOT"
+./vcpkg remove "sdl3:$triplet" --recurse \
+  --x-install-root="$lfs/build/vcpkg_installed" \
+  --x-packages-root="$VCPKG_ROOT/packages" \
+  --x-buildtrees-root="$VCPKG_ROOT/buildtrees"
+
+cd "$lfs"
+VCPKG_BINARY_SOURCES='clear;default,write' cmake -B build -G Ninja --fresh
+cmake --build build -j"$(nproc)"
+```

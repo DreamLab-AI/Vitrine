@@ -108,12 +108,13 @@ namespace lfs::core {
             }
             const uint64_t source_id = lazy_expr_id();
             Tensor source = *this;
+            const cudaStream_t source_stream = source.stream();
             TensorShape deferred_shape(new_dims);
             std::vector<uint64_t> deferred_inputs;
             if (source_id != 0) {
                 deferred_inputs.push_back(source_id);
             }
-            return make_deferred_expr_tensor(
+            Tensor deferred = make_deferred_expr_tensor(
                 deferred_shape, device_, dtype_,
                 [source = std::move(source), deferred_axes = std::move(deferred_axes)]() mutable {
                     Tensor materialized = source;
@@ -121,6 +122,8 @@ namespace lfs::core {
                     return materialized.permute(std::span<const int>(deferred_axes));
                 },
                 std::move(deferred_inputs));
+            deferred.set_stream(source_stream);
+            return deferred;
         }
 
         // ZERO-COPY PERMUTE: Create a view with permuted dimensions and strides
@@ -233,12 +236,13 @@ namespace lfs::core {
             std::vector<std::pair<int, int>> deferred_ranges(ranges.begin(), ranges.end());
             const uint64_t source_id = lazy_expr_id();
             Tensor source = *this;
+            const cudaStream_t source_stream = source.stream();
             TensorShape deferred_shape(new_shape);
             std::vector<uint64_t> deferred_inputs;
             if (source_id != 0) {
                 deferred_inputs.push_back(source_id);
             }
-            return make_deferred_expr_tensor(
+            Tensor deferred = make_deferred_expr_tensor(
                 deferred_shape, device_, dtype_,
                 [source = std::move(source), deferred_ranges = std::move(deferred_ranges)]() mutable {
                     Tensor materialized = source;
@@ -246,6 +250,8 @@ namespace lfs::core {
                     return materialized.slice(std::span<const std::pair<int, int>>(deferred_ranges));
                 },
                 std::move(deferred_inputs));
+            deferred.set_stream(source_stream);
+            return deferred;
         }
 
         bool is_contiguous = is_contiguous_slice(starts, ends);
@@ -285,12 +291,13 @@ namespace lfs::core {
         if (state_ && state_->has_deferred_expr) {
             const uint64_t source_id = lazy_expr_id();
             Tensor source = *this;
+            const cudaStream_t source_stream = source.stream();
             TensorShape deferred_shape(new_dims);
             std::vector<uint64_t> deferred_inputs;
             if (source_id != 0) {
                 deferred_inputs.push_back(source_id);
             }
-            return make_deferred_expr_tensor(
+            Tensor deferred = make_deferred_expr_tensor(
                 deferred_shape, device_, dtype_,
                 [source = std::move(source), dim, start, end]() mutable {
                     Tensor materialized = source;
@@ -298,6 +305,8 @@ namespace lfs::core {
                     return materialized.slice(dim, start, end);
                 },
                 std::move(deferred_inputs));
+            deferred.set_stream(source_stream);
+            return deferred;
         }
 
         // ZERO-COPY SLICE: Adjust offset and shape - NO DATA COPYING!

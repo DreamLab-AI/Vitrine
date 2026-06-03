@@ -34,6 +34,11 @@ namespace lfs::vis {
             return r;
         }
 
+        [[nodiscard]] bool isImageWithAlpha(const lfs::core::Tensor& image) {
+            return image.ndim() == 3 &&
+                   ((image.shape()[0] == 4) || (image.shape()[2] == 4));
+        }
+
         [[nodiscard]] lfs::core::Tensor applyStandaloneAppearance(
             const lfs::core::Tensor& rgb,
             SceneManager& scene_mgr,
@@ -47,25 +52,30 @@ namespace lfs::vis {
 
             const bool was_hwc = (rgb.ndim() == 3 && rgb.shape()[2] == 3);
             const auto input = was_hwc ? rgb.permute({2, 0, 1}).contiguous() : rgb;
-            const bool is_training_camera = (camera_uid >= 0 && camera_uid < ppisp->num_frames());
+            const bool is_training_camera = ppisp->is_known_frame(camera_uid);
             const bool has_controller = use_controller && scene_mgr.hasAppearanceController();
+            const int camera_idx = is_training_camera ? ppisp->camera_index(ppisp->camera_for_frame(camera_uid)) : 0;
 
             lfs::core::Tensor result;
 
             if (has_controller) {
                 auto* pool = scene_mgr.getAppearanceControllerPool();
-                const int controller_idx = camera_uid >= 0 ? camera_uid % pool->num_cameras() : 0;
+                const int controller_idx =
+                    (camera_idx >= 0 && camera_idx < pool->num_cameras()) ? camera_idx : 0;
                 const auto params = pool->predict(controller_idx, input.unsqueeze(0), 1.0f);
                 result = overrides.isIdentity()
-                             ? ppisp->apply_with_controller_params(input, params, 0)
+                             ? ppisp->apply_with_controller_params(input, params, controller_idx)
                              : ppisp->apply_with_controller_params_and_overrides(
-                                   input, params, 0, toRenderOverrides(overrides));
+                                   input, params, controller_idx, toRenderOverrides(overrides));
             } else if (is_training_camera) {
+                const int camera_id = ppisp->camera_for_frame(camera_uid);
                 result = overrides.isIdentity()
-                             ? ppisp->apply(input, camera_uid, camera_uid)
+                             ? ppisp->apply(input, camera_id, camera_uid)
                              : ppisp->apply_with_overrides(
-                                   input, camera_uid, camera_uid, toRenderOverrides(overrides));
+                                   input, camera_id, camera_uid, toRenderOverrides(overrides));
             } else {
+                // Keep manual overrides active on novel views by anchoring them to any valid learned PPISP
+                // frame/camera pair when no controller is available.
                 const int fallback_camera = ppisp->any_camera_id();
                 const int fallback_frame = ppisp->any_frame_uid();
                 result = overrides.isIdentity()
@@ -87,6 +97,29 @@ namespace lfs::vis {
             return image;
         }
 
+        lfs::core::Tensor rgb_input = *image;
+        lfs::core::Tensor alpha;
+        const bool has_alpha = isImageWithAlpha(*image);
+        int alpha_concat_dim = 0;
+        if (has_alpha) {
+            if (image->shape()[0] == 4) {
+                alpha = image->slice(0, 3, 4).contiguous();
+                rgb_input = image->slice(0, 0, 3).contiguous();
+                alpha_concat_dim = 0;
+            } else {
+                alpha = image->slice(2, 3, 4).contiguous();
+                rgb_input = image->slice(2, 0, 3).contiguous();
+                alpha_concat_dim = 2;
+            }
+        }
+
+        const auto restore_alpha = [&](lfs::core::Tensor corrected_rgb) {
+            if (!has_alpha || !corrected_rgb.is_valid()) {
+                return corrected_rgb;
+            }
+            return lfs::core::Tensor::cat({corrected_rgb, alpha}, alpha_concat_dim).contiguous();
+        };
+
         if (const auto* tm = scene_manager->getTrainerManager()) {
             if (const auto* trainer = tm->getTrainer(); trainer && trainer->hasPPISP()) {
                 lfs::training::PPISPViewportOverrides trainer_overrides{};
@@ -100,7 +133,8 @@ namespace lfs::vis {
                 }
                 const bool use_controller = (settings.ppisp_mode == RenderSettings::PPISPMode::AUTO);
                 auto corrected = trainer->applyPPISPForViewport(
-                    *image, camera_uid, trainer_overrides, use_controller);
+                    rgb_input, camera_uid, trainer_overrides, use_controller);
+                corrected = restore_alpha(std::move(corrected));
                 return std::make_shared<lfs::core::Tensor>(std::move(corrected));
             }
         }
@@ -113,11 +147,12 @@ namespace lfs::vis {
                                     ? settings.ppisp_overrides
                                     : PPISPOverrides{};
         const bool use_controller = (settings.ppisp_mode == RenderSettings::PPISPMode::AUTO);
-        auto corrected = applyStandaloneAppearance(*image, *scene_manager, camera_uid, overrides, use_controller);
+        auto corrected = applyStandaloneAppearance(rgb_input, *scene_manager, camera_uid, overrides, use_controller);
         if (!corrected.is_valid()) {
-            return image;
+            return has_alpha ? std::make_shared<lfs::core::Tensor>(restore_alpha(rgb_input)) : image;
         }
 
+        corrected = restore_alpha(std::move(corrected));
         return std::make_shared<lfs::core::Tensor>(std::move(corrected));
     }
 

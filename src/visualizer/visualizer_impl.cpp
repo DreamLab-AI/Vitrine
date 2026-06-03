@@ -23,12 +23,12 @@
 #include "operator/ops/transform_ops.hpp"
 #include "python/python_runtime.hpp"
 #include "python/runner.hpp"
+#include "rendering/coordinate_conventions.hpp"
 #include "scene/scene_manager.hpp"
 #include "tools/align_tool.hpp"
 #include "tools/brush_tool.hpp"
 #include "tools/builtin_tools.hpp"
 #include "tools/selection_tool.hpp"
-#include <io/filesystem_utils.hpp>
 // clang-format off
 #include <glad/glad.h>
 // clang-format on
@@ -48,74 +48,15 @@ namespace lfs::vis {
 
     namespace {
 
-        constexpr float kMinSetViewVectorLength = 1e-6f;
-
-        bool isFiniteVec3(const glm::vec3& v) {
-            return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
-        }
-
-        glm::vec3 chooseFallbackUp(const glm::vec3& forward) {
-            constexpr glm::vec3 kCandidates[] = {
-                {0.0f, 1.0f, 0.0f},
-                {0.0f, 0.0f, 1.0f},
-                {1.0f, 0.0f, 0.0f},
-            };
-
-            glm::vec3 best = kCandidates[0];
-            float best_alignment = std::abs(glm::dot(forward, best));
-            for (const auto& candidate : kCandidates) {
-                const float alignment = std::abs(glm::dot(forward, candidate));
-                if (alignment < best_alignment) {
-                    best = candidate;
-                    best_alignment = alignment;
-                }
+        void wakeEventLoopViaServices() {
+            if (auto* const window_manager = services().windowOrNull()) {
+                window_manager->wakeEventLoop();
             }
-            return best;
         }
-
         std::optional<glm::mat3> buildValidatedViewRotation(const glm::vec3& eye,
                                                             const glm::vec3& target,
                                                             const glm::vec3& requested_up) {
-            if (!isFiniteVec3(eye) || !isFiniteVec3(target) || !isFiniteVec3(requested_up)) {
-                return std::nullopt;
-            }
-
-            const glm::vec3 view = target - eye;
-            const float view_length = glm::length(view);
-            if (view_length <= kMinSetViewVectorLength) {
-                return std::nullopt;
-            }
-
-            const glm::vec3 forward = view / view_length;
-
-            glm::vec3 up = requested_up;
-            const float up_length = glm::length(up);
-            if (up_length <= kMinSetViewVectorLength) {
-                up = chooseFallbackUp(forward);
-            } else {
-                up /= up_length;
-            }
-
-            glm::vec3 right = glm::cross(up, forward);
-            float right_length = glm::length(right);
-            if (right_length <= kMinSetViewVectorLength) {
-                up = chooseFallbackUp(forward);
-                right = glm::cross(up, forward);
-                right_length = glm::length(right);
-                if (right_length <= kMinSetViewVectorLength) {
-                    return std::nullopt;
-                }
-            }
-            right /= right_length;
-
-            glm::vec3 camera_up = glm::cross(forward, right);
-            const float camera_up_length = glm::length(camera_up);
-            if (camera_up_length <= kMinSetViewVectorLength) {
-                return std::nullopt;
-            }
-            camera_up /= camera_up_length;
-
-            return glm::mat3(right, camera_up, forward);
+            return lfs::rendering::tryMakeVisualizerLookAtRotation(eye, target, requested_up);
         }
 
     } // namespace
@@ -253,6 +194,8 @@ namespace lfs::vis {
     }
 
     void VisualizerImpl::setupPythonBridge() {
+        python::set_visualizer(this);
+        callback_cleanup_.add([] { python::set_visualizer(nullptr); });
         python::set_trainer_manager(trainer_manager_.get());
         callback_cleanup_.add([] { python::set_trainer_manager(nullptr); });
         python::set_parameter_manager(parameter_manager_.get());
@@ -265,12 +208,8 @@ namespace lfs::vis {
         callback_cleanup_.add([] { python::set_operator_callbacks(nullptr); });
         python::set_gui_manager(gui_manager_.get());
         callback_cleanup_.add([] { python::set_gui_manager(nullptr); });
-        python::set_redraw_wakeup_callback([]() {
-            SDL_Event event{};
-            event.type = SDL_EVENT_USER;
-            SDL_PushEvent(&event);
-        });
-        callback_cleanup_.add([] { python::set_redraw_wakeup_callback(nullptr); });
+        python::set_main_loop_wake_callback(&wakeEventLoopViaServices);
+        callback_cleanup_.add([] { python::set_main_loop_wake_callback(nullptr); });
         python::set_mesh2splat_callbacks(
             [](std::shared_ptr<core::MeshData> mesh, std::string name, core::Mesh2SplatOptions opts) {
                 auto* gm = python::get_gui_manager();
@@ -369,6 +308,7 @@ namespace lfs::vis {
                                : fmt == core::ExportFormat::SPZ         ? "SPZ"
                                : fmt == core::ExportFormat::HTML_VIEWER ? "HTML"
                                : fmt == core::ExportFormat::USD         ? "USD"
+                               : fmt == core::ExportFormat::NUREC_USDZ  ? "USDZ"
                                                                         : "file";
                 return state;
             },
@@ -590,7 +530,7 @@ namespace lfs::vis {
                     names.emplace_back(node_names[i]);
                 }
                 gm->asyncTasks().performExport(static_cast<lfs::core::ExportFormat>(format),
-                                               std::filesystem::path(path), names, sh_degree);
+                                               lfs::core::utf8_to_path(path), names, sh_degree);
             }
         });
         callback_cleanup_.add([] { python::set_export_callback(nullptr); });
@@ -693,6 +633,7 @@ namespace lfs::vis {
                 auto s = rendering_manager_->getSettings();
                 vis::apply_proxy(s, proxy);
                 rendering_manager_->updateSettings(s);
+                wakeMainLoop();
             });
         callback_cleanup_.add([] { vis::set_render_settings_callbacks(nullptr, nullptr); });
     }
@@ -708,6 +649,7 @@ namespace lfs::vis {
 
     void VisualizerImpl::beginShutdown([[maybe_unused]] const std::string_view reason) {
         std::vector<WorkItem> pending_work;
+        std::vector<WorkItem> pending_render_work;
         {
             std::lock_guard lock(work_queue_mutex_);
             if (shutdown_started_)
@@ -715,9 +657,14 @@ namespace lfs::vis {
             shutdown_started_ = true;
             accepting_work_ = false;
             pending_work.swap(work_queue_);
+            pending_render_work.swap(render_work_queue_);
         }
 
         for (auto& work : pending_work) {
+            if (work.cancel)
+                work.cancel();
+        }
+        for (auto& work : pending_render_work) {
             if (work.cancel)
                 work.cancel();
         }
@@ -750,10 +697,8 @@ namespace lfs::vis {
             performReset();
         });
 
-        cmd::ClearScene::when([this](const auto&) {
-            if (auto* const param_mgr = services().paramsOrNull()) {
-                param_mgr->resetToDefaults();
-            }
+        cmd::NewProject::when([this](const auto&) {
+            handleNewProject();
         });
 
         // Undo/Redo commands (require command_history_ which lives here)
@@ -767,15 +712,11 @@ namespace lfs::vis {
         state::SceneChanged::when([this](const auto& event) {
             python::set_scene_mutation_flags(event.mutation_flags);
             python::bump_scene_generation();
-            if (window_manager_) {
-                window_manager_->requestRedraw();
-            }
+            wakeMainLoop();
         });
 
         ui::PointCloudModeChanged::when([this](const auto&) {
-            if (window_manager_) {
-                window_manager_->requestRedraw();
-            }
+            wakeMainLoop();
         });
 
         ui::AppearanceModelLoaded::when([this](const auto& e) {
@@ -908,7 +849,6 @@ namespace lfs::vis {
 
         // Initialize rendering early so we can show a frame before font atlas build
         if (!rendering_manager_->isInitialized()) {
-            rendering_manager_->setInitialViewportSize(viewport_.windowSize);
             rendering_manager_->initialize();
         }
 
@@ -917,6 +857,7 @@ namespace lfs::vis {
             RenderingManager::RenderContext ctx{
                 .viewport = viewport_,
                 .settings = rendering_manager_->getSettings(),
+                .logical_screen_size = window_manager_->getWindowSize(),
                 .viewport_region = nullptr,
                 .scene_manager = scene_manager_.get()};
             rendering_manager_->renderFrame(ctx);
@@ -968,9 +909,17 @@ namespace lfs::vis {
                 std::lock_guard lock(work_queue_mutex_);
                 work.swap(work_queue_);
             }
-            for (auto& item : work) {
-                if (item.run)
-                    item.run();
+            for (size_t i = 0; i < work.size(); ++i) {
+                try {
+                    if (work[i].run)
+                        work[i].run();
+                } catch (...) {
+                    for (size_t j = i + 1; j < work.size(); ++j) {
+                        if (work[j].cancel)
+                            work[j].cancel();
+                    }
+                    throw;
+                }
             }
         }
 
@@ -990,6 +939,13 @@ namespace lfs::vis {
         }
         if (selection_tool_ && selection_tool_->isEnabled() && tool_context_) {
             selection_tool_->update(*tool_context_);
+        }
+
+        if (pending_new_project_ && trainer_manager_ &&
+            trainer_manager_->canPerform(TrainingAction::ClearScene)) {
+            pending_new_project_ = false;
+            trainer_manager_->waitForCompletion();
+            performNewProject();
         }
 
         if (pending_reset_ && trainer_manager_ && !trainer_manager_->isTrainingActive()) {
@@ -1090,6 +1046,7 @@ namespace lfs::vis {
         RenderingManager::RenderContext context{
             .viewport = viewport_,
             .settings = rendering_manager_->getSettings(),
+            .logical_screen_size = window_manager_->getWindowSize(),
             .viewport_region = has_viewport_region ? &viewport_region : nullptr,
             .scene_manager = scene_manager_.get()};
 
@@ -1105,6 +1062,31 @@ namespace lfs::vis {
         const bool resize_done = rendering_manager_->consumeResizeCompleted();
         if (resize_done)
             glFinish();
+
+        {
+            std::vector<WorkItem> render_work;
+            {
+                std::lock_guard lock(work_queue_mutex_);
+                render_work.swap(render_work_queue_);
+            }
+            if (!render_work.empty()) {
+                processing_render_work_ = true;
+                for (size_t i = 0; i < render_work.size(); ++i) {
+                    try {
+                        if (render_work[i].run)
+                            render_work[i].run();
+                    } catch (...) {
+                        for (size_t j = i + 1; j < render_work.size(); ++j) {
+                            if (render_work[j].cancel)
+                                render_work[j].cancel();
+                        }
+                        processing_render_work_ = false;
+                        throw;
+                    }
+                }
+                processing_render_work_ = false;
+            }
+        }
 
         window_manager_->swapBuffers();
 
@@ -1277,15 +1259,98 @@ namespace lfs::vis {
         scene_manager_->consolidateNodeModels();
     }
 
-    void VisualizerImpl::clearScene() {
-        data_loader_->clearScene();
+    std::expected<void, std::string> VisualizerImpl::clearScene() {
+        if (!data_loader_) {
+            return std::unexpected("No data loader available");
+        }
+
+        if (data_loader_->clearScene()) {
+            return {};
+        }
+
+        if (trainer_manager_ && scene_manager_ &&
+            scene_manager_->getContentType() == SceneManager::ContentType::Dataset &&
+            !trainer_manager_->canPerform(TrainingAction::ClearScene)) {
+            return std::unexpected(
+                std::string(trainer_manager_->getActionBlockedReason(TrainingAction::ClearScene)));
+        }
+
+        return std::unexpected("Scene clear request was rejected");
+    }
+
+    void VisualizerImpl::handleNewProject() {
+        if (gui_manager_) {
+            gui_manager_->asyncTasks().cancelImport();
+        }
+
+        pending_view_paths_.clear();
+        pending_dataset_path_.clear();
+        pending_auto_train_ = false;
+        pending_reset_ = false;
+
+        if (trainer_manager_ && !trainer_manager_->canPerform(TrainingAction::ClearScene)) {
+            pending_new_project_ = true;
+            if (trainer_manager_->canStop()) {
+                trainer_manager_->stopTraining();
+            }
+            return;
+        }
+
+        pending_new_project_ = false;
+        performNewProject();
+    }
+
+    void VisualizerImpl::performNewProject() {
+        if (!data_loader_ || !data_loader_->clearScene()) {
+            return;
+        }
+        resetProjectState();
+    }
+
+    void VisualizerImpl::resetProjectState() {
+        if (auto* const param_mgr = services().paramsOrNull()) {
+            param_mgr->clearSession();
+        }
+
+        if (data_loader_) {
+            data_loader_->setParameters({});
+        }
+
+        pending_view_paths_.clear();
+        pending_dataset_path_.clear();
+        pending_auto_train_ = false;
+        pending_new_project_ = false;
+        pending_reset_ = false;
+    }
+
+    void VisualizerImpl::wakeMainLoop() const {
+        if (window_manager_)
+            window_manager_->wakeEventLoop();
     }
 
     bool VisualizerImpl::postWork(WorkItem work) {
-        std::lock_guard lock(work_queue_mutex_);
-        if (!accepting_work_)
-            return false;
-        work_queue_.push_back(std::move(work));
+        {
+            std::lock_guard lock(work_queue_mutex_);
+            if (!accepting_work_)
+                return false;
+            work_queue_.push_back(std::move(work));
+        }
+
+        wakeMainLoop();
+
+        return true;
+    }
+
+    bool VisualizerImpl::postRenderWork(WorkItem work) {
+        {
+            std::lock_guard lock(work_queue_mutex_);
+            if (!accepting_work_)
+                return false;
+            render_work_queue_.push_back(std::move(work));
+        }
+
+        wakeMainLoop();
+
         return true;
     }
 
@@ -1344,28 +1409,41 @@ namespace lfs::vis {
             return;
         }
 
+        const auto preserved_camera = viewport_.camera;
+
         const auto& init_path = data_loader_->getParameters().init_path;
         if (auto* const param_mgr = services().paramsOrNull(); param_mgr && param_mgr->ensureLoaded()) {
             auto params = param_mgr->createForDataset(path, {});
             if (trainer_manager_) {
                 params.dataset = trainer_manager_->getEditableDatasetParams();
                 params.dataset.data_path = path;
-
-                auto ply_in_sparse = lfs::io::find_file_in_paths(
-                    lfs::io::get_colmap_search_paths(path), "points3D.ply");
-                if (!ply_in_sparse.empty()) {
-                    params.init_path = std::nullopt;
-                    LOG_INFO("Reset: using points3D.ply from {}", lfs::core::path_to_utf8(ply_in_sparse));
-                } else {
-                    params.init_path = init_path;
-                }
+                params.init_path = init_path;
             }
             data_loader_->setParameters(params);
         }
 
+        const auto restore_camera = [this, &preserved_camera]() {
+            viewport_.camera = preserved_camera;
+            if (selection_tool_ && selection_tool_->isEnabled()) {
+                selection_tool_->syncDepthFilterToCamera(viewport_);
+            }
+            if (rendering_manager_) {
+                rendering_manager_->markDirty(DirtyFlag::CAMERA);
+            }
+            ui::CameraMove{
+                .rotation = viewport_.getRotationMatrix(),
+                .translation = viewport_.getTranslation()}
+                .emit();
+            wakeMainLoop();
+        };
+
         if (const auto result = data_loader_->loadDataset(path); !result) {
             LOG_ERROR("Reset reload failed: {}", result.error());
+            restore_camera();
+            return;
         }
+
+        restore_camera();
     }
 
     void VisualizerImpl::handleLoadFileCommand([[maybe_unused]] const lfs::core::events::cmd::LoadFile& cmd) {
@@ -1380,6 +1458,12 @@ namespace lfs::vis {
         }
         result->apply_step_scaling();
         parameter_manager_->importParams(*result);
+        parameter_manager_->markDirty();
+
+        // Bump scene generation so all panels (e.g. training panel) pick up
+        // the new parameter values.  Without this, importing a config after a
+        // dataset is already loaded leaves the UI showing stale defaults.
+        python::bump_scene_generation();
     }
 
     void VisualizerImpl::handleTrainingCompleted([[maybe_unused]] const state::TrainingCompleted& event) {

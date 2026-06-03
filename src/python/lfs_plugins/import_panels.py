@@ -6,6 +6,7 @@ from pathlib import Path
 
 import lichtfeld as lf
 
+from . import rml_widgets as w
 from .types import Panel
 from .rml_keys import KI_ESCAPE, KI_RETURN
 
@@ -37,11 +38,23 @@ class _ImportDialogPanel(Panel):
     def on_mount(self, doc):
         super().on_mount(doc)
         self._last_lang = lf.ui.get_current_language()
+        self._escape_revert = w.EscapeRevertController()
         doc.add_event_listener("keydown", self._on_keydown)
         self._form = doc.get_element_by_id(self.form_id) if self.form_id else None
         if self._form:
             self._form.add_event_listener("submit", self._on_form_submit)
             self._form.add_event_listener("change", self._on_form_change)
+        for el in doc.query_selector_all('input[type="text"]'):
+            prop = el.get_attribute("data-value", "")
+            if not prop:
+                continue
+            w.bind_select_all_on_focus(el)
+            self._escape_revert.bind(
+                el,
+                prop,
+                lambda p=prop: self._capture_bound_input_value(p),
+                lambda snapshot, p=prop: self._restore_bound_input_value(p, snapshot),
+            )
 
     def _on_keydown(self, event):
         key = int(event.get_parameter("key_identifier", "0"))
@@ -51,6 +64,16 @@ class _ImportDialogPanel(Panel):
         elif key == KI_ESCAPE:
             self._on_do_cancel()
             event.stop_propagation()
+
+    def _capture_bound_input_value(self, prop: str) -> str:
+        return str(getattr(self, f"_{prop}", "") or "")
+
+    def _restore_bound_input_value(self, prop: str, snapshot) -> None:
+        attr = f"_{prop}"
+        if hasattr(self, attr):
+            setattr(self, attr, str(snapshot or ""))
+        if hasattr(self, "_dirty_model"):
+            self._dirty_model()
 
     def _on_form_submit(self, event):
         if self._can_submit_from_keyboard():
@@ -93,7 +116,9 @@ class DatasetImportPanel(_ImportDialogPanel):
         _dataset_import_panel = self
 
         self._handle = None
+        self._dataset_path = ""
         self._dataset_info = None
+        self._dataset_valid = False
         self._output_path = ""
         self._init_path = ""
         self._ppisp_sidecar_path = ""
@@ -112,12 +137,14 @@ class DatasetImportPanel(_ImportDialogPanel):
         model.bind_func("images_count_text", self._images_count_text)
         model.bind_func("mask_count_text", self._mask_count_text)
         model.bind_func("show_masks", lambda: bool(self._dataset_info and getattr(self._dataset_info, "has_masks", False)))
-        model.bind_func("can_load", lambda: bool(self._dataset_info and self._output_path.strip()))
+        model.bind_func("can_load", lambda: bool(self._dataset_valid and self._output_path.strip()))
 
+        model.bind("dataset_path", lambda: self._dataset_path, self._set_dataset_path)
         model.bind("output_path", lambda: self._output_path, self._set_output_path)
         model.bind("init_path", lambda: self._init_path, self._set_init_path)
         model.bind("ppisp_sidecar_path", lambda: self._ppisp_sidecar_path, self._set_ppisp_sidecar_path)
 
+        model.bind_event("browse_dataset", self._on_browse_dataset)
         model.bind_event("browse_output", self._on_browse_output)
         model.bind_event("browse_init", self._on_browse_init)
         model.bind_event("browse_ppisp_sidecar", self._on_browse_ppisp_sidecar)
@@ -136,12 +163,9 @@ class DatasetImportPanel(_ImportDialogPanel):
         return False
 
     def show(self, dataset_path: str) -> bool:
-        info = lf.detect_dataset_info(dataset_path)
-        if not info:
+        if not self._apply_dataset_path(dataset_path, reset_output=True):
             return False
 
-        self._dataset_info = info
-        self._output_path = str(Path(info.base_path) / "output")
         self._init_path = ""
         params = lf.optimization_params()
         self._ppisp_sidecar_path = (
@@ -152,7 +176,51 @@ class DatasetImportPanel(_ImportDialogPanel):
         return True
 
     def _can_submit_from_keyboard(self) -> bool:
-        return bool(self._dataset_info and self._output_path.strip())
+        return bool(self._dataset_valid and self._output_path.strip())
+
+    def _preview_base_path(self, dataset_path: str) -> Path:
+        path = Path(dataset_path)
+        if path.suffix.lower() == ".json":
+            return path.parent
+        return path
+
+    def _default_output_path(self, dataset_path: str, info) -> str:
+        preview_root = self._preview_base_path(dataset_path)
+        base_path = Path(info.base_path) if info is not None else preview_root
+        return str(base_path / "output")
+
+    def _apply_dataset_path(self, dataset_path: str, reset_output: bool) -> bool:
+        next_value = str(dataset_path).strip()
+        dataset_changed = next_value != self._dataset_path
+        self._dataset_path = next_value
+        self._dataset_valid = bool(next_value) and lf.is_dataset_path(next_value)
+        self._dataset_info = None
+
+        if dataset_changed:
+            self._init_path = ""
+            self._ppisp_sidecar_path = ""
+
+        if self._dataset_valid:
+            self._dataset_info = lf.detect_dataset_info(str(self._preview_base_path(next_value)))
+            if reset_output:
+                self._output_path = self._default_output_path(next_value, self._dataset_info)
+        elif reset_output:
+            self._output_path = ""
+
+        self._dirty_model(
+            "dataset_path",
+            "images_path",
+            "sparse_path",
+            "masks_path",
+            "images_count_text",
+            "mask_count_text",
+            "show_masks",
+            "output_path",
+            "init_path",
+            "ppisp_sidecar_path",
+            "can_load",
+        )
+        return self._dataset_valid
 
     def _dirty_model(self, *fields):
         if not self._handle:
@@ -186,6 +254,12 @@ class DatasetImportPanel(_ImportDialogPanel):
         self._output_path = next_value
         self._dirty_model("output_path", "can_load")
 
+    def _set_dataset_path(self, value):
+        next_value = str(value)
+        if next_value == self._dataset_path:
+            return
+        self._apply_dataset_path(next_value, reset_output=True)
+
     def _set_init_path(self, value):
         next_value = str(value)
         if next_value == self._init_path:
@@ -200,20 +274,25 @@ class DatasetImportPanel(_ImportDialogPanel):
         self._ppisp_sidecar_path = next_value
         self._dirty_model("ppisp_sidecar_path")
 
+    def _on_browse_dataset(self, _handle=None, _ev=None, _args=None):
+        path = lf.ui.open_dataset_folder_dialog()
+        if path:
+            self._set_dataset_path(path)
+
     def _on_browse_output(self, _handle=None, _ev=None, _args=None):
         path = lf.ui.open_dataset_folder_dialog()
         if path:
             self._set_output_path(path)
 
     def _on_browse_init(self, _handle=None, _ev=None, _args=None):
-        if self._dataset_info is None:
+        if not self._dataset_path.strip():
             return
-        path = lf.ui.open_ply_file_dialog(str(self._dataset_info.base_path))
+        path = lf.ui.open_ply_file_dialog(str(self._preview_base_path(self._dataset_path)))
         if path:
             self._set_init_path(path)
 
     def _on_browse_ppisp_sidecar(self, _handle=None, _ev=None, _args=None):
-        start_dir = str(self._dataset_info.base_path) if self._dataset_info is not None else ""
+        start_dir = str(self._preview_base_path(self._dataset_path)) if self._dataset_path else ""
         if self._ppisp_sidecar_path:
             start_dir = self._ppisp_sidecar_path
         path = lf.ui.open_ppisp_file_dialog(start_dir)
@@ -221,10 +300,10 @@ class DatasetImportPanel(_ImportDialogPanel):
             self._set_ppisp_sidecar_path(path)
 
     def _on_do_load(self, _handle=None, _ev=None, _args=None):
-        if self._dataset_info is None or not self._output_path.strip():
+        if not self._dataset_valid or not self._output_path.strip():
             return
 
-        base_path = str(self._dataset_info.base_path)
+        dataset_path = self._dataset_path.strip()
         init_path = self._init_path.strip()
         ppisp_sidecar_path = self._ppisp_sidecar_path.strip()
 
@@ -237,7 +316,7 @@ class DatasetImportPanel(_ImportDialogPanel):
 
         lf.ui.set_panel_enabled(self.id, False)
         lf.load_file(
-            base_path,
+            dataset_path,
             is_dataset=True,
             output_path=self._output_path.strip(),
             init_path=init_path,

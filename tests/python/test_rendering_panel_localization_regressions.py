@@ -78,7 +78,20 @@ def rendering_panel_module(monkeypatch):
 
 def test_rendering_panel_section_headers_use_literals_without_missing_keys(rendering_panel_module):
     requested_keys = []
-    rendering_panel_module.lf.ui.tr = lambda key: requested_keys.append(key) or key
+    translations = {
+        "rendering_panel.section_simplify": "Simplify Localized",
+        "rendering_panel.simplify_source": "Input Source",
+        "rendering_panel.simplify_select_source": "Pick a splat",
+        "rendering_panel.simplify_target": "Goal",
+        "rendering_panel.simplify_knn_k": "Neighbors",
+        "rendering_panel.simplify_merge_cap": "Merge Limit",
+        "rendering_panel.simplify_opacity_prune": "Opacity Cutoff",
+        "rendering_panel.simplify_original": "Before",
+        "rendering_panel.simplify_output": "Result",
+        "common.apply": "Run",
+        "common.cancel": "Abort",
+    }
+    rendering_panel_module.lf.ui.tr = lambda key: requested_keys.append(key) or translations.get(key, key)
     model = _BindingModelStub()
     panel = rendering_panel_module.RenderingPanel()
 
@@ -86,9 +99,22 @@ def test_rendering_panel_section_headers_use_literals_without_missing_keys(rende
 
     assert model.func_bindings["label_hdr_viewport"]() == "Viewport"
     assert model.func_bindings["label_hdr_camera"]() == "Camera & Projection"
+    assert model.func_bindings["label_hdr_simplify"]() == "Simplify Localized"
     assert model.func_bindings["label_hdr_selection"]() == "Selection & Overlays"
     assert model.func_bindings["label_hdr_post_process"]() == "Post Processing"
+    assert model.func_bindings["label_simplify_source"]() == "Input Source:"
+    assert model.func_bindings["label_simplify_select_source"]() == "Pick a splat"
+    assert model.func_bindings["label_simplify_target"]() == "Goal:"
+    assert model.func_bindings["label_simplify_target_stat"]() == "Goal"
+    assert model.func_bindings["label_simplify_knn_k"]() == "Neighbors:"
+    assert model.func_bindings["label_simplify_merge_cap"]() == "Merge Limit:"
+    assert model.func_bindings["label_simplify_opacity_prune"]() == "Opacity Cutoff:"
+    assert model.func_bindings["label_simplify_original"]() == "Before"
+    assert model.func_bindings["label_simplify_output"]() == "Result:"
+    assert model.func_bindings["label_simplify_apply"]() == "Run"
+    assert model.func_bindings["label_simplify_cancel"]() == "Abort"
     assert "rendering_panel.section_viewport" not in requested_keys
     assert "rendering_panel.section_camera" not in requested_keys
+    assert "rendering_panel.section_simplify" in requested_keys
     assert "rendering_panel.section_selection" not in requested_keys
     assert "rendering_panel.section_post_process" not in requested_keys

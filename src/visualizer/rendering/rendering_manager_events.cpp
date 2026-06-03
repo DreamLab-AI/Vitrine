@@ -21,6 +21,8 @@ namespace lfs::vis {
         ui::WindowResized::when([this](const auto&) { handleWindowResized(); });
         ui::GridSettingsChanged::when([this](const auto& event) { handleGridSettingsChanged(event); });
         ui::NodeSelected::when([this](const auto&) { triggerSelectionFlash(); });
+        state::TrainingStarted::when([this](const auto&) { handleTrainingStarted(); });
+        state::TrainingCompleted::when([this](const auto&) { handleTrainingCompleted(); });
         state::SceneLoaded::when([this](const auto&) { handleSceneLoaded(); });
         state::SceneChanged::when([this](const auto&) { handleSceneChanged(); });
         state::SceneCleared::when([this](const auto&) { handleSceneCleared(); });
@@ -52,6 +54,7 @@ namespace lfs::vis {
         {
             std::lock_guard<std::mutex> lock(settings_mutex_);
             result = split_view_service_.toggleMode(settings_, SplitViewMode::IndependentDual, event.viewport);
+            syncGridPlanesLocked(settings_.grid_plane);
             markDirty(DirtyFlag::SPLIT_VIEW | DirtyFlag::CAMERA);
         }
         applySplitModeChange(result);
@@ -70,6 +73,9 @@ namespace lfs::vis {
         }
 
         applySplitModeChange(result);
+        if (!splitViewUsesGTComparison(result.current_mode)) {
+            invalidateCameraMetricsRequests(true);
+        }
     }
 
     void RenderingManager::handleGoToCamView(const int cam_id) {
@@ -128,17 +134,37 @@ namespace lfs::vis {
     void RenderingManager::handleGridSettingsChanged(const ui::GridSettingsChanged& event) {
         std::lock_guard<std::mutex> lock(settings_mutex_);
         settings_.show_grid = event.enabled;
-        settings_.grid_plane = event.plane;
+        settings_.grid_plane = clampGridPlane(event.plane);
         settings_.grid_opacity = event.opacity;
+        if (split_view_service_.isIndependentDualActive(settings_)) {
+            panel_grid_planes_[splitViewPanelIndex(split_view_service_.focusedPanel())] = settings_.grid_plane;
+        } else {
+            syncGridPlanesLocked(settings_.grid_plane);
+        }
         LOG_TRACE("Grid settings updated - enabled: {}, plane: {}, opacity: {}",
-                  event.enabled, event.plane, event.opacity);
+                  event.enabled, settings_.grid_plane, event.opacity);
+        markDirty(DirtyFlag::OVERLAY);
+    }
+
+    void RenderingManager::handleTrainingStarted() {
+        clearFrustumThumbnailState();
+        invalidateFrustumImageLoaderSync(true);
+        syncFrustumImageLoader(viewport_interaction_context_.scene_manager);
+        markDirty(DirtyFlag::OVERLAY);
+    }
+
+    void RenderingManager::handleTrainingCompleted() {
+        invalidateFrustumImageLoaderSync();
+        syncFrustumImageLoader(viewport_interaction_context_.scene_manager);
         markDirty(DirtyFlag::OVERLAY);
     }
 
     void RenderingManager::handleSceneLoaded() {
         LOG_DEBUG("Scene loaded, marking render dirty");
+        invalidateFrustumImageLoaderSync();
         markDirty();
         gt_texture_cache_.clear();
+        invalidateCameraMetricsRequests(true);
         camera_interaction_service_.clearCurrentCamera();
         camera_interaction_service_.clearHoveredCamera();
 
@@ -146,6 +172,7 @@ namespace lfs::vis {
         {
             std::lock_guard<std::mutex> lock(settings_mutex_);
             result = split_view_service_.handleSceneLoaded(settings_);
+            syncGridPlanesLocked(settings_.grid_plane);
         }
         applySplitModeChange(result);
         if (splitViewUsesGTComparison(result.previous_mode) && !splitViewUsesGTComparison(result.current_mode)) {
@@ -162,14 +189,19 @@ namespace lfs::vis {
         viewport_artifact_service_.clearViewportOutput();
         pass_graph_.resetPointCloudCache();
         gt_texture_cache_.clear();
+        invalidateCameraMetricsRequests(true);
+        invalidateFrustumImageLoaderSync();
         SplitViewService::ModeChangeResult result;
         {
             std::lock_guard<std::mutex> lock(settings_mutex_);
             result = split_view_service_.handleSceneCleared(settings_);
+            syncGridPlanesLocked(settings_.grid_plane);
         }
+        clearFrustumThumbnailState();
         if (engine_) {
-            engine_->clearFrustumCache();
+            engine_->setFrustumImageLoader(nullptr, false);
         }
+        storeFrustumImageLoaderSyncState({}, false, false);
         camera_interaction_service_.clearCurrentCamera();
         camera_interaction_service_.clearHoveredCamera();
         frame_lifecycle_service_.resetModelTracking();

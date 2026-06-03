@@ -35,7 +35,6 @@
     "help.about": "LichtFeld Studioについて"
   },
   "window": {
-    "getting_started": "はじめに",
     "about": "LichtFeld Studioについて",
     "input_settings": "入力設定",
     "debug_info": "デバッグ情報",
@@ -43,21 +42,20 @@
     "scene": "シーン",
     "rendering": "レンダリング",
     "training": "トレーニング",
-    "preferences": "環境設定"
+    "preferences": "環境設定",
+    "histogram": "Histogram"
   },
   "getting_started": {
-    "title": "クイックスタートガイド",
+    "title": "はじめに",
     "description": "データセットの準備方法とLichtFeld Studioの使い方を学びましょう:",
     "wiki_section": "Wiki & よくある質問",
+    "video_automotive": "3dgs for automotive marketing",
     "video_intro": "360°正距円筒図法画像でのトレーニング",
     "video_latest": "LichtFeld v0.3.0 機能概要",
     "video_reality_scan": "Reality Scanデータセット",
     "video_colmap": "COLMAPチュートリアル",
     "video_lichtfeld": "LichtFeldチュートリアル",
-    "video_masks": "マスクチュートリアル",
-    "loading": "読み込み中...",
-    "wiki_label": "Wiki:",
-    "watch_tooltip": "視聴: {title}"
+    "video_masks": "マスクチュートリアル"
   },
   "about": {
     "title": "LICHTFELD STUDIO",
@@ -93,7 +91,7 @@
     "section.losses": "損失パラメータ",
     "section.initialization": "初期化",
     "section.thresholds": "しきい値",
-    "section.save_steps": "保存ステップ",
+    "section.save_steps": "保存/評価ステップ",
     "section.basic_params": "トレーニングパラメータ",
     "section.advanced_params": "詳細トレーニングパラメータ",
     "section.sparsity": "スパース設定",
@@ -105,6 +103,7 @@
     "dataset.cpu_cache": "CPU Cache:",
     "dataset.fs_cache": "FS Cache:",
     "dataset.output": "Output:",
+    "dataset.test_every": "Test Every:",
     "opt.strategy": "Strategy:",
     "opt.learning_rates": "Learning Rates:",
     "opt.iterations": "Iterations:",
@@ -180,7 +179,9 @@
     "tooltip.max_width": "最大画像幅（ピクセル）",
     "tooltip.cpu_cache": "デコード済み画像をRAMにキャッシュ",
     "tooltip.fs_cache": "デコード済み画像をディスクにキャッシュ",
-    "tooltip.save_steps": "チェックポイント保存のイテレーション",
+    "tooltip.test_every": "N枚ごとに画像をテストセットとして使用",
+    "tooltip.enable_eval": "トレーニング中の評価を有効にする（テストセットでPSNR/SSIMを計算）。トレーニング速度がわずかに低下します。",
+    "tooltip.save_steps": "チェックポイント保存と評価を実行するイテレーション（評価を有効にした場合）。評価は常にチェックポイントと同じイテレーションで実行されます。",
     "tooltip.lr_position": "ガウシアン位置の学習率",
     "tooltip.lr_sh_coeff": "球面調和関数の学習率",
     "tooltip.lr_opacity": "不透明度の学習率",
@@ -263,7 +264,74 @@
     "options.bg.color": "色",
     "options.bg.modulation": "変調",
     "options.bg.image": "画像",
-    "options.bg.random": "ランダム"
+    "options.bg.random": "ランダム",
+    "tooltip": {
+      "btn_switch_edit": "トレーニング済みシーンの編集モードに切り替え",
+      "ppisp_freeze_from_sidecar": "サイドカーファイルから PPISP の重みを読み込み",
+      "ppisp_sidecar_path": "PPISP サイドカーファイルのパス",
+      "ppisp_sidecar_browse": "PPISP サイドカーファイルを参照",
+      "ppisp_sidecar_clear": "選択した PPISP サイドカーをクリア",
+      "bg_color": "トレーニング中に使用する単色背景",
+      "bg_image_path": "トレーニング中に使用する背景画像のパス",
+      "bg_image_browse": "背景画像を参照",
+      "bg_image_clear": "選択した背景画像をクリア",
+      "dataset_path": "読み込まれたデータセットのパス",
+      "dataset_images": "データセット内の画像数",
+      "dataset_output": "学習済み成果物の出力ディレクトリ",
+      "opt_strategy_display": "アクティブな高密度化戦略",
+      "bilateral_grid_x": "バイラテラルグリッドの X 解像度",
+      "bilateral_grid_y": "バイラテラルグリッドの Y 解像度",
+      "bilateral_grid_w": "バイラテラルグリッドの色／輝度ビン",
+      "bilateral_grid_lr": "バイラテラルグリッドの学習率",
+      "prune_opacity": "この不透明度を下回るガウスを削除",
+      "revised_opacity": "改訂された不透明度の定式化を使用",
+      "min_opacity": "プルーニング用の最小不透明度しきい値",
+      "grow_scale_3d": "3D スケールがこの値を超えたら高密度化",
+      "grow_scale_2d": "2D スクリーン空間スケールがこの値を超えたら高密度化",
+      "prune_scale_3d": "3D スケールがこの値を超えたらプルーニング",
+      "prune_scale_2d": "2D スクリーン空間スケールがこの値を超えたらプルーニング",
+      "pause_refine_after_reset": "不透明度リセット後にリファインメントを停止する反復数",
+      "sparsify_steps": "スパース化ステップ数",
+      "init_rho": "初期スパース性ペナルティ (rho)",
+      "prune_ratio": "スパース化終了時に削除するガウスの最終割合",
+      "opt": {
+        "strategy": {
+          "mrnf": "MRNF リファインメント付きの標準 3DGS 戦略",
+          "igs_plus": "改良された成長／プルーニングを持つ 3DGS+",
+          "mcmc": "サンプリングベースの高密度化を持つ MCMC 戦略"
+        },
+        "sh_degree": {
+          "0": "拡散反射のみ — 最速、ビュー依存色なし",
+          "1": "一次 SH — 基本的なスペキュラ手がかり",
+          "2": "二次 SH — より良いビュー依存色",
+          "3": "三次 SH — 最高品質、最大 VRAM"
+        },
+        "tile_mode": {
+          "full": "完全解像度のラスタライズ",
+          "half": "半解像度ラスタライズ（約 4 倍高速）",
+          "quarter": "四分の一解像度ラスタライズ（約 16 倍高速）"
+        },
+        "mask_mode": {
+          "none": "画像全体で学習、マスクなし",
+          "segment": "前景にセグメンテーションマスクを使用",
+          "ignore": "損失でマスクされたピクセルを無視",
+          "alpha_consistent": "マスクとのアルファ一貫性を強制"
+        },
+        "bg_mode": {
+          "color": "固定の背景色を使用",
+          "modulation": "再構成されたアルファで背景をモジュレート",
+          "image": "背景画像を使用",
+          "random": "各ステップで背景色をランダム化"
+        },
+        "resize_factor": {
+          "auto": "VRAM に応じてリサイズ係数を自動選択",
+          "1": "元の画像解像度で学習",
+          "2": "半分の画像解像度で学習",
+          "4": "四分の一の画像解像度で学習",
+          "8": "八分の一の画像解像度で学習"
+        }
+      }
+    }
   },
   "scene": {
     "add_ply": "PLYを追加...",
@@ -300,8 +368,8 @@
     "background": "背景",
     "enable_for_training": "トレーニングに含める",
     "disable_for_training": "トレーニングから除外",
-    "enable_all_training": "すべてをトレーニングに含める",
-    "disable_all_training": "すべてをトレーニングから除外",
+    "enable_all_training": "選択したカメラを有効化",
+    "disable_all_training": "選択したカメラを無効化",
     "training_enabled_tooltip": "トレーニングに含まれています",
     "training_disabled_tooltip": "トレーニングから除外されています",
     "go_to_keyframe": "キーフレームビューに移動",
@@ -315,7 +383,10 @@
     "keyframe_easing.ease_out": "イーズアウト",
     "keyframe_easing.ease_in_out": "イーズインアウト",
     "keyframe_label": "キーフレーム {index}  ({time:.2f}s)",
-    "search": "検索"
+    "search": "検索",
+    "show_in_file_manager": "ファイルマネージャーで表示",
+    "go_to_image": "画像を表示",
+    "open_in_gt_compare": "GT 比較で開く"
   },
   "export": {
     "title": "エクスポート",
@@ -323,6 +394,7 @@
     "format.sog_supersplat": "SOG (SuperSplat)",
     "format.spz_niantic": "SPZ (Niantic)",
     "format.usd_openusd": "USD (OpenUSD)",
+    "format.usdz_nurec": "USDZ (NuRec)",
     "format.html_viewer": "HTMLビューアー",
     "select_models": "モデルを選択:",
     "all": "すべて",
@@ -372,6 +444,8 @@
     "step": "ステップ",
     "loss": "損失",
     "eta": "残り時間",
+    "psnr": "PSNR",
+    "ssim": "SSIM",
     "unknown": "不明",
     "dataset_no_trainer": "データセット (トレーナーなし)",
     "dataset_ready": "データセット (準備完了)",
@@ -439,6 +513,7 @@
     "equirectangular": "正距円筒図法",
     "gut_mode": "GUT (3DGUT)",
     "mip_filter": "ミップフィルター",
+    "camera_metrics": "カメラ指標",
     "appearance_correction": "PPISP Correction",
     "ppisp_mode": "Mode",
     "ppisp_mode_manual": "Manual",
@@ -472,7 +547,11 @@
     "mesh_shadow_enabled": "影",
     "mesh_shadow_resolution": "影の解像度",
     "camera_frustum_scale": "視錐台スケール",
-    "voxel_size": "ボクセルサイズ"
+    "voxel_size": "ボクセルサイズ",
+    "theme_vignette": "ビネット",
+    "theme_vignette_intensity": "ビネット強度",
+    "theme_vignette_radius": "ビネット半径",
+    "theme_vignette_softness": "ビネットの柔らかさ"
   },
   "toolbar": {
     "selection": "選択 (1)",
@@ -507,7 +586,8 @@
     "perspective": "透視投影",
     "orthographic": "平行投影",
     "sequencer": "シーケンサー",
-    "ellipsoid": "Ellipsoid"
+    "ellipsoid": "Ellipsoid",
+    "histogram": "Histogram"
   },
   "transform": {
     "node": "ノード: %s",
@@ -550,7 +630,8 @@
     "idle": "待機中",
     "running": "実行中",
     "finished": "完了",
-    "save_steps": "保存ステップ",
+    "save_steps": "保存/評価ステップ",
+    "save_eval_steps": "保存/評価ステップ",
     "new_step": "新規ステップ",
     "no_save_steps": "保存ステップが設定されていません",
     "sparsity": "スパース設定",
@@ -575,6 +656,18 @@
     "ppisp_gamma_channel": "チャンネル別ガンマオフセット",
     "ppisp_crf_toe": "シャドウ圧縮（CRFカーブのトー）",
     "ppisp_crf_shoulder": "ハイライトロールオフ（CRFカーブのショルダー）",
+    "theme_vignette": "ビューポート端の暗化を有効化",
+    "theme_vignette_intensity": "ビネットの暗さを調整 (0-1)",
+    "theme_vignette_radius": "ビネットが始まる位置を調整 (0-1)",
+    "theme_vignette_softness": "ビネット境界の柔らかさを調整 (0-1)",
+    "simplify_source": "簡略化の入力として使う選択中のスプラットノード",
+    "simplify_target": "簡略化結果に残すガウシアン数の目標値",
+    "simplify_knn_k": "統合候補を評価するために使う近傍サイズ",
+    "simplify_merge_cap": "1回のパスで統合できるガウシアンの最大割合",
+    "simplify_opacity_prune": "統合前にこの不透明度しきい値未満のガウシアンを削除",
+    "simplify_output": "シーンに追加される新しい簡略化スプラットノードの名前",
+    "simplify_apply": "選択した入力から新しい簡略化スプラットノードを作成",
+    "simplify_cancel": "実行中のスプラット簡略化ジョブをキャンセル",
     "render_scale": "ビューア解像度（低い=VRAM削減）",
     "point_cloud_forced": "トレーニング開始前に強制",
     "desaturate_unselected": "未選択PLYを暗くする",
@@ -597,9 +690,13 @@
     "selection_colors": "選択範囲の可視化色",
     "seq_camera_path": "カメラパスの表示を切り替え",
     "seq_first": "最初のキーフレームに移動",
+    "seq_prev_keyframe": "前のキーフレームに移動",
+    "seq_prev": "前のキーフレームに移動",
     "seq_stop": "再生を停止",
     "seq_play": "アニメーションを再生",
     "seq_pause": "アニメーションを一時停止",
+    "seq_next_keyframe": "次のキーフレームに移動",
+    "seq_next": "次のキーフレームに移動",
     "seq_last": "最後のキーフレームに移動",
     "seq_loop_off": "ループ再生を有効にする",
     "seq_loop_on": "ループ再生を無効にする",
@@ -615,8 +712,75 @@
     "seq_quality": "CRF品質（低い値 = 高品質、ファイルサイズ大）",
     "seq_export": "カメラパスから動画をエクスポート",
     "seq_clear": "すべてのキーフレームを削除",
+    "seq_dock": "シーケンサーをドッキング",
+    "seq_undock": "シーケンサーのドッキングを解除",
     "seq_interval": "グリッドスナップ間隔",
-    "seq_preview_size": "PiPプレビュースケール"
+    "seq_preview_size": "PiPプレビュースケール",
+    "transform_position_axis": "この軸に沿って選択範囲を移動",
+    "transform_rotation_axis": "この軸を中心に選択範囲を回転 (度)",
+    "transform_scale_axis": "この軸に沿って選択範囲をスケール",
+    "transform_scale_uniform": "全軸に均一なスケール",
+    "transform_reset": "変換を初期状態にリセット",
+    "environment_mode": "背景ソース：単色または HDRI",
+    "environment_map_path": "HDRI 環境マップを選択",
+    "environment_exposure": "HDRI 露出 (EV ストップ)",
+    "environment_rotation": "垂直軸を中心に HDRI を回転",
+    "voxel_size": "空間クエリ用ボクセルセルサイズ",
+    "axes_size": "座標軸ラインの長さ",
+    "grid_plane": "グリッドを描画する平面",
+    "grid_opacity": "グリッド線の不透明度",
+    "camera_frustum_scale": "カメラフラスタムの表示スケール",
+    "camera_metrics_mode": "トレーニングカメラ上に画質指標を表示",
+    "selection_color_committed": "確定済み選択の色",
+    "selection_color_preview": "選択プレビューの色",
+    "selection_color_center_marker": "選択中心マーカーの色",
+    "mesh_wireframe": "メッシュをワイヤーフレームで表示",
+    "mesh_wireframe_color": "ワイヤーフレーム線の色",
+    "mesh_wireframe_width": "ワイヤーフレーム線の幅",
+    "mesh_light_intensity": "メッシュ光源の強度",
+    "mesh_ambient": "メッシュへの環境光寄与",
+    "mesh_backface_culling": "裏向きの三角形をレンダリングしない",
+    "mesh_shadow_enabled": "メッシュに影を投影・受光",
+    "mesh_shadow_resolution": "シャドウマップの解像度",
+    "ppisp_vignette_enabled": "補正の一部としてビネットを適用",
+    "ppisp_vignette_strength": "隅でのビネット暗化",
+    "opt": {
+      "environment_mode": {
+        "solid_color": "単色背景でレンダリング",
+        "equirect": "360° HDR 環境マップでレンダリング"
+      },
+      "environment_map_preset": {
+        "kloofendal": "組み込み：Kloofendal Pure Sky",
+        "alps": "組み込み：Alps Field",
+        "custom": "最後に読み込んだカスタム HDRI"
+      },
+      "grid_plane": {
+        "yz": "YZ 平面にグリッドを表示（右側ビュー）",
+        "xz": "XZ 平面にグリッドを表示（トップビュー）",
+        "xy": "XY 平面にグリッドを表示（フロントビュー）"
+      },
+      "sh_degree": {
+        "0": "拡散反射のみ — ビュー依存ライティングなし",
+        "1": "一次 SH — 基本的なビュー依存ライティング",
+        "2": "二次 SH — より細かい方向詳細",
+        "3": "三次 SH — 最高のビュー依存品質"
+      },
+      "camera_metrics": {
+        "off": "品質指標を非表示",
+        "psnr": "トレーニングカメラごとに PSNR を表示",
+        "psnr_ssim": "トレーニングカメラごとに PSNR と SSIM を表示"
+      },
+      "shadow_resolution": {
+        "512": "512×512 シャドウマップ（低品質、高速）",
+        "1024": "1024×1024 シャドウマップ（バランス）",
+        "2048": "2048×2048 シャドウマップ（高品質）",
+        "4096": "4096×4096 シャドウマップ（最高品質、低速）"
+      },
+      "ppisp_mode": {
+        "manual": "手動：補正スライダーを直接調整",
+        "auto": "自動：学習済みコントローラーで補正"
+      }
+    }
   },
   "exit_popup": {
     "title": "アプリケーションを終了しますか？",
@@ -766,7 +930,8 @@
     "ppisp_freeze_gaussians": "ガウシアン固定:",
     "disabled": "無効",
     "ppisp_freeze_from_sidecar": "Frozen Sidecar:",
-    "ppisp_sidecar_path": "Sidecar Path:"
+    "ppisp_sidecar_path": "Sidecar Path:",
+    "enable_eval": "Enable Eval:"
   },
   "image_preview": {
     "title": "イメージプレビュー",
@@ -826,7 +991,10 @@
     "no_image": "画像なし",
     "zoom": "ズーム",
     "fit": "フィット",
-    "storage_section": "ストレージ"
+    "storage_section": "ストレージ",
+    "color_picker": "スポイト",
+    "rotate_left": "90° 左に回転",
+    "rotate_right": "90° 右に回転"
   },
   "startup": {
     "supported_by": "サポート",
@@ -969,7 +1137,9 @@
     "confirm_uninstall_message": "「{name}」を本当にアンインストールしますか？",
     "confirm_uninstall_yes": "はい",
     "confirm_uninstall_no": "いいえ",
-    "load_on_startup": "起動時に読み込む"
+    "load_on_startup": "起動時に読み込む",
+    "view.grid": "グリッド表示",
+    "view.list": "リスト表示"
   },
   "sequencer": {
     "edit_focal_length": "焦点距離を編集...",
@@ -1005,7 +1175,16 @@
     "keyframe_preview": "キーフレーム {} プレビュー"
   },
   "rendering_panel": {
-    "fov_format": "FOV: {hfov:.1f}° H / {vfov:.1f}° V"
+    "fov_format": "FOV: {hfov:.1f}° H / {vfov:.1f}° V",
+    "section_simplify": "スプラット簡略化",
+    "simplify_source": "ソース",
+    "simplify_select_source": "スプラットノードを選択",
+    "simplify_target": "目標",
+    "simplify_knn_k": "kNN K",
+    "simplify_merge_cap": "統合上限",
+    "simplify_opacity_prune": "不透明度プルーニング",
+    "simplify_original": "元データ",
+    "simplify_output": "出力"
   },
   "scripts_panel": {
     "actions": "アクション",
@@ -1095,5 +1274,135 @@
     "clear_confirm": "すべてのキーフレームを削除しますか？",
     "confirm": "確認",
     "cancel": "キャンセル"
+  },
+  "histogram": {
+    "title_eyebrow": "Gaussian Analysis",
+    "field": "Field",
+    "log_scale": "対数スケール",
+    "samples": "Samples",
+    "range": "Range",
+    "mean": "Mean",
+    "median": "Median",
+    "p95": "P95",
+    "peak_bin": "Peak Bin",
+    "bin_count": "{count} bins",
+    "bins": "ビン",
+    "compare_x_bins": "Xビン",
+    "compare_y_bins": "Yビン",
+    "marked": "Marked",
+    "count": "Count",
+    "clear": "Clear",
+    "delete": "Delete",
+    "no_marked_range": "No marked range",
+    "gaussian_count": "{count} Gaussians",
+    "range_value": "{min} to {max}",
+    "status_drag_delete": "Left-drag across the histogram to mark a range, then delete it.",
+    "status_selection": "Marked range becomes the active Gaussian selection.",
+    "summary": "{metric} distribution across {count} Gaussians",
+    "bin_tooltip": "Bin {index}: {left} to {right} | {count} Gaussians",
+    "compare_with": "Compare With",
+    "compare_bin_count": "{x_count} x {y_count} ビン",
+    "compare": {
+      "off": "Off",
+      "summary": "{x_metric} vs {y_metric} across {count} Gaussians",
+      "range_value": "X {x_range} | Y {y_range}",
+      "status_selection": "Marked compare region becomes the active Gaussian selection.",
+      "bin_tooltip": "X {x_range} | Y {y_range} | {count} Gaussians",
+      "empty": {
+        "title": "Compare unavailable",
+        "message": "Choose a second metric to see how two Gaussian properties cluster together.",
+        "metric_unavailable": {
+          "title": "Compare metric unavailable",
+          "message": "The comparison metric could not be read from the combined Gaussian model."
+        },
+        "no_visible_values": {
+          "title": "No comparable values",
+          "message": "The selected metric pair does not contain any visible finite samples to visualize."
+        }
+      }
+    },
+    "delete_failed": {
+      "title": "Delete Failed",
+      "status": "Delete failed: {message}",
+      "unexpected": "The delete pipeline raised an unexpected error.",
+      "invalid_result": "The delete pipeline returned an invalid result.",
+      "reported_failure": "The delete pipeline reported a failure."
+    },
+    "empty": {
+      "unavailable": {
+        "title": "Histogram unavailable",
+        "message": "Switch to a view or edit scene with Gaussian splats to inspect a distribution."
+      },
+      "no_scene": {
+        "title": "No scene loaded",
+        "message": "Load a Gaussian scene, then reopen the histogram panel."
+      },
+      "no_visible_gaussians": {
+        "title": "No visible Gaussians",
+        "message": "The histogram only works when the active scene exposes a visible Gaussian model."
+      },
+      "metric_unavailable": {
+        "title": "Metric unavailable",
+        "message": "The selected metric could not be read from the combined Gaussian model."
+      },
+      "no_visible_values": {
+        "title": "No visible values",
+        "message": "The selected metric does not contain any visible finite samples to visualize."
+      }
+    },
+    "metric": {
+      "opacity": {
+        "label": "Opacity",
+        "description": "Activated Gaussian opacity in [0, 1]."
+      },
+      "position_x": {
+        "label": "Position X",
+        "description": "Gaussian world-space center on the X axis."
+      },
+      "position_y": {
+        "label": "Position Y",
+        "description": "Gaussian world-space center on the Y axis."
+      },
+      "position_z": {
+        "label": "Position Z",
+        "description": "Gaussian world-space center on the Z axis."
+      },
+      "scale_x": {
+        "label": "Scale X",
+        "description": "Activated Gaussian scale on the X axis."
+      },
+      "scale_y": {
+        "label": "Scale Y",
+        "description": "Activated Gaussian scale on the Y axis."
+      },
+      "scale_z": {
+        "label": "Scale Z",
+        "description": "Activated Gaussian scale on the Z axis."
+      },
+      "scale_max": {
+        "label": "Scale Max",
+        "description": "Largest activated scale component per Gaussian."
+      },
+      "volume": {
+        "label": "Volume",
+        "description": "Ellipsoid volume derived from activated Gaussian scales."
+      },
+      "anisotropy": {
+        "label": "Anisotropy",
+        "description": "Ratio of largest to smallest activated scale. 1 is sphere-like; larger values are spikier."
+      },
+      "erank": {
+        "label": "有効ランク",
+        "description": "有効化されたガウススケールのエントロピーに基づく有効ランクです。1 は線状、2 は面状、3 は球状を表します。"
+      },
+      "distance": {
+        "label": "Distance",
+        "description": "Distance from the current scene center."
+      }
+    },
+    "undo": "Undo",
+    "redo": "Redo",
+    "undo_named": "Undo: {name}",
+    "redo_named": "Redo: {name}"
   }
 }

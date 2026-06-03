@@ -106,6 +106,26 @@ namespace lfs::python {
             }
         }
 
+        template <typename Getter>
+        nb::object build_nested_list(const std::vector<size_t>& dims, size_t dim, size_t& offset, const Getter& getter) {
+            if (dims.empty()) {
+                return getter(offset++);
+            }
+
+            nb::list result;
+            if (dim + 1 == dims.size()) {
+                for (size_t i = 0; i < dims[dim]; ++i) {
+                    result.append(getter(offset++));
+                }
+                return result;
+            }
+
+            for (size_t i = 0; i < dims[dim]; ++i) {
+                result.append(build_nested_list(dims, dim + 1, offset, getter));
+            }
+            return result;
+        }
+
     } // namespace
 
     PyTensor::PyTensor(Tensor tensor, bool owns_data)
@@ -248,6 +268,7 @@ namespace lfs::python {
         case DataType::Float16: return tensor_.item<float>(); // Tensor handles conversion
         case DataType::Int32: return static_cast<float>(tensor_.item<int>());
         case DataType::Int64: return static_cast<float>(tensor_.item<int64_t>());
+        case DataType::UInt8: return static_cast<float>(tensor_.item<unsigned char>());
         case DataType::Bool: return tensor_.item<unsigned char>() != 0 ? 1.0f : 0.0f;
         default: return tensor_.item<float>();
         }
@@ -262,6 +283,8 @@ namespace lfs::python {
             return static_cast<int64_t>(tensor_.item<int>());
         } else if (tensor_.dtype() == DataType::Int64) {
             return tensor_.item<int64_t>();
+        } else if (tensor_.dtype() == DataType::UInt8 || tensor_.dtype() == DataType::Bool) {
+            return static_cast<int64_t>(tensor_.item<unsigned char>());
         }
         return static_cast<int64_t>(tensor_.item<float>());
     }
@@ -442,6 +465,47 @@ namespace lfs::python {
         }
     }
 
+    nb::object PyTensor::tolist() const {
+        validate();
+        Tensor cpu_tensor = tensor_.device() == Device::CUDA ? tensor_.cpu() : tensor_;
+        if (!cpu_tensor.is_contiguous()) {
+            cpu_tensor = cpu_tensor.contiguous();
+        }
+
+        const auto& dims = cpu_tensor.shape().dims();
+        size_t offset = 0;
+
+        switch (cpu_tensor.dtype()) {
+        case DataType::Float32: {
+            const auto values = cpu_tensor.to_vector();
+            return build_nested_list(dims, 0, offset, [&](size_t index) { return nb::cast(values[index]); });
+        }
+        case DataType::Int32: {
+            const auto values = cpu_tensor.to_vector_int();
+            return build_nested_list(dims, 0, offset, [&](size_t index) { return nb::cast(values[index]); });
+        }
+        case DataType::Int64: {
+            const auto values = cpu_tensor.to_vector_int64();
+            return build_nested_list(dims, 0, offset, [&](size_t index) { return nb::cast(values[index]); });
+        }
+        case DataType::UInt8: {
+            const auto values = cpu_tensor.to_vector_uint8();
+            return build_nested_list(dims, 0, offset, [&](size_t index) { return nb::cast(values[index]); });
+        }
+        case DataType::Bool: {
+            const auto values = cpu_tensor.to_vector_bool();
+            return build_nested_list(dims, 0, offset, [&](size_t index) { return nb::cast(static_cast<bool>(values[index])); });
+        }
+        default:
+            throw std::runtime_error("Unsupported dtype for tolist conversion");
+        }
+    }
+
+    size_t PyTensor::count_nonzero() const {
+        validate();
+        return tensor_.count_nonzero();
+    }
+
     PyTensor PyTensor::from_numpy(nb::ndarray<> arr, bool copy) {
         // Get shape
         std::vector<size_t> shape_vec;
@@ -556,12 +620,23 @@ namespace lfs::python {
 
         // Boolean mask
         if (nb::isinstance<PyTensor>(key)) {
-            auto mask_tensor = nb::cast<PyTensor>(key);
-            auto dt = mask_tensor.tensor().dtype();
+            const auto& mask_tensor = nb::cast<const PyTensor&>(key);
+            const auto& mask = mask_tensor.tensor();
+            const auto dt = mask.dtype();
             if (dt != DataType::Bool && dt != DataType::UInt8) {
                 throw std::runtime_error("Mask must be a boolean tensor");
             }
-            return PyTensor(tensor_.masked_select(mask_tensor.tensor()));
+
+            // Match PyTorch semantics for tensor[mask]:
+            // - 1D mask on an ND tensor selects rows along dim 0
+            // - shape-matched masks perform elementwise masked selection
+            const bool is_row_mask =
+                mask.ndim() == 1 &&
+                tensor_.ndim() >= 1 &&
+                mask.shape()[0] == tensor_.shape()[0];
+
+            return PyTensor(is_row_mask ? tensor_.index_select(0, mask)
+                                        : tensor_.masked_select(mask));
         }
 
         throw std::runtime_error("Unsupported index type");
@@ -1069,6 +1144,11 @@ namespace lfs::python {
         return tensor_.norm(p);
     }
 
+    nb::tuple PyTensor::sort(int dim, bool descending) const {
+        auto [values, indices] = tensor_.sort(dim, descending);
+        return nb::make_tuple(PyTensor(std::move(values), true), PyTensor(std::move(indices), true));
+    }
+
     // Shape operations
     PyTensor PyTensor::reshape(const std::vector<int64_t>& new_shape) const {
         std::vector<int> shape_vec;
@@ -1193,6 +1273,11 @@ namespace lfs::python {
 
     PyTensor PyTensor::nonzero() const {
         return PyTensor(tensor_.nonzero());
+    }
+
+    PyTensor& PyTensor::index_add_(int dim, const PyTensor& indices, const PyTensor& src) {
+        tensor_.index_add_(dim, indices.tensor_, src.tensor_);
+        return *this;
     }
 
     // Linear algebra
@@ -1530,6 +1615,8 @@ namespace lfs::python {
             // NumPy conversion
             .def("numpy", &PyTensor::numpy, nb::arg("copy") = true,
                  "Convert to NumPy array")
+            .def("tolist", &PyTensor::tolist, "Convert tensor to nested Python lists")
+            .def("count_nonzero", &PyTensor::count_nonzero, "Count non-zero elements")
             .def_static("from_numpy", &PyTensor::from_numpy,
                         nb::arg("arr"), nb::arg("copy") = true,
                         "Create tensor from NumPy array")
@@ -1696,6 +1783,7 @@ namespace lfs::python {
             .def("any", &PyTensor::any, nb::arg("dim") = nb::none(), nb::arg("keepdim") = false, "Check if any true")
             .def("norm", &PyTensor::norm, nb::arg("p") = 2.0f, "Lp norm")
             .def("norm_scalar", &PyTensor::norm_scalar, nb::arg("p") = 2.0f, "Lp norm as scalar")
+            .def("sort", &PyTensor::sort, nb::arg("dim") = -1, nb::arg("descending") = false, "Sort tensor values along a dimension and return (values, indices)")
 
             // Advanced indexing
             .def("index_select", &PyTensor::index_select, nb::arg("dim"), nb::arg("indices"), "Select along dimension by indices")
@@ -1704,6 +1792,7 @@ namespace lfs::python {
             .def("masked_fill", &PyTensor::masked_fill, nb::arg("mask"), nb::arg("value"), "Fill elements where mask is true")
             .def("masked_fill_", &PyTensor::masked_fill_, nb::arg("mask"), nb::arg("value"), nb::rv_policy::reference, "In-place fill elements where mask is true")
             .def("nonzero", &PyTensor::nonzero, "Indices of non-zero elements")
+            .def("index_add_", &PyTensor::index_add_, nb::arg("dim"), nb::arg("indices"), nb::arg("src"), nb::rv_policy::reference, "Add src into this tensor at indices along a dimension")
 
             // Linear algebra
             .def("matmul", &PyTensor::matmul, nb::arg("other"), "Matrix multiplication")

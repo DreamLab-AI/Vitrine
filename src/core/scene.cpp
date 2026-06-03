@@ -325,6 +325,8 @@ namespace lfs::core {
         resetSelectionState();
 
         initial_point_cloud_.reset();
+        scene_center_ = {};
+        images_have_alpha_ = false;
         point_cloud_modified_ = false;
         training_model_node_.clear();
 
@@ -424,6 +426,15 @@ namespace lfs::core {
         return nullptr;
     }
 
+    std::optional<glm::mat4> Scene::getVisiblePointCloudTransform() const {
+        for (const auto& node : nodes_) {
+            if (node->type == NodeType::POINTCLOUD && isNodeEffectivelyVisible(node->id) && node->point_cloud) {
+                return getWorldTransform(node->id);
+            }
+        }
+        return std::nullopt;
+    }
+
     std::vector<Scene::VisibleMesh> Scene::getVisibleMeshes() const {
         std::vector<VisibleMesh> result;
         for (const auto& node : nodes_) {
@@ -477,6 +488,17 @@ namespace lfs::core {
             if (node->type == NodeType::CAMERA && node->camera &&
                 isNodeEffectivelyVisible(node->id)) {
                 result.push_back(node->camera);
+            }
+        }
+        return result;
+    }
+
+    std::vector<glm::mat4> Scene::getVisibleCameraSceneTransforms() const {
+        std::vector<glm::mat4> result;
+        for (const auto& node : nodes_) {
+            if (node->type == NodeType::CAMERA && node->camera &&
+                isNodeEffectivelyVisible(node->id)) {
+                result.push_back(getWorldTransform(node->id));
             }
         }
         return result;
@@ -673,8 +695,7 @@ namespace lfs::core {
 
         cached_transforms_.clear();
         for (const auto& node : nodes_) {
-            const bool has_renderable = node->model || node->point_cloud || node->mesh;
-            if (has_renderable && isNodeEffectivelyVisible(node->id)) {
+            if (node->model && isNodeEffectivelyVisible(node->id)) {
                 cached_transforms_.push_back(getWorldTransform(node->id));
             }
         }
@@ -845,6 +866,8 @@ namespace lfs::core {
                 has_selection = true;
                 count = static_cast<int>(selected_indices.size());
             } else {
+                // Empty selection is equivalent to no selection.
+                selection_mask_.reset();
                 has_selection_ = false;
             }
         }
@@ -858,11 +881,17 @@ namespace lfs::core {
         {
             std::unique_lock lock(selection_mutex_);
             selection_mask_ = std::move(mask);
-            has_selection_ = selection_mask_ && selection_mask_->is_valid() && selection_mask_->numel() > 0;
-            has_selection = has_selection_;
-
-            if (has_selection_) {
+            const bool valid =
+                selection_mask_ && selection_mask_->is_valid() && selection_mask_->numel() > 0;
+            if (valid) {
                 count = static_cast<int>(selection_mask_->ne(0).to(core::DataType::Float32).sum_scalar());
+            }
+
+            // Treat an all-zero tensor as "no selection" to keep API semantics consistent.
+            has_selection_ = count > 0;
+            has_selection = has_selection_;
+            if (!has_selection_) {
+                selection_mask_.reset();
             }
         }
         events::state::SelectionChanged{.has_selection = has_selection, .count = count}.emit();
@@ -1459,12 +1488,20 @@ namespace lfs::core {
     NodeId Scene::addCamera(const std::string& name, const NodeId parent, std::shared_ptr<lfs::core::Camera> camera) {
         assert(camera && "Camera object cannot be null");
 
+        std::string unique_name = name;
+        if (name_to_id_.contains(unique_name)) {
+            int counter = 2;
+            while (name_to_id_.contains(unique_name)) {
+                unique_name = name + "_" + std::to_string(counter++);
+            }
+        }
+
         const NodeId id = next_node_id_++;
         auto node = std::make_unique<SceneNode>();
         node->id = id;
         node->parent_id = parent;
         node->type = NodeType::CAMERA;
-        node->name = name;
+        node->name = unique_name;
         node->camera = std::move(camera);
         node->camera_uid = node->camera->uid();
         node->image_path = lfs::core::path_to_utf8(node->camera->image_path());
@@ -1477,7 +1514,7 @@ namespace lfs::core {
         }
 
         id_to_index_[id] = nodes_.size();
-        name_to_id_[name] = id;
+        name_to_id_[unique_name] = id;
         node->initObservables(this);
         nodes_.push_back(std::move(node));
         notifyMutation(MutationType::NODE_ADDED);
@@ -2298,6 +2335,67 @@ namespace lfs::core {
         return node->gaussian_count.load(std::memory_order_acquire);
     }
 
+    size_t Scene::getVisibleGaussianCount() const {
+        const auto* model = getCombinedModel();
+        if (!model) {
+            return 0;
+        }
+        return model->visible_count();
+    }
+
+    std::unordered_map<NodeId, size_t> Scene::getActiveGaussianCountsByNode() const {
+        std::unordered_map<NodeId, size_t> counts;
+        counts.reserve(nodes_.size());
+
+        for (const auto& node : nodes_) {
+            if (node->type != NodeType::SPLAT) {
+                continue;
+            }
+
+            const size_t count = node->model
+                                     ? static_cast<size_t>(node->model->visible_count())
+                                     : node->gaussian_count.load(std::memory_order_acquire);
+            counts.emplace(node->id, count);
+        }
+
+        if (!consolidated_) {
+            return counts;
+        }
+
+        rebuildCacheIfNeeded();
+        if (!cached_combined_ || !cached_combined_->has_deleted_mask() ||
+            !cached_transform_indices_ || !cached_transform_indices_->is_valid()) {
+            return counts;
+        }
+
+        const auto transform_indices_cpu = cached_transform_indices_->cpu();
+        const auto deleted_cpu = cached_combined_->deleted().cpu();
+        const size_t total = static_cast<size_t>(transform_indices_cpu.numel());
+        if (total != static_cast<size_t>(deleted_cpu.numel())) {
+            LOG_WARN("Active gaussian count map skipped: transform/deleted size mismatch ({} vs {})",
+                     total, deleted_cpu.numel());
+            return counts;
+        }
+
+        std::vector<size_t> slot_counts(consolidated_node_ids_.size(), 0);
+        const int* transform_indices = transform_indices_cpu.ptr<int>();
+        const bool* deleted = deleted_cpu.ptr<bool>();
+
+        for (size_t i = 0; i < total; ++i) {
+            const int slot = transform_indices[i];
+            if (slot < 0 || static_cast<size_t>(slot) >= slot_counts.size() || deleted[i]) {
+                continue;
+            }
+            ++slot_counts[slot];
+        }
+
+        for (size_t slot = 0; slot < consolidated_node_ids_.size(); ++slot) {
+            counts[consolidated_node_ids_[slot]] = slot_counts[slot];
+        }
+
+        return counts;
+    }
+
     std::shared_ptr<const lfs::core::Camera> Scene::getCameraByUid(int uid) const {
         for (const auto& node : nodes_) {
             if (node->type == NodeType::CAMERA && node->camera && node->camera->uid() == uid) {
@@ -2305,6 +2403,15 @@ namespace lfs::core {
             }
         }
         return nullptr;
+    }
+
+    std::optional<glm::mat4> Scene::getCameraSceneTransformByUid(int uid) const {
+        for (const auto& node : nodes_) {
+            if (node->type == NodeType::CAMERA && node->camera && node->camera->uid() == uid) {
+                return getWorldTransform(node->id);
+            }
+        }
+        return std::nullopt;
     }
 
     std::vector<std::shared_ptr<lfs::core::Camera>> Scene::getAllCameras() const {

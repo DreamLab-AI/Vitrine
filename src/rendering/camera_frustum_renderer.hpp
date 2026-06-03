@@ -14,6 +14,7 @@
 #include <memory>
 #include <mutex>
 #include <queue>
+#include <span>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -32,7 +33,8 @@ namespace lfs::rendering {
         CameraFrustumRenderer() = default;
         ~CameraFrustumRenderer();
 
-        void setImageLoader(std::shared_ptr<lfs::io::PipelinedImageLoader> loader);
+        void setImageLoader(std::shared_ptr<lfs::io::PipelinedImageLoader> loader,
+                            bool allow_fallback);
 
         Result<void> init();
         Result<void> render(const std::vector<std::shared_ptr<const lfs::core::Camera>>& cameras,
@@ -41,7 +43,9 @@ namespace lfs::rendering {
                             float scale = 0.1f,
                             const glm::vec3& train_color = glm::vec3(0.0f, 1.0f, 0.0f),
                             const glm::vec3& eval_color = glm::vec3(1.0f, 0.0f, 0.0f),
+                            std::span<const glm::vec3> per_camera_colors = {},
                             const glm::mat4& scene_transform = glm::mat4(1.0f),
+                            std::span<const glm::mat4> scene_transforms = {},
                             bool equirectangular_view = false,
                             const std::unordered_set<int>& disabled_uids = {},
                             const std::unordered_set<int>& emphasized_uids = {});
@@ -53,7 +57,8 @@ namespace lfs::rendering {
                                const glm::mat4& view,
                                const glm::mat4& projection,
                                float scale = 0.1f,
-                               const glm::mat4& scene_transform = glm::mat4(1.0f));
+                               const glm::mat4& scene_transform = glm::mat4(1.0f),
+                               std::span<const glm::mat4> scene_transforms = {});
 
         void setFocusedCamera(const int index) { focused_camera_ = index; }
 
@@ -89,6 +94,7 @@ namespace lfs::rendering {
             std::filesystem::path image_path;
             int image_width;
             int image_height;
+            uint64_t generation = 0;
         };
 
         struct LoadedThumbnail {
@@ -106,11 +112,20 @@ namespace lfs::rendering {
                               float scale,
                               const glm::vec3& train_color,
                               const glm::vec3& eval_color,
+                              std::span<const glm::vec3> per_camera_colors,
                               bool for_picking,
                               const glm::vec3& view_position,
                               const glm::mat4& scene_transform,
+                              std::span<const glm::mat4> scene_transforms,
                               const std::unordered_set<int>& disabled_uids = {},
                               const std::unordered_set<int>& emphasized_uids = {});
+
+        void updateInstanceAppearance(const std::vector<std::shared_ptr<const lfs::core::Camera>>& cameras,
+                                      const glm::vec3& train_color,
+                                      const glm::vec3& eval_color,
+                                      std::span<const glm::vec3> per_camera_colors,
+                                      const std::unordered_set<int>& disabled_uids = {},
+                                      const std::unordered_set<int>& emphasized_uids = {});
 
         void updateInstanceVisibility(const glm::vec3& view_position);
 
@@ -168,10 +183,7 @@ namespace lfs::rendering {
         float last_scale_ = -1.0f;
         glm::vec3 last_train_color_{-1, -1, -1};
         glm::vec3 last_eval_color_{-1, -1, -1};
-        glm::vec3 last_view_position_{0, 0, 0};
-        glm::mat4 last_scene_transform_{1.0f};
-        std::unordered_set<int> last_disabled_uids_;
-        std::unordered_set<int> last_emphasized_uids_;
+        std::vector<glm::mat4> last_scene_transforms_;
 
         // Image preview
         bool show_images_ = true;
@@ -195,7 +207,10 @@ namespace lfs::rendering {
 
         std::thread thumbnail_loader_thread_;
         std::atomic<bool> thumbnail_loader_running_{false};
+        std::atomic<uint64_t> thumbnail_generation_{0};
         std::shared_ptr<lfs::io::PipelinedImageLoader> shared_loader_;
+        std::shared_ptr<lfs::io::PipelinedImageLoader> fallback_loader_;
+        bool allow_fallback_loader_ = true;
         std::mutex shared_loader_mutex_;
     };
 

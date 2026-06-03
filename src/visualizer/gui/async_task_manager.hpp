@@ -32,6 +32,8 @@ namespace lfs::vis {
 
     namespace gui {
 
+        struct VideoExportEnvironmentState;
+
         class LFS_VIS_API AsyncTaskManager {
         public:
             explicit AsyncTaskManager(VisualizerImpl* viewer);
@@ -105,6 +107,7 @@ namespace lfs::vis {
                 return std::chrono::duration<float>(elapsed).count();
             }
             void dismissImport() { import_state_.show_completion.store(false); }
+            void cancelImport();
 
             // Video export
             [[nodiscard]] bool isExportingVideo() const { return video_export_state_.active.load(); }
@@ -170,6 +173,7 @@ namespace lfs::vis {
             void applyLoadedDataToScene();
             void startVideoExport(const std::filesystem::path& path,
                                   const io::video::VideoExportOptions& options);
+            void resetVideoExportEnvironmentState();
 
             VisualizerImpl* viewer_;
 
@@ -199,6 +203,7 @@ namespace lfs::vis {
                 std::optional<std::jthread> thread;
             };
             VideoExportState video_export_state_;
+            std::unique_ptr<VideoExportEnvironmentState> video_export_environment_state_;
 
             struct ImportState {
                 std::atomic<bool> active{false};

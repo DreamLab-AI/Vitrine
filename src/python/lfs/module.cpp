@@ -46,6 +46,7 @@
 #include "core/image_io.hpp"
 #include "core/logger.hpp"
 #include "core/parameters.hpp"
+#include "core/path_utils.hpp"
 #include "gui/rmlui/elements/loss_graph_element.hpp"
 #include "internal/resource_paths.hpp"
 #include "io/filesystem_utils.hpp"
@@ -54,25 +55,32 @@
 
 #include "config.h"
 #include "core/checkpoint_format.hpp"
+#include "input/input_controller.hpp"
 #include "python/runner.hpp"
 #include "rendering/rendering_manager.hpp"
 #include "training/strategies/istrategy.hpp"
 #include "training/trainer.hpp"
+#include "training/training_state.hpp"
 #include "visualizer/core/editor_context.hpp"
 #include "visualizer/core/parameter_manager.hpp"
 #include "visualizer/core/services.hpp"
 #include "visualizer/gui/panel_registry.hpp"
 #include "visualizer/gui_capabilities.hpp"
+#include "visualizer/ipc/view_context.hpp"
 #include "visualizer/operator/operator_registry.hpp"
 #include "visualizer/scene/scene_manager.hpp"
+#include "visualizer/scene_coordinate_utils.hpp"
 #include "visualizer/training/training_manager.hpp"
+#include "visualizer/visualizer.hpp"
 #include "visualizer/window/window_manager.hpp"
 
+#include <atomic>
 #include <cstring>
 #include <filesystem>
 #include <format>
 #include <fstream>
 #include <functional>
+#include <future>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -107,6 +115,83 @@ namespace {
     using lfs::training::TrainingPhase;
     using lfs::training::TrainingSnapshot;
 
+    void warn_deprecated_python_api(const std::string_view old_name, const std::string_view replacement) {
+        const std::string message = std::format(
+            "lichtfeld.{}() is deprecated; use lichtfeld.{}() instead",
+            old_name,
+            replacement);
+        if (PyErr_WarnEx(PyExc_DeprecationWarning, message.c_str(), 2) < 0) {
+            throw nb::python_error();
+        }
+    }
+
+    // Python path strings are UTF-8. Avoid implicit std::filesystem::path(string)
+    // on Windows, which routes through the active ANSI code page.
+    std::filesystem::path python_utf8_path(const std::string& value) {
+        return lfs::core::utf8_to_path(value);
+    }
+
+    std::expected<void, std::string> post_clear_scene_to_viewer(lfs::vis::Visualizer& viewer) {
+        if (viewer.isOnViewerThread()) {
+            if (!viewer.acceptsPostedWork()) {
+                return std::unexpected("Viewer is shutting down");
+            }
+            return viewer.clearScene();
+        }
+
+        auto promise = std::make_shared<std::promise<std::expected<void, std::string>>>();
+        auto future = promise->get_future();
+        auto completed = std::make_shared<std::atomic_bool>(false);
+
+        auto finish = [promise, completed](std::expected<void, std::string> result) mutable {
+            if (!completed->exchange(true)) {
+                promise->set_value(std::move(result));
+            }
+        };
+
+        const bool posted = viewer.postWork(lfs::vis::Visualizer::WorkItem{
+            .run =
+                [&viewer, finish]() mutable {
+                    finish(viewer.clearScene());
+                },
+            .cancel =
+                [finish]() mutable {
+                    finish(std::unexpected("Viewer is shutting down"));
+                },
+        });
+
+        if (!posted) {
+            return std::unexpected("Viewer is shutting down");
+        }
+
+        return future.get();
+    }
+
+    std::expected<void, std::string> clear_scene_from_python() {
+        if (auto* const viewer = lfs::python::get_visualizer()) {
+            return post_clear_scene_to_viewer(*viewer);
+        }
+
+        auto* const scene_manager = lfs::python::get_scene_manager();
+        if (!scene_manager) {
+            return std::unexpected("No scene manager available");
+        }
+
+        if (scene_manager->clear()) {
+            return {};
+        }
+
+        if (auto* const trainer_manager = lfs::python::get_trainer_manager();
+            trainer_manager &&
+            scene_manager->getContentType() == lfs::vis::SceneManager::ContentType::Dataset &&
+            !trainer_manager->canPerform(lfs::vis::TrainingAction::ClearScene)) {
+            return std::unexpected(
+                std::string(trainer_manager->getActionBlockedReason(lfs::vis::TrainingAction::ClearScene)));
+        }
+
+        return std::unexpected("Scene clear request was rejected");
+    }
+
     CommandCenter* get_command_center_opt() {
         return lfs::event::command_center();
     }
@@ -117,6 +202,74 @@ namespace {
             throw std::runtime_error("Training system not initialized");
         }
         return *cc;
+    }
+
+    // Thread-local trainer/context override used while a Python hook callback is executing.
+    thread_local lfs::training::Trainer* g_current_trainer = nullptr;
+    thread_local std::optional<TrainingSnapshot> g_active_hook_snapshot;
+
+    TrainingSnapshot snapshot_from_command_center() {
+        if (auto* cc = get_command_center_opt()) {
+            return cc->snapshot();
+        }
+        return {};
+    }
+
+    TrainingSnapshot build_hook_snapshot(const HookContext& ctx) {
+        auto snapshot = snapshot_from_command_center();
+        snapshot.iteration = ctx.iteration;
+        snapshot.loss = ctx.loss;
+        snapshot.num_gaussians = ctx.num_gaussians;
+        snapshot.is_refining = ctx.is_refining;
+        snapshot.trainer = ctx.trainer;
+        return snapshot;
+    }
+
+    TrainingSnapshot current_training_snapshot() {
+        if (g_active_hook_snapshot.has_value()) {
+            return *g_active_hook_snapshot;
+        }
+        return snapshot_from_command_center();
+    }
+
+    struct HookInvocationGuard {
+        explicit HookInvocationGuard(const HookContext& ctx)
+            : prev_trainer_(g_current_trainer),
+              prev_snapshot_(g_active_hook_snapshot) {
+            g_current_trainer = ctx.trainer;
+            g_active_hook_snapshot = build_hook_snapshot(ctx);
+        }
+
+        ~HookInvocationGuard() {
+            g_current_trainer = prev_trainer_;
+            g_active_hook_snapshot = prev_snapshot_;
+        }
+
+    private:
+        lfs::training::Trainer* prev_trainer_ = nullptr;
+        std::optional<TrainingSnapshot> prev_snapshot_;
+    };
+
+    nb::dict build_python_hook_payload(const HookContext& ctx) {
+        nb::dict d;
+        d["iter"] = ctx.iteration;
+        d["iteration"] = ctx.iteration;
+        d["loss"] = ctx.loss;
+        d["num_splats"] = ctx.num_gaussians;
+        d["num_gaussians"] = ctx.num_gaussians;
+        d["is_refining"] = ctx.is_refining;
+        return d;
+    }
+
+    void invoke_python_dict_hook(const nb::object& callback, const ControlHook hook, const HookContext& ctx) {
+        nb::gil_scoped_acquire guard;
+        HookInvocationGuard hook_guard(ctx);
+        LOG_DEBUG("Python hook invoke hook={} iter={}", static_cast<int>(hook), ctx.iteration);
+        try {
+            callback(build_python_hook_payload(ctx));
+        } catch (const std::exception& e) {
+            LOG_ERROR("Python hook threw: {}", e.what());
+        }
     }
 
     class PyControlSession {
@@ -148,6 +301,7 @@ namespace {
             nb::object fn_obj = std::move(fn);
             auto cb = [fn_obj](const HookContext& ctx) {
                 nb::gil_scoped_acquire gil;
+                HookInvocationGuard hook_guard(ctx);
                 fn_obj(ctx.iteration, ctx.loss, ctx.num_gaussians, ctx.is_refining);
             };
 
@@ -186,18 +340,8 @@ namespace {
             nb::object fn = nb::cast<nb::object>(cb);
             owned_callbacks_.push_back(fn);
 
-            handler_.subscribe_hook(hook, [fn](const HookContext& ctx) {
-                nb::gil_scoped_acquire gil;
-                try {
-                    nb::dict d;
-                    d["iter"] = ctx.iteration;
-                    d["loss"] = ctx.loss;
-                    d["num_splats"] = ctx.num_gaussians;
-                    d["is_refining"] = ctx.is_refining;
-                    fn(d);
-                } catch (const std::exception& e) {
-                    LOG_ERROR("Python hook error: {}", e.what());
-                }
+            handler_.subscribe_hook(hook, [fn, hook](const HookContext& ctx) {
+                invoke_python_dict_hook(fn, hook, ctx);
             });
         }
 
@@ -208,12 +352,9 @@ namespace {
     class PyContextView {
     public:
         PyContextView() {
-            auto* cc = get_command_center_opt();
-            if (cc) {
-                snapshot_ = cc->snapshot();
-                if (snapshot_.trainer) {
-                    strategy_ = snapshot_.trainer->getParams().optimization.strategy;
-                }
+            snapshot_ = current_training_snapshot();
+            if (snapshot_.trainer) {
+                strategy_ = snapshot_.trainer->getParams().optimization.strategy;
             }
         }
 
@@ -240,14 +381,11 @@ namespace {
         std::string strategy() const { return strategy_; }
 
         void refresh() {
-            auto* cc = get_command_center_opt();
-            if (cc) {
-                snapshot_ = cc->snapshot();
-                if (snapshot_.trainer) {
-                    strategy_ = snapshot_.trainer->getParams().optimization.strategy;
-                } else {
-                    strategy_ = "none";
-                }
+            snapshot_ = current_training_snapshot();
+            if (snapshot_.trainer) {
+                strategy_ = snapshot_.trainer->getParams().optimization.strategy;
+            } else {
+                strategy_ = "none";
             }
         }
 
@@ -258,30 +396,21 @@ namespace {
 
     struct PyGaussiansView {
         std::size_t count() const {
-            auto* cc = get_command_center_opt();
-            if (!cc)
-                return 0;
-            const auto snap = cc->snapshot();
+            const auto snap = current_training_snapshot();
             if (!snap.trainer)
                 return 0;
             return snap.trainer->get_strategy_mutable().get_model().size();
         }
 
         int sh_degree() const {
-            auto* cc = get_command_center_opt();
-            if (!cc)
-                return 0;
-            const auto snap = cc->snapshot();
+            const auto snap = current_training_snapshot();
             if (!snap.trainer)
                 return 0;
             return snap.trainer->get_strategy_mutable().get_model().get_active_sh_degree();
         }
 
         int max_sh_degree() const {
-            auto* cc = get_command_center_opt();
-            if (!cc)
-                return 0;
-            const auto snap = cc->snapshot();
+            const auto snap = current_training_snapshot();
             if (!snap.trainer)
                 return 0;
             return snap.trainer->get_strategy_mutable().get_model().get_max_sh_degree();
@@ -406,15 +535,6 @@ namespace {
         }
     };
 
-    // Thread-local Trainer pointer for get_scene() to access Scene during hooks
-    thread_local lfs::training::Trainer* g_current_trainer = nullptr;
-
-    // RAII guard to set/clear current trainer
-    struct TrainerGuard {
-        TrainerGuard(lfs::training::Trainer* t) { g_current_trainer = t; }
-        ~TrainerGuard() { g_current_trainer = nullptr; }
-    };
-
     // Hook registration helper
     std::size_t register_hook(ControlHook hook, nb::callable cb) {
         if (!cb)
@@ -422,19 +542,7 @@ namespace {
         const nb::object ocb = nb::cast<nb::object>(cb);
         LOG_INFO("Python hook registered for hook {}", static_cast<int>(hook));
         return ControlBoundary::instance().register_callback(hook, [ocb, hook](const HookContext& ctx) {
-            nb::gil_scoped_acquire guard;
-            TrainerGuard trainer_guard(ctx.trainer);
-            LOG_DEBUG("Python hook invoke hook={} iter={}", static_cast<int>(hook), ctx.iteration);
-            try {
-                nb::dict d;
-                d["iter"] = ctx.iteration;
-                d["loss"] = ctx.loss;
-                d["num_splats"] = ctx.num_gaussians;
-                d["is_refining"] = ctx.is_refining;
-                ocb(d);
-            } catch (const std::exception& e) {
-                LOG_ERROR("Python hook threw: {}", e.what());
-            }
+            invoke_python_dict_hook(ocb, hook, ctx);
         });
     }
 
@@ -474,7 +582,7 @@ NB_MODULE(lichtfeld, m) {
         auto user_packages = lfs::python::get_user_packages_dir();
         nb::module_ sys = nb::module_::import_("sys");
         nb::list path = nb::cast<nb::list>(sys.attr("path"));
-        std::string pkg_path = user_packages.string();
+        const std::string pkg_path = lfs::core::path_to_utf8(user_packages);
         bool found = false;
         for (size_t i = 0; i < path.size(); ++i) {
             if (nb::cast<std::string>(path[i]) == pkg_path) {
@@ -654,9 +762,17 @@ NB_MODULE(lichtfeld, m) {
         "save_checkpoint", []() { lfs::core::events::cmd::SaveCheckpoint{}.emit(); },
         "Save a training checkpoint to disk");
     m.def(
+        "new_project", []() {
+            nb::gil_scoped_release release;
+            lfs::core::events::cmd::NewProject{}.emit();
+        },
+        "Clear all project state and start a new project");
+    m.def(
         "clear_scene", []() {
             nb::gil_scoped_release release;
-            lfs::core::events::cmd::ClearScene{}.emit();
+            if (auto result = clear_scene_from_python(); !result) {
+                throw std::runtime_error(std::format("clear_scene failed: {}", result.error()));
+            }
         },
         "Remove all nodes from the scene");
     m.def(
@@ -669,10 +785,10 @@ NB_MODULE(lichtfeld, m) {
            const std::string& output_path, const std::string& init_path) {
             nb::gil_scoped_release release;
             lfs::core::events::cmd::LoadFile{
-                .path = path,
+                .path = python_utf8_path(path),
                 .is_dataset = is_dataset,
-                .output_path = output_path,
-                .init_path = init_path}
+                .output_path = python_utf8_path(output_path),
+                .init_path = python_utf8_path(init_path)}
                 .emit();
         },
         nb::arg("path"), nb::arg("is_dataset") = false,
@@ -681,7 +797,9 @@ NB_MODULE(lichtfeld, m) {
 
     m.def(
         "load_config_file",
-        [](const std::string& path) { lfs::core::events::cmd::LoadConfigFile{.path = path}.emit(); },
+        [](const std::string& path) {
+            lfs::core::events::cmd::LoadConfigFile{.path = python_utf8_path(path)}.emit();
+        },
         nb::arg("path"), "Load a JSON configuration file.");
 
     m.def(
@@ -689,9 +807,9 @@ NB_MODULE(lichtfeld, m) {
         [](const std::string& checkpoint_path, const std::string& dataset_path, const std::string& output_path) {
             nb::gil_scoped_release release;
             lfs::core::events::cmd::LoadCheckpointForTraining{
-                .checkpoint_path = checkpoint_path,
-                .dataset_path = dataset_path,
-                .output_path = output_path,
+                .checkpoint_path = python_utf8_path(checkpoint_path),
+                .dataset_path = python_utf8_path(dataset_path),
+                .output_path = python_utf8_path(output_path),
             }
                 .emit();
         },
@@ -712,11 +830,12 @@ NB_MODULE(lichtfeld, m) {
             lfs::python::invoke_export(format, path, node_names, sh_degree);
         },
         nb::arg("format"), nb::arg("path"), nb::arg("node_names"), nb::arg("sh_degree"),
-        "Export scene nodes to file. Format: 0=PLY, 1=SOG, 2=SPZ, 3=HTML, 4=USD.");
+        "Export scene nodes to file. Format: 0=PLY, 1=SOG, 2=SPZ, 3=HTML, 4=USD, 5=USDZ NuRec.");
 
     m.def(
         "save_config_file",
         [](const std::string& path) {
+            const auto output_path = python_utf8_path(path);
             const auto* const param_manager = lfs::vis::services().paramsOrNull();
             if (!param_manager) {
                 throw std::runtime_error("No parameter manager available");
@@ -724,7 +843,7 @@ NB_MODULE(lichtfeld, m) {
             lfs::core::param::TrainingParameters params;
             params.dataset = param_manager->getDatasetConfig();
             params.optimization = param_manager->copyActiveParams();
-            if (const auto result = lfs::core::param::save_training_parameters_to_json(params, path); !result) {
+            if (const auto result = lfs::core::param::save_training_parameters_to_json(params, output_path); !result) {
                 throw std::runtime_error("Failed to save config: " + result.error());
             }
         },
@@ -761,6 +880,31 @@ NB_MODULE(lichtfeld, m) {
             return nb::make_tuple(lg->getDataMin(), lg->getDataMax());
         },
         "Push loss data to a loss-graph element, returns (data_min, data_max)");
+
+    m.def(
+        "psnr_buffer", []() -> std::vector<float> {
+            const auto* const tm = lfs::python::get_trainer_manager();
+            if (!tm)
+                return {};
+            auto psnr_deque = tm->getPSNRBuffer();
+            return std::vector<float>(psnr_deque.begin(), psnr_deque.end());
+        },
+        "Get the recent PSNR history as a list of floats");
+
+    m.def(
+        "push_psnr_to_element",
+        [](lfs::python::PyRmlElement& elem, const std::vector<float>& data) -> nb::tuple {
+            auto* raw = elem.raw();
+            if (!raw)
+                return nb::make_tuple(0.0f, 1.0f);
+            auto* lg = dynamic_cast<lfs::vis::gui::LossGraphElement*>(raw);
+            if (!lg)
+                return nb::make_tuple(0.0f, 1.0f);
+            std::deque<float> deque(data.begin(), data.end());
+            lg->setData(deque);
+            return nb::make_tuple(lg->getDataMin(), lg->getDataMax());
+        },
+        "Push PSNR data to a psnr-graph element, returns (data_min, data_max)");
 
     // Trainer status bar bindings
     m.def(
@@ -953,14 +1097,26 @@ NB_MODULE(lichtfeld, m) {
         "Get center of current selection (local space)");
 
     m.def(
+        "get_selection_visualizer_world_center", []() -> std::optional<std::vector<float>> {
+            auto* sm = lfs::python::get_scene_manager();
+            if (!sm || !sm->hasSelectedNode())
+                return std::nullopt;
+            const auto c = sm->getSelectionVisualizerWorldCenter();
+            return std::vector<float>{c.x, c.y, c.z};
+        },
+        "Get center of current selection in visualizer-world space");
+
+    m.def(
         "get_selection_world_center", []() -> std::optional<std::vector<float>> {
+            warn_deprecated_python_api("get_selection_world_center", "get_selection_visualizer_world_center");
             auto* sm = lfs::python::get_scene_manager();
             if (!sm || !sm->hasSelectedNode())
                 return std::nullopt;
             const auto c = sm->getSelectionWorldCenter();
             return std::vector<float>{c.x, c.y, c.z};
         },
-        "Get center of current selection (world space)");
+        "Deprecated: get center of current selection in legacy data-world space; use "
+        "get_selection_visualizer_world_center()");
 
     m.def(
         "has_scene", []() -> bool {
@@ -1006,10 +1162,9 @@ NB_MODULE(lichtfeld, m) {
             auto* sm = lfs::python::get_scene_manager();
             if (!sm)
                 return 0;
-            const auto* model = sm->getScene().getCombinedModel();
-            return model ? model->size() : 0;
+            return sm->getScene().getVisibleGaussianCount();
         },
-        "Get total number of gaussians in scene");
+        "Get number of active gaussians in scene");
 
     m.def(
         "get_node_transform", [](const std::string& name) -> std::optional<std::vector<float>> {
@@ -1020,6 +1175,20 @@ NB_MODULE(lichtfeld, m) {
             return std::vector<float>(&mat[0][0], &mat[0][0] + 16);
         },
         nb::arg("name"), "Get node transform matrix (16 floats, column-major)");
+
+    m.def(
+        "get_node_visualizer_world_transform", [](const std::string& name) -> std::optional<std::vector<float>> {
+            auto* sm = lfs::python::get_scene_manager();
+            if (!sm)
+                return std::nullopt;
+
+            const auto transform = lfs::vis::scene_coords::nodeVisualizerWorldTransform(sm->getScene(), name);
+            if (!transform)
+                return std::nullopt;
+
+            return std::vector<float>(&(*transform)[0][0], &(*transform)[0][0] + 16);
+        },
+        nb::arg("name"), "Get node visualizer-world transform matrix (16 floats, column-major)");
 
     m.def(
         "set_node_transform", [](const std::string& name, const std::vector<float>& mat) {
@@ -1034,6 +1203,29 @@ NB_MODULE(lichtfeld, m) {
             }
         },
         nb::arg("name"), nb::arg("matrix"), "Set node transform matrix (16 floats, column-major)");
+
+    m.def(
+        "set_node_visualizer_world_transform", [](const std::string& name, const std::vector<float>& mat) {
+            auto* sm = lfs::python::get_scene_manager();
+            if (!sm || mat.size() != 16)
+                return;
+
+            glm::mat4 visualizer_world_transform;
+            std::memcpy(&visualizer_world_transform[0][0], mat.data(), 16 * sizeof(float));
+
+            const auto local_transform =
+                lfs::vis::scene_coords::nodeLocalTransformFromVisualizerWorld(sm->getScene(), name, visualizer_world_transform);
+            if (!local_transform)
+                return;
+
+            if (auto result = lfs::vis::cap::setTransformMatrix(
+                    *sm, {name}, *local_transform, "python.set_node_visualizer_world_transform");
+                !result) {
+                LOG_WARN("set_node_visualizer_world_transform fell back to direct update for '{}': {}", name, result.error());
+                sm->setNodeTransform(name, *local_transform);
+            }
+        },
+        nb::arg("name"), nb::arg("matrix"), "Set node visualizer-world transform matrix (16 floats, column-major)");
 
     m.def(
         "capture_selection_transforms", []() -> nb::dict {
@@ -1158,6 +1350,59 @@ NB_MODULE(lichtfeld, m) {
         "reset_camera", []() { lfs::core::events::cmd::ResetCamera{}.emit(); },
         "Reset camera to default position and orientation");
     m.def(
+        "get_camera_navigation_mode", []() -> std::string {
+            const auto* controller = lfs::vis::InputController::instance();
+            if (!controller)
+                return "orbit";
+            switch (controller->cameraNavigationMode()) {
+            case lfs::vis::InputController::CameraNavigationMode::Orbit: return "orbit";
+            case lfs::vis::InputController::CameraNavigationMode::Trackball: return "trackball";
+            case lfs::vis::InputController::CameraNavigationMode::FPV: return "fpv";
+            }
+            return "orbit";
+        },
+        "Get the active camera navigation mode ('orbit', 'trackball', or 'fpv')");
+    m.def(
+        "set_camera_navigation_mode", [](const std::string& mode) {
+            auto* controller = lfs::vis::InputController::instance();
+            if (!controller)
+                return;
+
+            if (mode == "orbit") {
+                controller->setCameraNavigationMode(
+                    lfs::vis::InputController::CameraNavigationMode::Orbit);
+                return;
+            }
+            if (mode == "trackball" || mode == "turntable") {
+                controller->setCameraNavigationMode(
+                    lfs::vis::InputController::CameraNavigationMode::Trackball);
+                return;
+            }
+            if (mode == "fpv" || mode == "fly") {
+                controller->setCameraNavigationMode(
+                    lfs::vis::InputController::CameraNavigationMode::FPV);
+                return;
+            }
+
+            throw std::invalid_argument(
+                "camera navigation mode must be 'orbit', 'trackball', 'turntable', 'fpv', or 'fly'");
+        },
+        nb::arg("mode"), "Set the active camera navigation mode");
+    m.def(
+        "get_camera_view_snap_enabled", []() -> bool {
+            const auto* controller = lfs::vis::InputController::instance();
+            return controller ? controller->cameraViewSnapEnabled() : false;
+        },
+        "Check whether camera axis-view snapping is enabled");
+    m.def(
+        "set_camera_view_snap_enabled", [](bool enabled) {
+            auto* controller = lfs::vis::InputController::instance();
+            if (!controller)
+                return;
+            controller->setCameraViewSnapEnabled(enabled);
+        },
+        nb::arg("enabled"), "Enable or disable camera axis-view snapping");
+    m.def(
         "toggle_fullscreen", []() { lfs::core::events::ui::ToggleFullscreen{}.emit(); },
         "Toggle fullscreen mode");
     m.def(
@@ -1169,6 +1414,14 @@ NB_MODULE(lichtfeld, m) {
     m.def(
         "toggle_ui", []() { lfs::core::events::ui::ToggleUI{}.emit(); },
         "Toggle UI overlay visibility");
+    m.def(
+        "toggle_independent_split_view", []() {
+            auto* controller = lfs::vis::InputController::instance();
+            if (!controller)
+                return;
+            controller->toggleIndependentSplitView();
+        },
+        "Toggle independent split view");
 
     m.def(
         "get_render_mode", []() -> RenderMode {
@@ -1211,9 +1464,17 @@ NB_MODULE(lichtfeld, m) {
             auto* rm = lfs::python::get_rendering_manager();
             if (!rm)
                 return;
-            auto settings = rm->getSettings();
-            settings.orthographic = ortho;
-            rm->updateSettings(settings);
+
+            float viewport_height = 0.0f;
+            float distance_to_pivot = 0.0f;
+            if (const auto view = lfs::vis::get_current_view_info(); view.has_value()) {
+                viewport_height = static_cast<float>(view->height);
+                const glm::vec3 eye(view->translation[0], view->translation[1], view->translation[2]);
+                const glm::vec3 pivot(view->pivot[0], view->pivot[1], view->pivot[2]);
+                distance_to_pivot = glm::length(pivot - eye);
+            }
+
+            rm->setOrthographic(ortho, viewport_height, distance_to_pivot);
         },
         nb::arg("ortho"), "Enable or disable orthographic projection");
 
@@ -1376,7 +1637,7 @@ NB_MODULE(lichtfeld, m) {
         "open",
         [](const std::string& path_str) {
             namespace cmd = lfs::core::events::cmd;
-            cmd::LoadFile{.path = path_str, .is_dataset = true}.emit();
+            cmd::LoadFile{.path = python_utf8_path(path_str), .is_dataset = true}.emit();
         },
         nb::arg("path"),
         "Open a dataset or file in the application");
@@ -1414,13 +1675,13 @@ NB_MODULE(lichtfeld, m) {
     // Run a Python script file
     m.def(
         "run", [](const std::string& path) {
-            const std::filesystem::path script_path(path);
+            const std::filesystem::path script_path = lfs::core::utf8_to_path(path);
             if (!std::filesystem::exists(script_path)) {
                 throw std::runtime_error("Script not found: " + path);
             }
 
-            std::ifstream file(script_path);
-            if (!file) {
+            std::ifstream file;
+            if (!lfs::core::open_file_for_read(script_path, file)) {
                 throw std::runtime_error("Cannot open script: " + path);
             }
 
@@ -1429,8 +1690,8 @@ NB_MODULE(lichtfeld, m) {
             const std::string code = buffer.str();
 
             // Add script directory to sys.path and set __file__
-            const auto parent = script_path.parent_path().string();
-            const auto abs_path = std::filesystem::absolute(script_path).string();
+            const auto parent = lfs::core::path_to_utf8(script_path.parent_path());
+            const auto abs_path = lfs::core::path_to_utf8(std::filesystem::absolute(script_path));
 
             nb::module_ sys = nb::module_::import_("sys");
             nb::list sys_path = nb::cast<nb::list>(sys.attr("path"));
@@ -1622,7 +1883,12 @@ Mesh-to-Splat:
   lf.get_mesh2splat_error()      - Get error message
 
 Splat Simplify:
-  lf.simplify_splats("name")         - Simplify a splat node into a new output node
+  lf.simplify_splats("name", ratio=..., knn_k=..., merge_cap=..., opacity_prune_threshold=...)
+                                    - Simplify a splat node into a new output node
+  lf.simplify_splat_data_with_history(splat_data, ...)
+                                    - Simplify a SplatData value and return output + merge tree
+  lf.build_splat_lod_hierarchy(splat_data, ratio=..., max_levels=..., min_points=...)
+                                    - Build a script-side multi-level LOD hierarchy object
   lf.cancel_splat_simplify()         - Cancel the active simplify job
   lf.is_splat_simplify_active()      - Check if simplification is running
   lf.get_splat_simplify_progress()   - Get progress (0.0-1.0)
@@ -1660,16 +1926,16 @@ Example:
 
     nb::class_<lfs::io::DatasetInfo>(m, "DatasetInfo", "Information about a dataset directory")
         .def_prop_ro(
-            "base_path", [](const lfs::io::DatasetInfo& i) { return i.base_path.string(); },
+            "base_path", [](const lfs::io::DatasetInfo& i) { return lfs::core::path_to_utf8(i.base_path); },
             "Root directory of the dataset")
         .def_prop_ro(
-            "images_path", [](const lfs::io::DatasetInfo& i) { return i.images_path.string(); },
+            "images_path", [](const lfs::io::DatasetInfo& i) { return lfs::core::path_to_utf8(i.images_path); },
             "Path to the images directory")
         .def_prop_ro(
-            "sparse_path", [](const lfs::io::DatasetInfo& i) { return i.sparse_path.string(); },
+            "sparse_path", [](const lfs::io::DatasetInfo& i) { return lfs::core::path_to_utf8(i.sparse_path); },
             "Path to the COLMAP sparse reconstruction")
         .def_prop_ro(
-            "masks_path", [](const lfs::io::DatasetInfo& i) { return i.masks_path.string(); },
+            "masks_path", [](const lfs::io::DatasetInfo& i) { return lfs::core::path_to_utf8(i.masks_path); },
             "Path to the masks directory")
         .def_prop_ro(
             "has_masks", [](const lfs::io::DatasetInfo& i) { return i.has_masks; },
@@ -1682,13 +1948,49 @@ Example:
             "Number of masks in the dataset")
         .def("__repr__", [](const lfs::io::DatasetInfo& i) {
             return std::format("DatasetInfo(base_path='{}', images={}, masks={})",
-                               i.base_path.string(), i.image_count, i.mask_count);
+                               lfs::core::path_to_utf8(i.base_path), i.image_count, i.mask_count);
         });
 
     m.def(
+        "build_splat_lod_hierarchy",
+        [](nb::object source,
+           double ratio,
+           int knn_k,
+           double merge_cap,
+           float opacity_prune_threshold,
+           std::optional<int> max_levels,
+           int min_points,
+           nb::object progress) {
+            auto helper = nb::module_::import_("lfs_splat_lod_hierarchy").attr("build_splat_lod_hierarchy");
+            nb::object py_max_levels = max_levels ? nb::cast(*max_levels) : nb::none();
+            return helper(
+                std::move(source),
+                ratio,
+                knn_k,
+                merge_cap,
+                opacity_prune_threshold,
+                py_max_levels,
+                min_points,
+                std::move(progress));
+        },
+        nb::arg("source") = nb::none(),
+        nb::arg("ratio") = 0.5,
+        nb::arg("knn_k") = 16,
+        nb::arg("merge_cap") = 0.5,
+        nb::arg("opacity_prune_threshold") = 0.1f,
+        nb::arg("max_levels") = nb::none(),
+        nb::arg("min_points") = 1,
+        nb::arg("progress") = nb::none(),
+        "Build a script-side multi-level LOD hierarchy from SplatData or a scene node.");
+
+    m.def(
         "detect_dataset_info",
-        [](const std::string& path) { return lfs::io::detect_dataset_info(path); },
+        [](const std::string& path) { return lfs::io::detect_dataset_info(python_utf8_path(path)); },
         nb::arg("path"), "Detect dataset information from a directory path");
+    m.def(
+        "is_dataset_path",
+        [](const std::string& path) { return lfs::io::Loader::isDatasetPath(python_utf8_path(path)); },
+        nb::arg("path"), "Check whether a path can be treated as a dataset source");
 
     nb::class_<lfs::core::CheckpointHeader>(m, "CheckpointHeader", "Information from a checkpoint file header")
         .def_ro("iteration", &lfs::core::CheckpointHeader::iteration)
@@ -1702,7 +2004,7 @@ Example:
     m.def(
         "read_checkpoint_header",
         [](const std::string& path) -> std::optional<lfs::core::CheckpointHeader> {
-            auto result = lfs::core::load_checkpoint_header(path);
+            auto result = lfs::core::load_checkpoint_header(python_utf8_path(path));
             if (!result) {
                 return std::nullopt;
             }
@@ -1712,20 +2014,20 @@ Example:
 
     nb::class_<lfs::core::param::DatasetConfig>(m, "CheckpointParams", "Training parameters from a checkpoint")
         .def_prop_ro("dataset_path", [](const lfs::core::param::DatasetConfig& c) {
-            return c.data_path.string();
+            return lfs::core::path_to_utf8(c.data_path);
         })
         .def_prop_ro("output_path", [](const lfs::core::param::DatasetConfig& c) {
-            return c.output_path.string();
+            return lfs::core::path_to_utf8(c.output_path);
         })
         .def("__repr__", [](const lfs::core::param::DatasetConfig& c) {
             return std::format("CheckpointParams(dataset_path='{}', output_path='{}')",
-                               c.data_path.string(), c.output_path.string());
+                               lfs::core::path_to_utf8(c.data_path), lfs::core::path_to_utf8(c.output_path));
         });
 
     m.def(
         "read_checkpoint_params",
         [](const std::string& path) -> std::optional<lfs::core::param::DatasetConfig> {
-            auto result = lfs::core::load_checkpoint_params(path);
+            auto result = lfs::core::load_checkpoint_params(python_utf8_path(path));
             if (!result) {
                 return std::nullopt;
             }
@@ -1740,12 +2042,12 @@ Example:
     });
 
     // Module metadata
-    m.attr("__version__") = "0.1.0";
+    m.attr("__version__") = GIT_TAGGED_VERSION;
     m.attr("__all__") = nb::make_tuple(
         // Core access
         "context", "gaussians", "session", "get_scene",
         // Types
-        "Tensor", "Hook", "ScopedHandler",
+        "Tensor", "Hook", "ScopedHandler", "SplatSimplifyResult", "SplatSimplifyMergeTree",
         // Hook decorators
         "on_training_start", "on_iteration_start",
         "on_post_step", "on_pre_optimizer_step", "on_training_end",
@@ -1753,7 +2055,8 @@ Example:
         "mesh_to_splat", "is_mesh2splat_active",
         "get_mesh2splat_progress", "get_mesh2splat_stage", "get_mesh2splat_error",
         // Splat simplify
-        "simplify_splats", "cancel_splat_simplify", "is_splat_simplify_active",
+        "simplify_splats", "simplify_splat_data_with_history", "build_splat_lod_hierarchy",
+        "cancel_splat_simplify", "is_splat_simplify_active",
         "get_splat_simplify_progress", "get_splat_simplify_stage", "get_splat_simplify_error",
         // Animation
         "on_frame", "stop_animation",

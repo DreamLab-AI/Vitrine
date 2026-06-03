@@ -12,6 +12,9 @@
 #include "render_pass.hpp"
 #include "scene/scene_manager.hpp"
 #include "scene/scene_render_state.hpp"
+#include "viewport_region_utils.hpp"
+#include <algorithm>
+#include <cmath>
 #include <glad/glad.h>
 #include <string_view>
 #include <vector>
@@ -53,6 +56,7 @@ namespace lfs::vis {
                 .viewport_offset = {0, 0},
                 .start_position = 0.0f,
                 .end_position = 1.0f,
+                .grid_plane = context.grid_planes[splitViewPanelIndex(SplitViewPanelId::Left)],
             });
 
             const auto layouts = split_view_service.panelLayouts(context.settings, render_size.x);
@@ -70,6 +74,7 @@ namespace lfs::vis {
                 .viewport_offset = {(*layouts)[0].x, 0},
                 .start_position = (*layouts)[0].start_position,
                 .end_position = (*layouts)[0].end_position,
+                .grid_plane = context.grid_planes[splitViewPanelIndex(SplitViewPanelId::Left)],
             });
             panels.push_back({
                 .panel = SplitViewPanelId::Right,
@@ -78,7 +83,59 @@ namespace lfs::vis {
                 .viewport_offset = {(*layouts)[1].x, 0},
                 .start_position = (*layouts)[1].start_position,
                 .end_position = (*layouts)[1].end_position,
+                .grid_plane = context.grid_planes[splitViewPanelIndex(SplitViewPanelId::Right)],
             });
+            return panels;
+        }
+
+        [[nodiscard]] std::vector<ViewportInteractionPanel> buildInteractionPanels(
+            const RenderFrameCoordinator::Context& context,
+            const SplitViewService& split_view_service,
+            const glm::vec2& screen_viewport_pos,
+            const glm::vec2& screen_viewport_size) {
+            std::vector<ViewportInteractionPanel> panels;
+            if (screen_viewport_size.x <= 0.0f || screen_viewport_size.y <= 0.0f) {
+                return panels;
+            }
+
+            const int full_screen_width = std::max(static_cast<int>(std::lround(screen_viewport_size.x)), 1);
+            const int full_screen_height = std::max(static_cast<int>(std::lround(screen_viewport_size.y)), 1);
+            const auto make_panel = [&](const SplitViewPanelId panel_id,
+                                        const Viewport* const viewport,
+                                        const float offset_x,
+                                        const float width) {
+                panels.push_back({
+                    .panel = panel_id,
+                    .viewport_data =
+                        {.rotation = viewport->getRotationMatrix(),
+                         .translation = viewport->getTranslation(),
+                         .size = {
+                             std::max(static_cast<int>(std::lround(width)), 1),
+                             full_screen_height,
+                         },
+                         .focal_length_mm = context.settings.focal_length_mm,
+                         .orthographic = context.settings.orthographic,
+                         .ortho_scale = context.settings.ortho_scale},
+                    .viewport_pos = {screen_viewport_pos.x + offset_x, screen_viewport_pos.y},
+                    .viewport_size = {width, screen_viewport_size.y},
+                });
+            };
+
+            const auto layouts = split_view_service.panelLayouts(context.settings, full_screen_width);
+            if (!layouts || full_screen_width <= 1) {
+                make_panel(SplitViewPanelId::Left, &context.viewport, 0.0f, screen_viewport_size.x);
+                return panels;
+            }
+
+            panels.reserve(layouts->size());
+            make_panel(SplitViewPanelId::Left,
+                       &context.viewport,
+                       static_cast<float>((*layouts)[0].x),
+                       static_cast<float>((*layouts)[0].width));
+            make_panel(SplitViewPanelId::Right,
+                       &split_view_service.secondaryViewport(),
+                       static_cast<float>((*layouts)[1].x),
+                       static_cast<float>((*layouts)[1].width));
             return panels;
         }
 
@@ -90,21 +147,21 @@ namespace lfs::vis {
         dependencies_.render_count++;
         LOG_TRACE("Render #{}", dependencies_.render_count);
 
-        glm::ivec2 render_size = context.viewport.windowSize;
+        const auto framebuffer_region =
+            resolveFramebufferViewportRegion(
+                context.viewport, context.logical_screen_size, context.viewport_region);
+        glm::ivec2 render_size = context.viewport.frameBufferSize;
         glm::ivec2 viewport_pos(0, 0);
+        glm::vec2 screen_viewport_pos(0.0f, 0.0f);
+        glm::vec2 screen_viewport_size(
+            static_cast<float>(context.viewport.windowSize.x),
+            static_cast<float>(context.viewport.windowSize.y));
         if (context.viewport_region) {
-            render_size = glm::ivec2(
-                static_cast<int>(context.viewport_region->width),
-                static_cast<int>(context.viewport_region->height));
-            const int gl_y = context.viewport.frameBufferSize.y -
-                             static_cast<int>(context.viewport_region->y) -
-                             static_cast<int>(context.viewport_region->height);
-            viewport_pos = glm::ivec2(static_cast<int>(context.viewport_region->x), gl_y);
+            render_size = framebuffer_region.size;
+            viewport_pos = framebuffer_region.gl_pos;
+            screen_viewport_pos = {context.viewport_region->x, context.viewport_region->y};
+            screen_viewport_size = {context.viewport_region->width, context.viewport_region->height};
         }
-
-        glClearColor(context.settings.background_color.r, context.settings.background_color.g,
-                     context.settings.background_color.b, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         const bool count_frame = context.frame_dirty != 0;
         if (count_frame) {
@@ -127,28 +184,11 @@ namespace lfs::vis {
             return Result{};
         }
 
-        std::vector<ViewportInteractionPanel> interaction_panels;
-        interaction_panels.reserve(view_panels.size());
-        for (const auto& panel : view_panels) {
-            if (!panel.valid()) {
-                continue;
-            }
-            interaction_panels.push_back({
-                .panel = panel.panel,
-                .viewport_data =
-                    {.rotation = panel.viewport->getRotationMatrix(),
-                     .translation = panel.viewport->getTranslation(),
-                     .size = panel.render_size,
-                     .focal_length_mm = context.settings.focal_length_mm,
-                     .orthographic = context.settings.orthographic,
-                     .ortho_scale = context.settings.ortho_scale},
-                .viewport_pos =
-                    glm::vec2(static_cast<float>(viewport_pos.x + panel.viewport_offset.x),
-                              static_cast<float>(viewport_pos.y + panel.viewport_offset.y)),
-                .viewport_size =
-                    glm::vec2(static_cast<float>(panel.render_size.x), static_cast<float>(panel.render_size.y)),
-            });
-        }
+        auto interaction_panels = buildInteractionPanels(
+            context,
+            dependencies_.split_view_service,
+            screen_viewport_pos,
+            screen_viewport_size);
         dependencies_.viewport_interaction_context.updatePickContext(interaction_panels);
 
         const FrameContext frame_ctx{

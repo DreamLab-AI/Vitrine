@@ -435,7 +435,8 @@ namespace lfs::rendering {
             glViewport(0, 0, render_target_->width(), render_target_->height());
 
             if (clear_fbo) {
-                glClearColor(opts.background_color.r, opts.background_color.g, opts.background_color.b, 1.0f);
+                glClearColor(opts.background_color.r, opts.background_color.g, opts.background_color.b,
+                             opts.transparent_background ? 0.0f : 1.0f);
                 glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             }
         }

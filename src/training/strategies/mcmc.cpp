@@ -171,14 +171,9 @@ namespace lfs::training {
         size_t n_dead;
         {
             LOG_TIMER("relocate_find_dead");
-            // Fully fused kernel - no intermediate allocations
-            const size_t N = opacities.numel();
-            dead_mask = Tensor::empty({N}, Device::CUDA, DataType::Bool);
-            mcmc::launch_compute_dead_mask(
-                opacities.ptr<float>(),
-                _splat_data->rotation_raw().ptr<float>(),
-                dead_mask.ptr<uint8_t>(),
-                N,
+            dead_mask = compute_dead_mask_from_opacity_and_rotation(
+                opacities,
+                _splat_data->rotation_raw(),
                 _params->min_opacity);
             dead_indices = dead_mask.nonzero().squeeze(-1);
             n_dead = dead_indices.numel();

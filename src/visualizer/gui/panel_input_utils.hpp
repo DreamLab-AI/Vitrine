@@ -77,4 +77,36 @@ namespace lfs::vis::gui {
         return input;
     }
 
+    inline lfs::vis::PanelInputState toSequencerPanelInput(const PanelInputState& panel_input) {
+        lfs::vis::PanelInputState input;
+        input.mouse_x = panel_input.mouse_x;
+        input.mouse_y = panel_input.mouse_y;
+        input.screen_x = panel_input.screen_x;
+        input.screen_y = panel_input.screen_y;
+        for (int i = 0; i < 3; ++i) {
+            input.mouse_down[i] = panel_input.mouse_down[i];
+            input.mouse_clicked[i] = panel_input.mouse_clicked[i];
+            input.mouse_released[i] = panel_input.mouse_released[i];
+        }
+        input.mouse_wheel = panel_input.mouse_wheel;
+        input.key_shift = panel_input.key_shift;
+        input.key_ctrl = panel_input.key_ctrl;
+        input.key_alt = panel_input.key_alt;
+        input.key_super = panel_input.key_super;
+        input.key_delete_pressed =
+            std::find(panel_input.keys_pressed.begin(), panel_input.keys_pressed.end(),
+                      SDL_SCANCODE_DELETE) != panel_input.keys_pressed.end();
+        input.keys_pressed = panel_input.keys_pressed;
+        input.keys_released = panel_input.keys_released;
+        input.text_codepoints = panel_input.text_codepoints;
+        input.text_inputs = panel_input.text_inputs;
+        input.text_editing = panel_input.text_editing;
+        input.text_editing_start = panel_input.text_editing_start;
+        input.text_editing_length = panel_input.text_editing_length;
+        input.has_text_editing = panel_input.has_text_editing;
+        input.screen_w = panel_input.screen_w;
+        input.screen_h = panel_input.screen_h;
+        return input;
+    }
+
 } // namespace lfs::vis::gui

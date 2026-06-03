@@ -11,9 +11,9 @@ from urllib.parse import quote
 import lichtfeld as lf
 from .types import Panel
 from .rml_keys import (
-    KI_1, KI_ADD, KI_DOWN, KI_END, KI_ESCAPE, KI_F, KI_HOME, KI_I, KI_LEFT,
-    KI_M, KI_OEM_MINUS, KI_OEM_PLUS, KI_R, KI_RIGHT, KI_SPACE, KI_SUBTRACT,
-    KI_T, KI_UP,
+    KI_1, KI_ADD, KI_C, KI_DOWN, KI_END, KI_ESCAPE, KI_F, KI_HOME, KI_I,
+    KI_LEFT, KI_M, KI_OEM_MINUS, KI_OEM_PLUS, KI_R, KI_RIGHT, KI_SPACE,
+    KI_SUBTRACT, KI_T, KI_UP,
 )
 
 ZOOM_MIN = 0.1
@@ -58,12 +58,14 @@ class ImagePreviewPanel(Panel):
 
         self._pan_x = 0.0
         self._pan_y = 0.0
+        self._rotation_quadrants = 0
         self._dragging = False
         self._drag_start_x = 0.0
         self._drag_start_y = 0.0
         self._drag_start_pan_x = 0.0
         self._drag_start_pan_y = 0.0
         self._hover_image = False
+        self._color_picker_active = False
 
         self._doc = None
         self._dirty = True
@@ -104,6 +106,12 @@ class ImagePreviewPanel(Panel):
             ("nav-prev", lambda _ev: self._navigate(-1)),
             ("nav-next", lambda _ev: self._navigate(1)),
             ("btn-copy-path", lambda _ev: self._copy_path_to_clipboard()),
+            ("btn-rotate-left", lambda _ev: self._rotate(-1)),
+            ("btn-rotate-right", lambda _ev: self._rotate(1)),
+            ("btn-go-to-camera", lambda _ev: self._action_go_to_camera_view()),
+            ("btn-gt-compare", lambda _ev: self._action_open_in_gt_compare()),
+            ("btn-toggle-training", lambda _ev: self._action_toggle_training()),
+            ("btn-show-in-folder", lambda _ev: self._action_show_in_file_manager()),
         ]:
             el = doc.get_element_by_id(eid)
             if el:
@@ -182,6 +190,7 @@ class ImagePreviewPanel(Panel):
         self._camera_uids = camera_uids if camera_uids is not None else [-1] * len(image_paths)
         self._current_index = min(start_index, len(image_paths) - 1)
         self._last_training_params = self._get_training_params()
+        self._rotation_quadrants = 0
         self._reset_view()
         self._dirty = True
         self._prev_image_index = -1
@@ -228,6 +237,52 @@ class ImagePreviewPanel(Panel):
     def _copy_path_to_clipboard(self):
         if self._image_paths:
             lf.ui.set_clipboard_text(str(self._image_paths[self._current_index]))
+
+    def _current_camera_uid(self) -> int:
+        if 0 <= self._current_index < len(self._camera_uids):
+            return self._camera_uids[self._current_index]
+        return -1
+
+    def _current_camera_node(self):
+        uid = self._current_camera_uid()
+        if uid < 0:
+            return None
+        scene = lf.get_scene()
+        for node in scene.get_nodes():
+            if node.type == lf.scene.NodeType.CAMERA and node.camera_uid == uid:
+                return node
+        return None
+
+    def _action_go_to_camera_view(self):
+        uid = self._current_camera_uid()
+        if uid >= 0:
+            lf.ui.go_to_camera_view(uid)
+
+    def _action_open_in_gt_compare(self):
+        uid = self._current_camera_uid()
+        if uid < 0:
+            return
+        lf.ui.go_to_camera_view(uid)
+        if not lf.ui.is_gt_comparison_active():
+            lf.ui.toggle_gt_comparison()
+
+    def _action_toggle_training(self):
+        node = self._current_camera_node()
+        if node is None:
+            return
+        lf.set_camera_training_enabled(node.name, not node.training_enabled)
+        self._dirty = True
+
+    def _action_show_in_file_manager(self):
+        if not self._image_paths:
+            return
+        lf.ui.reveal_in_file_manager(str(self._image_paths[self._current_index]))
+
+    def _rotate(self, delta_quadrants: int):
+        if not self._image_paths:
+            return
+        self._rotation_quadrants = (self._rotation_quadrants + delta_quadrants) % 4
+        self._dirty = True
 
     def _zoom_in(self):
         self._zoom = min(ZOOM_MAX, self._zoom * 1.25)
@@ -349,10 +404,15 @@ class ImagePreviewPanel(Panel):
         self._dirty = True
 
     def _on_img_mousedown(self, event):
-        if self._fit_to_window:
-            return
         button = int(event.get_parameter("button", "0"))
         if button != 0:
+            return
+
+        if self._color_picker_active and self._image_paths:
+            self._perform_color_pick(event)
+            return
+
+        if self._fit_to_window:
             return
         self._dragging = True
         self._drag_start_x = float(event.get_parameter("mouse_x", "0"))
@@ -388,17 +448,24 @@ class ImagePreviewPanel(Panel):
     def _get_inactive_layer_id(self):
         return "main-image-b" if self._active_layer == "a" else "main-image-a"
 
-    def _apply_zoom(self, img_el, path: Path):
-        viewport = self._doc.get_element_by_id("image-viewport") if self._doc else None
+    def _get_rotation_degrees(self) -> int:
+        return (self._rotation_quadrants % 4) * 90
+
+    def _get_image_layout(self, path: Path, viewport=None):
+        if viewport is None:
+            viewport = self._doc.get_element_by_id("image-viewport") if self._doc else None
+
         w, h, _ = self._get_image_info(path)
         if not viewport or w <= 0 or h <= 0:
-            return
+            return None
 
-        vw = max(1, viewport.client_width)
-        vh = max(1, viewport.client_height)
+        dp_ratio = max(1.0, lf.ui.get_ui_scale())
+        vw = max(1, int(viewport.client_width / dp_ratio))
+        vh = max(1, int(viewport.client_height / dp_ratio))
+        rotated_w, rotated_h = (h, w) if self._rotation_quadrants % 2 else (w, h)
 
         if self._fit_to_window:
-            scale = min(1.0, vw / w, vh / h)
+            scale = min(1.0, vw / rotated_w, vh / rotated_h)
         else:
             scale = self._zoom
 
@@ -411,12 +478,36 @@ class ImagePreviewPanel(Panel):
             ox += self._pan_x
             oy += self._pan_y
 
+        return {
+            "width": w,
+            "height": h,
+            "dp_ratio": dp_ratio,
+            "viewport_width": vw,
+            "viewport_height": vh,
+            "scale": scale,
+            "draw_width": dw,
+            "draw_height": dh,
+            "offset_x": ox,
+            "offset_y": oy,
+        }
+
+    def _apply_zoom(self, img_el, path: Path):
+        layout = self._get_image_layout(path)
+        if not layout:
+            return
+
+        dw = layout["draw_width"]
+        dh = layout["draw_height"]
+        ox = layout["offset_x"]
+        oy = layout["offset_y"]
+
         img_el.set_property("width", f"{dw}dp")
         img_el.set_property("height", f"{dh}dp")
         img_el.set_property("max-width", "none")
         img_el.set_property("max-height", "none")
         img_el.set_property("left", f"{int(round(ox))}dp")
         img_el.set_property("top", f"{int(round(oy))}dp")
+        img_el.set_property("transform", f"rotate({self._get_rotation_degrees()}deg)")
         img_el.remove_property("margin-left")
         img_el.remove_property("margin-top")
 
@@ -428,8 +519,9 @@ class ImagePreviewPanel(Panel):
         if not viewport:
             return 0
 
-        vw = viewport.client_width
-        vh = viewport.client_height
+        dp_ratio = max(1.0, lf.ui.get_ui_scale())
+        vw = int(viewport.client_width / dp_ratio)
+        vh = int(viewport.client_height / dp_ratio)
         if vw <= 1 or vh <= 1:
             return 0
 
@@ -460,6 +552,7 @@ class ImagePreviewPanel(Panel):
         self._update_filmstrip(doc, has_images)
         self._update_sidebar(doc, has_images)
         self._update_nav_arrows(doc, has_images)
+        self._update_view_controls(doc, has_images)
         self._update_status(doc, has_images)
 
         if hasattr(self, '_handle'):
@@ -654,12 +747,46 @@ class ImagePreviewPanel(Panel):
             "hk-mask": tr("image_preview.mask"),
             "hk-reset": tr("common.reset"),
             "hk-close": tr("common.close"),
+            "hk-color-picker": tr("image_preview.color_picker"),
         }.items():
             _set_text(doc, element_id, text)
 
         copy_btn = doc.get_element_by_id("btn-copy-path")
         if copy_btn:
             copy_btn.set_attribute("title", tr("image_preview.copy_full_path"))
+        rotate_left_btn = doc.get_element_by_id("btn-rotate-left")
+        if rotate_left_btn:
+            rotate_left_btn.set_attribute("title", tr("image_preview.rotate_left"))
+        rotate_right_btn = doc.get_element_by_id("btn-rotate-right")
+        if rotate_right_btn:
+            rotate_right_btn.set_attribute("title", tr("image_preview.rotate_right"))
+
+        node = self._current_camera_node()
+        for eid, key in (
+            ("btn-go-to-camera", "scene.go_to_camera_view"),
+            ("btn-gt-compare", "scene.open_in_gt_compare"),
+            ("btn-show-in-folder", "scene.show_in_file_manager"),
+        ):
+            el = doc.get_element_by_id(eid)
+            if el:
+                el.set_attribute("title", tr(key))
+
+        train_btn = doc.get_element_by_id("btn-toggle-training")
+        if train_btn:
+            train_key = (
+                "scene.disable_for_training"
+                if node and node.training_enabled
+                else "scene.enable_for_training"
+            )
+            train_btn.set_attribute("title", tr(train_key))
+        train_icon = doc.get_element_by_id("btn-toggle-training-icon")
+        if train_icon:
+            icon_src = (
+                "../icon/scene/visible.png"
+                if node and node.training_enabled
+                else "../icon/scene/hidden.png"
+            )
+            train_icon.set_attribute("src", icon_src)
 
     def _update_sidebar(self, doc, has_images: bool):
         sidebar = doc.get_element_by_id("sidebar")
@@ -748,6 +875,22 @@ class ImagePreviewPanel(Panel):
             if mask_section:
                 mask_section.set_attribute("class", "sidebar-section-ip hidden")
 
+    def _update_view_controls(self, doc, has_images: bool):
+        controls = doc.get_element_by_id("view-controls")
+        if controls:
+            controls.set_attribute("class", "hidden" if not has_images else "")
+
+        for button_id in ("btn-rotate-left", "btn-rotate-right"):
+            button = doc.get_element_by_id(button_id)
+            if not button:
+                continue
+            if has_images:
+                if button.has_attribute("disabled"):
+                    button.remove_attribute("disabled")
+            else:
+                if not button.has_attribute("disabled"):
+                    button.set_attribute("disabled", "")
+
     def _update_status(self, doc, has_images: bool):
         ids = ("st-w", "st-h", "st-ch", "st-zoom", "st-counter")
         if not has_images:
@@ -763,6 +906,86 @@ class ImagePreviewPanel(Panel):
         _set_text(doc, "st-ch", f"CH {c}")
         _set_text(doc, "st-zoom", f"{lf.ui.tr('image_preview.zoom')} {self._get_zoom_display()}")
         _set_text(doc, "st-counter", f"{self._current_index + 1} / {len(self._image_paths)}")
+
+    # -- Color Picker --
+
+    def _perform_color_pick(self, event):
+        """Sample the average color at the clicked position and set as bg_color."""
+        path = self._image_paths[self._current_index]
+        viewport = self._doc.get_element_by_id("image-viewport") if self._doc else None
+        layout = self._get_image_layout(path, viewport)
+        if not layout:
+            return
+
+        w = layout["width"]
+        h = layout["height"]
+        dp_ratio = layout["dp_ratio"]
+        scale = layout["scale"]
+        ox = layout["offset_x"]
+        oy = layout["offset_y"]
+        cx = ox + layout["draw_width"] * 0.5
+        cy = oy + layout["draw_height"] * 0.5
+
+        # Get click position relative to the viewport
+        vp_left = viewport.absolute_left
+        vp_top = viewport.absolute_top
+        mx = float(event.get_parameter("mouse_x", "0")) / dp_ratio - vp_left / dp_ratio
+        my = float(event.get_parameter("mouse_y", "0")) / dp_ratio - vp_top / dp_ratio
+
+        dx = mx - cx
+        dy = my - cy
+        rotation = self._rotation_quadrants % 4
+        if rotation == 1:
+            ux = dy
+            uy = -dx
+        elif rotation == 2:
+            ux = -dx
+            uy = -dy
+        elif rotation == 3:
+            ux = -dy
+            uy = dx
+        else:
+            ux = dx
+            uy = dy
+
+        ix = int(round(ux / scale + w * 0.5))
+        iy = int(round(uy / scale + h * 0.5))
+
+        if ix < 0 or ix >= w or iy < 0 or iy >= h:
+            return
+
+        try:
+            r, g, b = lf.ui.sample_image_color(str(path), ix, iy, 10)
+        except Exception:
+            return
+
+        color = (r, g, b)
+        try:
+            params = lf.optimization_params()
+            params.bg_color = color
+        except Exception:
+            pass
+        try:
+            rs = lf.get_render_settings()
+            if rs:
+                rs.set("background_color", color)
+        except Exception:
+            pass
+
+        self._color_picker_active = False
+        self._update_picker_cursor()
+        self._dirty = True
+
+    def _update_picker_cursor(self):
+        """Toggle the picker-active CSS class on the image container."""
+        if not self._doc:
+            return
+        container = self._doc.get_element_by_id("image-container")
+        if container:
+            if self._color_picker_active:
+                container.set_attribute("class", "picker-active")
+            else:
+                container.set_attribute("class", "")
 
     # -- Keyboard --
 
@@ -822,8 +1045,19 @@ class ImagePreviewPanel(Panel):
             self._reset_view()
             self._dirty = True
             event.stop_propagation()
+        elif key == KI_C:
+            if self._image_paths:
+                self._color_picker_active = not self._color_picker_active
+                self._update_picker_cursor()
+                self._dirty = True
+            event.stop_propagation()
         elif key == KI_ESCAPE:
-            self._close_panel()
+            if self._color_picker_active:
+                self._color_picker_active = False
+                self._update_picker_cursor()
+                self._dirty = True
+            else:
+                self._close_panel()
             event.stop_propagation()
 
     # -- Helpers --

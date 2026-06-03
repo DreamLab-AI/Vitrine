@@ -28,10 +28,12 @@
 #include "tools/selection_tool.hpp"
 #include "tools/unified_tool_registry.hpp"
 #include "visualizer/gui_capabilities.hpp"
+#include "visualizer/scene_coordinate_utils.hpp"
 #include "visualizer_impl.hpp"
 #include <SDL3/SDL.h>
 #include <array>
 #include <cassert>
+#include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <unordered_set>
 
@@ -304,7 +306,7 @@ namespace lfs::vis::gui {
             if (!cropbox_node || !cropbox_node->cropbox)
                 return;
 
-            const glm::mat4 world_transform = sm->getScene().getWorldTransform(cropbox_id);
+            const glm::mat4 world_transform = scene_coords::nodeDataWorldTransform(sm->getScene(), cropbox_id);
 
             lfs::geometry::BoundingBox crop_box;
             crop_box.setBounds(cropbox_node->cropbox->min, cropbox_node->cropbox->max);
@@ -326,7 +328,7 @@ namespace lfs::vis::gui {
             if (!ellipsoid_node || !ellipsoid_node->ellipsoid)
                 return;
 
-            const glm::mat4 world_transform = sm->getScene().getWorldTransform(ellipsoid_id);
+            const glm::mat4 world_transform = scene_coords::nodeDataWorldTransform(sm->getScene(), ellipsoid_id);
             const glm::vec3 radii = ellipsoid_node->ellipsoid->radii;
             const bool inverse = ellipsoid_node->ellipsoid->inverse;
 
@@ -516,7 +518,7 @@ namespace lfs::vis::gui {
         glm::mat3 node_rotation(1.0f);
 
         if (use_bounds_scale && first_node) {
-            world_transform = scene.getWorldTransform(first_node->id);
+            world_transform = scene_coords::nodeVisualizerWorldTransform(scene, first_node->id);
             world_scale = extractScale(world_transform);
             node_rotation = extractRotation(world_transform);
 
@@ -574,13 +576,13 @@ namespace lfs::vis::gui {
                                                  : (is_multi_selection
                                                         ? transform_targets->world_center
                                                         : (first_node
-                                                               ? glm::vec3(scene.getWorldTransform(first_node->id) *
+                                                               ? glm::vec3(scene_coords::nodeVisualizerWorldTransform(scene, first_node->id) *
                                                                            glm::vec4(local_pivot, 1.0f))
                                                                : glm::vec3(0.0f)));
             gizmo_matrix[3] = glm::vec4(gizmo_position, 1.0f);
 
             if (!is_multi_selection && !use_world_space) {
-                const glm::mat3 rotation_scale(first_node ? scene.getWorldTransform(first_node->id)
+                const glm::mat3 rotation_scale(first_node ? scene_coords::nodeVisualizerWorldTransform(scene, first_node->id)
                                                           : glm::mat4(1.0f));
                 gizmo_matrix[0] = glm::vec4(rotation_scale[0], 0.0f);
                 gizmo_matrix[1] = glm::vec4(rotation_scale[1], 0.0f);
@@ -652,6 +654,7 @@ namespace lfs::vis::gui {
                 if (scene.getNodeBounds(first_node->id, fresh_min, fresh_max)) {
                     node_bounds_min_ = fresh_min;
                     node_bounds_max_ = fresh_max;
+                    node_bounds_orig_visualizer_world_transform_ = scene_coords::nodeVisualizerWorldTransform(scene, first_node->id);
                     node_bounds_orig_scale_ = extractScale(first_node->local_transform.get());
                     node_bounds_orig_rotation_ = extractRotation(first_node->local_transform.get());
                     node_bounds_world_scale_ = world_scale;
@@ -688,6 +691,7 @@ namespace lfs::vis::gui {
             }
 
             node_transforms_before_drag_.clear();
+            node_original_visualizer_world_transforms_.clear();
             node_original_world_positions_.clear();
             node_parent_world_inverses_.clear();
             node_original_rotations_.clear();
@@ -698,19 +702,15 @@ namespace lfs::vis::gui {
                 if (!node)
                     continue;
 
-                const glm::mat4 world_t = scene.getWorldTransform(node->id);
+                const glm::mat4 world_t = scene_coords::nodeVisualizerWorldTransform(scene, node->id);
                 const glm::mat4 local_t = node->local_transform.get();
                 node_transforms_before_drag_.push_back(local_t);
+                node_original_visualizer_world_transforms_.push_back(world_t);
                 node_original_rotations_.push_back(extractRotation(local_t));
                 node_original_scales_.push_back(extractScale(local_t));
 
-                glm::mat4 parent_world(1.0f);
-                if (node->parent_id != core::NULL_NODE) {
-                    parent_world = scene.getWorldTransform(node->parent_id);
-                }
-
                 node_original_world_positions_.emplace_back(world_t[3]);
-                node_parent_world_inverses_.push_back(glm::inverse(parent_world));
+                node_parent_world_inverses_.push_back(gizmo_ops::visualizerParentWorldInverse(scene, node->parent_id));
             }
         }
 
@@ -719,77 +719,35 @@ namespace lfs::vis::gui {
                 if (node_gizmo_operation_ == ImGuizmo::TRANSLATE) {
                     const glm::vec3 new_gizmo_pos(gizmo_matrix[3]);
                     const glm::vec3 delta = new_gizmo_pos - gizmo_pivot_;
+                    const glm::mat4 world_delta = glm::translate(glm::mat4(1.0f), delta);
 
                     for (size_t i = 0; i < node_gizmo_node_names_.size(); ++i) {
-                        const glm::mat4& original_local = node_transforms_before_drag_[i];
-                        const glm::vec3& original_world_pos = node_original_world_positions_[i];
-                        const glm::mat4& parent_inv = node_parent_world_inverses_[i];
-
-                        const glm::vec3 new_world_pos = original_world_pos + delta;
-                        const glm::vec3 new_local_pos = glm::vec3(parent_inv * glm::vec4(new_world_pos, 1.0f));
-
-                        glm::mat4 new_transform = original_local;
-                        new_transform[3] = glm::vec4(new_local_pos, 1.0f);
-                        scene_manager->setNodeTransform(node_gizmo_node_names_[i], new_transform);
+                        const glm::mat4 new_world_transform = world_delta * node_original_visualizer_world_transforms_[i];
+                        gizmo_ops::setNodeVisualizerWorldTransform(
+                            scene_manager->getScene(), node_gizmo_node_names_[i], new_world_transform);
                     }
                 } else if (node_gizmo_operation_ == ImGuizmo::ROTATE) {
                     const glm::mat3 delta_rot = extractRotation(delta_matrix);
                     gizmo_cumulative_rotation_ = delta_rot * gizmo_cumulative_rotation_;
+                    const glm::mat4 world_delta = glm::translate(glm::mat4(1.0f), gizmo_pivot_) *
+                                                  glm::mat4(gizmo_cumulative_rotation_) *
+                                                  glm::translate(glm::mat4(1.0f), -gizmo_pivot_);
 
                     for (size_t i = 0; i < node_gizmo_node_names_.size(); ++i) {
-                        const glm::vec3& original_world_pos = node_original_world_positions_[i];
-                        const glm::mat4& parent_inv = node_parent_world_inverses_[i];
-                        const glm::mat3& original_rot = node_original_rotations_[i];
-                        const glm::vec3& original_scale = node_original_scales_[i];
-
-                        const glm::vec3 offset = original_world_pos - gizmo_pivot_;
-                        const glm::vec3 rotated_offset = gizmo_cumulative_rotation_ * offset;
-                        const glm::vec3 new_world_pos = gizmo_pivot_ + rotated_offset;
-                        const glm::vec3 new_local_pos = glm::vec3(parent_inv * glm::vec4(new_world_pos, 1.0f));
-
-                        const glm::mat3 parent_rot = extractRotation(glm::inverse(parent_inv));
-                        const glm::mat3 parent_rot_inv = glm::transpose(parent_rot);
-                        const glm::mat3 local_delta_rot = parent_rot_inv * gizmo_cumulative_rotation_ * parent_rot;
-                        const glm::mat3 new_rot = local_delta_rot * original_rot;
-
-                        glm::mat4 new_transform(1.0f);
-                        new_transform[0] = glm::vec4(new_rot[0] * original_scale.x, 0.0f);
-                        new_transform[1] = glm::vec4(new_rot[1] * original_scale.y, 0.0f);
-                        new_transform[2] = glm::vec4(new_rot[2] * original_scale.z, 0.0f);
-                        new_transform[3] = glm::vec4(new_local_pos, 1.0f);
-                        scene_manager->setNodeTransform(node_gizmo_node_names_[i], new_transform);
+                        const glm::mat4 new_world_transform = world_delta * node_original_visualizer_world_transforms_[i];
+                        gizmo_ops::setNodeVisualizerWorldTransform(
+                            scene_manager->getScene(), node_gizmo_node_names_[i], new_world_transform);
                     }
                 } else if (node_gizmo_operation_ == ImGuizmo::SCALE) {
                     gizmo_cumulative_scale_ *= extractScale(delta_matrix);
-
-                    const glm::mat3 world_scale(gizmo_cumulative_scale_.x, 0.0f, 0.0f,
-                                                0.0f, gizmo_cumulative_scale_.y, 0.0f,
-                                                0.0f, 0.0f, gizmo_cumulative_scale_.z);
+                    const glm::mat4 world_delta = glm::translate(glm::mat4(1.0f), gizmo_pivot_) *
+                                                  glm::scale(glm::mat4(1.0f), gizmo_cumulative_scale_) *
+                                                  glm::translate(glm::mat4(1.0f), -gizmo_pivot_);
 
                     for (size_t i = 0; i < node_gizmo_node_names_.size(); ++i) {
-                        const glm::vec3& original_world_pos = node_original_world_positions_[i];
-                        const glm::mat4& parent_inv = node_parent_world_inverses_[i];
-                        const glm::mat3& original_rot = node_original_rotations_[i];
-                        const glm::vec3& original_scale = node_original_scales_[i];
-
-                        const glm::vec3 offset = original_world_pos - gizmo_pivot_;
-                        const glm::vec3 new_world_pos = gizmo_pivot_ + offset * gizmo_cumulative_scale_;
-                        const glm::vec3 new_local_pos = glm::vec3(parent_inv * glm::vec4(new_world_pos, 1.0f));
-
-                        const glm::mat3 parent_rot_inv = extractRotation(parent_inv);
-                        const glm::mat3 parent_rot = glm::transpose(parent_rot_inv);
-                        const glm::mat3 local_scale = parent_rot_inv * world_scale * parent_rot;
-
-                        const glm::mat3 original_rs(original_rot[0] * original_scale.x,
-                                                    original_rot[1] * original_scale.y,
-                                                    original_rot[2] * original_scale.z);
-                        const glm::mat3 new_rs = local_scale * original_rs;
-
-                        const glm::mat4 new_transform(glm::vec4(new_rs[0], 0.0f),
-                                                      glm::vec4(new_rs[1], 0.0f),
-                                                      glm::vec4(new_rs[2], 0.0f),
-                                                      glm::vec4(new_local_pos, 1.0f));
-                        scene_manager->setNodeTransform(node_gizmo_node_names_[i], new_transform);
+                        const glm::mat4 new_world_transform = world_delta * node_original_visualizer_world_transforms_[i];
+                        gizmo_ops::setNodeVisualizerWorldTransform(
+                            scene_manager->getScene(), node_gizmo_node_names_[i], new_world_transform);
                     }
                 }
             } else if (node_bounds_scale_active_) {
@@ -806,54 +764,36 @@ namespace lfs::vis::gui {
                 const glm::vec3 safe_bounds = glm::max(original_bounds_size, glm::vec3(1e-6f));
                 const glm::vec3 scale_ratio = new_local_size / safe_bounds;
 
-                const glm::vec3 new_scale = node_bounds_orig_scale_ * scale_ratio;
                 gizmo_cumulative_scale_ = scale_ratio;
-
-                glm::mat4 new_transform(1.0f);
-                new_transform[0] = glm::vec4(node_bounds_orig_rotation_[0] * new_scale.x, 0.0f);
-                new_transform[1] = glm::vec4(node_bounds_orig_rotation_[1] * new_scale.y, 0.0f);
-                new_transform[2] = glm::vec4(node_bounds_orig_rotation_[2] * new_scale.z, 0.0f);
 
                 const glm::vec3 new_center_world(mat_trans[0], mat_trans[1], mat_trans[2]);
                 const glm::vec3 bounds_center_local = (node_bounds_min_ + node_bounds_max_) * 0.5f;
-                const glm::mat3 new_rs(new_transform);
-                const glm::vec3 scaled_center = new_rs * bounds_center_local;
-
                 const auto* node = target_names.empty() ? nullptr : scene.getNode(target_names.front());
-                const glm::mat4 parent_world_inv = (node && node->parent_id != core::NULL_NODE)
-                                                       ? glm::inverse(scene.getWorldTransform(node->parent_id))
-                                                       : glm::mat4(1.0f);
-                const glm::vec3 new_pos_local = glm::vec3(parent_world_inv * glm::vec4(new_center_world, 1.0f)) - scaled_center;
-                new_transform[3] = glm::vec4(new_pos_local, 1.0f);
+                if (node) {
+                    glm::mat4 new_world_transform = node_bounds_orig_visualizer_world_transform_;
+                    new_world_transform[0] *= scale_ratio.x;
+                    new_world_transform[1] *= scale_ratio.y;
+                    new_world_transform[2] *= scale_ratio.z;
 
-                scene_manager->setSelectedNodeTransform(new_transform);
+                    const glm::mat3 new_rs(new_world_transform);
+                    new_world_transform[3] = glm::vec4(new_center_world - new_rs * bounds_center_local, 1.0f);
+
+                    if (const auto new_local_transform =
+                            scene_coords::nodeLocalTransformFromVisualizerWorld(scene, node->id, new_world_transform)) {
+                        scene_manager->setSelectedNodeTransform(*new_local_transform);
+                    }
+                }
             } else {
-                const glm::mat4 node_transform = scene_manager->getSelectedNodeTransform();
-                const glm::vec3 new_gizmo_pos_world = glm::vec3(gizmo_matrix[3]);
-
                 const auto& sm_scene = scene_manager->getScene();
                 const auto* node = target_names.empty() ? nullptr : sm_scene.getNode(target_names.front());
-                const glm::mat4 parent_world_inv = (node && node->parent_id != core::NULL_NODE)
-                                                       ? glm::inverse(sm_scene.getWorldTransform(node->parent_id))
-                                                       : glm::mat4(1.0f);
-                const glm::vec3 new_gizmo_pos = glm::vec3(parent_world_inv * glm::vec4(new_gizmo_pos_world, 1.0f));
-
-                glm::mat4 new_transform;
-                if (use_world_space) {
-                    const glm::mat3 old_rs(node_transform);
-                    const glm::mat3 delta_rs(delta_matrix);
-                    const glm::mat3 parent_rot_inv = extractRotation(parent_world_inv);
-                    const glm::mat3 parent_rot = glm::transpose(parent_rot_inv);
-                    const glm::mat3 local_delta = parent_rot_inv * delta_rs * parent_rot;
-                    const glm::mat3 new_rs = local_delta * old_rs;
-                    new_transform = glm::mat4(new_rs);
-                    new_transform[3] = glm::vec4(new_gizmo_pos - new_rs * local_pivot, 1.0f);
-                } else {
-                    const glm::mat3 new_rs(gizmo_matrix);
-                    new_transform = gizmo_matrix;
-                    new_transform[3] = glm::vec4(new_gizmo_pos - new_rs * local_pivot, 1.0f);
+                if (node) {
+                    const glm::mat4 new_world_transform =
+                        gizmo_matrix * glm::translate(glm::mat4(1.0f), -local_pivot);
+                    if (const auto new_local_transform =
+                            scene_coords::nodeLocalTransformFromVisualizerWorld(sm_scene, node->id, new_world_transform)) {
+                        scene_manager->setSelectedNodeTransform(*new_local_transform);
+                    }
                 }
-                scene_manager->setSelectedNodeTransform(new_transform);
             }
         }
 
@@ -899,7 +839,7 @@ namespace lfs::vis::gui {
                 if (cropbox_id != core::NULL_NODE) {
                     const auto* cropbox_node = scene.getNodeById(cropbox_id);
                     if (cropbox_node && cropbox_node->cropbox) {
-                        const glm::mat4 cropbox_world = scene.getWorldTransform(cropbox_id);
+                        const glm::mat4 cropbox_world = scene_coords::nodeVisualizerWorldTransform(scene, cropbox_id);
                         render_manager->setCropboxGizmoState(true, cropbox_node->cropbox->min,
                                                              cropbox_node->cropbox->max, cropbox_world);
                     }
@@ -909,7 +849,7 @@ namespace lfs::vis::gui {
                 if (ellipsoid_id != core::NULL_NODE) {
                     const auto* ellipsoid_node = scene.getNodeById(ellipsoid_id);
                     if (ellipsoid_node && ellipsoid_node->ellipsoid) {
-                        const glm::mat4 ellipsoid_world = scene.getWorldTransform(ellipsoid_id);
+                        const glm::mat4 ellipsoid_world = scene_coords::nodeVisualizerWorldTransform(scene, ellipsoid_id);
                         render_manager->setEllipsoidGizmoState(true, ellipsoid_node->ellipsoid->radii,
                                                                ellipsoid_world);
                     }
@@ -959,7 +899,7 @@ namespace lfs::vis::gui {
 
         const glm::vec3 cropbox_min = cropbox_node->cropbox->min;
         const glm::vec3 cropbox_max = cropbox_node->cropbox->max;
-        const glm::mat4 world_transform = scene_manager->getScene().getWorldTransform(cropbox_id);
+        const glm::mat4 world_transform = scene_coords::nodeVisualizerWorldTransform(scene_manager->getScene(), cropbox_id);
 
         const glm::vec3 local_size = cropbox_max - cropbox_min;
         const glm::vec3 world_scale = gizmo_ops::extractScale(world_transform);
@@ -1108,7 +1048,7 @@ namespace lfs::vis::gui {
         if (cropbox_gizmo_active_) {
             render_manager->setCropboxGizmoState(
                 true, cropbox_node->cropbox->min, cropbox_node->cropbox->max,
-                scene_manager->getScene().getWorldTransform(cropbox_id));
+                scene_coords::nodeVisualizerWorldTransform(scene_manager->getScene(), cropbox_id));
         } else {
             render_manager->setCropboxGizmoActive(false);
         }
@@ -1154,7 +1094,7 @@ namespace lfs::vis::gui {
             vp_size, settings.focal_length_mm, settings.orthographic, settings.ortho_scale);
 
         const glm::vec3 radii = ellipsoid_node->ellipsoid->radii;
-        const glm::mat4 world_transform = scene_manager->getScene().getWorldTransform(ellipsoid_id);
+        const glm::mat4 world_transform = scene_coords::nodeVisualizerWorldTransform(scene_manager->getScene(), ellipsoid_id);
 
         const glm::vec3 world_scale = gizmo_ops::extractScale(world_transform);
         const glm::mat3 rotation = gizmo_ops::extractRotation(world_transform);
@@ -1296,7 +1236,8 @@ namespace lfs::vis::gui {
         }
 
         if (ellipsoid_gizmo_active_) {
-            const glm::mat4 current_world_transform = scene_manager->getScene().getWorldTransform(ellipsoid_id);
+            const glm::mat4 current_world_transform =
+                scene_coords::nodeVisualizerWorldTransform(scene_manager->getScene(), ellipsoid_id);
             render_manager->setEllipsoidGizmoState(true, ellipsoid_node->ellipsoid->radii,
                                                    current_world_transform);
         } else {
@@ -1360,8 +1301,6 @@ namespace lfs::vis::gui {
                 break;
             }
         }
-        engine->setViewportGizmoHover(hovered_axis);
-
         if (!ui_wants_mouse) {
             const glm::vec2 capture_mouse_pos(mouse_x, mouse_y);
             const float time = static_cast<float>(SDL_GetTicks()) / 1000.0f;
@@ -1377,20 +1316,8 @@ namespace lfs::vis::gui {
                 if (hovered_axis >= 0 && hovered_axis <= 5) {
                     const int axis = hovered_axis % 3;
                     const bool negative = hovered_axis >= 3;
-                    const glm::mat3 rotation = engine->getAxisViewRotation(axis, negative);
-                    const float dist = glm::length(active_viewport.camera.pivot - active_viewport.camera.t);
-
-                    active_viewport.camera.pivot = glm::vec3(0.0f);
-                    active_viewport.camera.R = rotation;
-                    active_viewport.camera.t = -rotation[2] * dist;
-
-                    const auto& settings = rendering_manager->getSettings();
-                    lfs::core::events::ui::GridSettingsChanged{
-                        .enabled = settings.show_grid,
-                        .plane = axis,
-                        .opacity = settings.grid_opacity}
-                        .emit();
-
+                    active_viewport.camera.setAxisAlignedView(axis, negative);
+                    rendering_manager->setGridPlaneForPanel(hovered_panel->panel, axis);
                     rendering_manager->markDirty(DirtyFlag::CAMERA);
                 } else {
                     viewport_gizmo_dragging_ = true;
@@ -1408,11 +1335,28 @@ namespace lfs::vis::gui {
             if (viewport_gizmo_dragging_) {
                 if (auto* const active_panel = find_panel(viewport_gizmo_active_panel_);
                     active_panel && frame_input.mouse_down[0]) {
-                    active_panel->viewport->camera.updateRotateAroundCenter(capture_mouse_pos, time);
+                    if (const auto* const input_controller = viewer_->getInputController();
+                        input_controller &&
+                        input_controller->cameraNavigationMode() ==
+                            InputController::CameraNavigationMode::Trackball) {
+                        active_panel->viewport->camera.updateTrackballRotateAroundCenter(capture_mouse_pos, time);
+                    } else {
+                        active_panel->viewport->camera.updateRotateAroundCenter(capture_mouse_pos, time);
+                    }
                     rendering_manager->markDirty(DirtyFlag::CAMERA);
                 } else {
                     if (auto* const active_panel = find_panel(viewport_gizmo_active_panel_)) {
                         active_panel->viewport->camera.endRotateAroundCenter();
+                        if (const auto* const input_controller = viewer_->getInputController();
+                            input_controller && input_controller->cameraViewSnapEnabled()) {
+                            constexpr float kAxisSnapAngleDegrees = 10.0f;
+                            int snapped_axis = -1;
+                            if (active_panel->viewport->camera.snapToNearestAxisView(
+                                    kAxisSnapAngleDegrees, &snapped_axis, nullptr)) {
+                                rendering_manager->setGridPlaneForPanel(active_panel->panel, snapped_axis);
+                            }
+                        }
+                        rendering_manager->markDirty(DirtyFlag::CAMERA);
                     }
                     viewport_gizmo_dragging_ = false;
 
@@ -1427,6 +1371,9 @@ namespace lfs::vis::gui {
         }
 
         for (const auto& panel : panels) {
+            const int panel_hover_axis =
+                hovered_panel && hovered_panel->panel == panel.panel ? hovered_axis : -1;
+            engine->setViewportGizmoHover(panel_hover_axis);
             if (auto result = engine->renderViewportGizmo(panel.viewport->getRotationMatrix(),
                                                           panel.pos,
                                                           panel.size);
@@ -1434,6 +1381,7 @@ namespace lfs::vis::gui {
                 LOG_WARN("Failed to render viewport gizmo: {}", result.error());
             }
         }
+        engine->setViewportGizmoHover(-1);
 
         if (viewport_gizmo_dragging_) {
             if (const auto* const active_panel = find_panel(viewport_gizmo_active_panel_)) {

@@ -9,6 +9,18 @@
   <div class="separator"></div>
 
   <form id="dataset-import-form" class="impdlg-form">
+    <div class="impdlg-control-group">
+      <span class="impdlg-field-label text-muted">@tr:resume_checkpoint_popup.dataset_path</span>
+      <div class="impdlg-control-main">
+        <div class="impdlg-control-row">
+          <input type="text" class="impdlg-input" data-value="dataset_path" />
+          <button type="button" class="btn btn--secondary impdlg-browse-btn" data-event-click="browse_dataset">@tr:common.browse</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="separator"></div>
+
     <div class="impdlg-info-row">
       <span class="impdlg-field-label text-muted">@tr:load_dataset_popup.images_dir</span>
       <div class="impdlg-info-main">

@@ -188,6 +188,12 @@ namespace lfs::vis {
                     scaled_x = panel_local_x;
                 }
 
+                // The CUDA rasterizer outputs depth in OpenGL-style pixel coordinates
+                // (origin at bottom-left). Tools operate in window coordinates
+                // (origin at top-left), so flip Y to match existing getDepthAtPixel()
+                // semantics (which already flip for OpenGL glReadPixels paths).
+                scaled_y = (depth_height - 1) - scaled_y;
+
                 if (scaled_x >= 0 && scaled_x < depth_width && scaled_y >= 0 && scaled_y < depth_height) {
                     float d;
                     const float* gpu_ptr = depth_ptr->ptr<float>() + scaled_y * depth_width + scaled_x;

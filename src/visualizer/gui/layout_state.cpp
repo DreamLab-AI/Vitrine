@@ -65,6 +65,7 @@ namespace lfs::vis::gui {
             j["right_panel_width"] = right_panel_width;
             j["scene_panel_ratio"] = scene_panel_ratio;
             j["python_console_width"] = python_console_width;
+            j["bottom_dock_height"] = bottom_dock_height;
             j["show_sequencer"] = show_sequencer;
 
             if (!file_association.empty())
@@ -101,6 +102,7 @@ namespace lfs::vis::gui {
             right_panel_width = j.value("right_panel_width", right_panel_width);
             scene_panel_ratio = j.value("scene_panel_ratio", scene_panel_ratio);
             python_console_width = j.value("python_console_width", python_console_width);
+            bottom_dock_height = j.value("bottom_dock_height", bottom_dock_height);
             show_sequencer = j.value("show_sequencer", show_sequencer);
             file_association = j.value("file_association", file_association);
 

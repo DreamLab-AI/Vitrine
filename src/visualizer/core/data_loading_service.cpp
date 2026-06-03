@@ -62,7 +62,9 @@ namespace lfs::vis {
         }
 
         if (scene_manager_->getContentType() == SceneManager::ContentType::Dataset) {
-            scene_manager_->clear();
+            if (!scene_manager_->clear()) {
+                return;
+            }
         }
 
         if (scene_manager_->getContentType() == SceneManager::ContentType::SplatFiles) {
@@ -273,11 +275,15 @@ namespace lfs::vis {
         return scene_manager_->loadDataset(path, params_);
     }
 
-    void DataLoadingService::clearScene() {
+    bool DataLoadingService::clearScene() {
         try {
             LOG_DEBUG("Clearing scene");
-            scene_manager_->clear();
+            if (!scene_manager_->clear()) {
+                LOG_WARN("Scene clear request was rejected");
+                return false;
+            }
             LOG_INFO("Scene cleared");
+            return true;
         } catch (const std::exception& e) {
             LOG_ERROR("Failed to clear scene: {}", e.what());
             throw std::runtime_error(std::format("Failed to clear scene: {}", e.what()));

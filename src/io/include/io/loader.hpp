@@ -11,7 +11,9 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
 
@@ -33,6 +35,7 @@ namespace lfs::io {
 
     // Progress callback type
     using ProgressCallback = std::function<void(float percentage, const std::string& message)>;
+    using CancelCallback = std::function<bool()>;
 
     // Dataset type enum
     enum class DatasetType {
@@ -48,7 +51,24 @@ namespace lfs::io {
         std::string images_folder = "images";
         bool validate_only = false;
         ProgressCallback progress = nullptr;
+        CancelCallback cancel_requested = nullptr;
     };
+
+    class LoadCancelledError : public std::runtime_error {
+    public:
+        using std::runtime_error::runtime_error;
+    };
+
+    [[nodiscard]] inline bool is_load_cancel_requested(const LoadOptions& options) {
+        return options.cancel_requested && options.cancel_requested();
+    }
+
+    inline void throw_if_load_cancel_requested(const LoadOptions& options,
+                                               std::string_view message = "Load cancelled") {
+        if (is_load_cancel_requested(options)) {
+            throw LoadCancelledError(std::string(message));
+        }
+    }
 
     struct LoadedScene {
         std::vector<std::shared_ptr<lfs::core::Camera>> cameras;
@@ -141,6 +161,7 @@ namespace lfs::io {
 
     /// Load PLY as simple point cloud (xyz + optional colors)
     /// Use this for PLY files that are NOT Gaussian splats
-    LFS_IO_API std::expected<PointCloud, std::string> load_ply_point_cloud(const std::filesystem::path& filepath);
+    LFS_IO_API std::expected<PointCloud, std::string> load_ply_point_cloud(const std::filesystem::path& filepath,
+                                                                           const LoadOptions& options = {});
 
 } // namespace lfs::io

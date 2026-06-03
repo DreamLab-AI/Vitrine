@@ -35,7 +35,6 @@
     "help.about": "Over LichtFeld Studio"
   },
   "window": {
-    "getting_started": "Aan de Slag",
     "about": "Over LichtFeld Studio",
     "input_settings": "Invoerinstellingen",
     "debug_info": "Debug Info",
@@ -43,21 +42,20 @@
     "scene": "Scène",
     "rendering": "Renderen",
     "training": "Training",
-    "preferences": "Voorkeuren"
+    "preferences": "Voorkeuren",
+    "histogram": "Histogram"
   },
   "getting_started": {
-    "title": "SNELSTARTGIDS",
+    "title": "Aan de Slag",
     "description": "Leer hoe je datasets voorbereidt en aan de slag gaat met LichtFeld Studio:",
     "wiki_section": "WIKI & FAQ",
+    "video_automotive": "3dgs for automotive marketing",
     "video_intro": "Training op 360 Equirectangulaire Afbeeldingen",
     "video_latest": "LichtFeld v0.3.0 Functie Overzicht",
     "video_reality_scan": "Reality Scan Dataset",
     "video_colmap": "COLMAP Tutorial",
     "video_lichtfeld": "LichtFeld Tutorial",
-    "video_masks": "Maskers Tutorial",
-    "loading": "Laden...",
-    "wiki_label": "Wiki:",
-    "watch_tooltip": "Bekijk: {title}"
+    "video_masks": "Maskers Tutorial"
   },
   "about": {
     "title": "LICHTFELD STUDIO",
@@ -93,7 +91,7 @@
     "section.losses": "Verlies Parameters",
     "section.initialization": "Initialisatie",
     "section.thresholds": "Drempelwaarden",
-    "section.save_steps": "Bewaar Stappen",
+    "section.save_steps": "Bewaar/Eval Stappen",
     "section.basic_params": "Training Parameters",
     "section.advanced_params": "Geavanceerde Training Parameters",
     "section.sparsity": "Sparsity Instellingen",
@@ -105,6 +103,7 @@
     "dataset.cpu_cache": "CPU Cache:",
     "dataset.fs_cache": "FS Cache:",
     "dataset.output": "Output:",
+    "dataset.test_every": "Test Every:",
     "opt.strategy": "Strategy:",
     "opt.learning_rates": "Learning Rates:",
     "opt.iterations": "Iterations:",
@@ -180,7 +179,9 @@
     "tooltip.max_width": "Maximale afbeeldingsbreedte in pixels",
     "tooltip.cpu_cache": "Cache gedecodeerde afbeeldingen in RAM",
     "tooltip.fs_cache": "Cache gedecodeerde afbeeldingen op schijf",
-    "tooltip.save_steps": "Iteraties voor checkpoint opslag",
+    "tooltip.test_every": "Gebruik elke N-de afbeelding als testset",
+    "tooltip.enable_eval": "Schakel evaluatie tijdens training in (berekent PSNR/SSIM op testset). Vermindert de trainingssnelheid licht.",
+    "tooltip.save_steps": "Iteraties voor checkpoint opslag EN evaluatie uitvoering (als Eval inschakelen is aangevinkt). Evaluatie wordt altijd uitgevoerd op dezelfde iteraties als checkpoints.",
     "tooltip.lr_position": "Leersnelheid voor posities",
     "tooltip.lr_sh_coeff": "Leersnelheid voor sferische harmonischen",
     "tooltip.lr_opacity": "Leersnelheid voor opaciteit",
@@ -263,7 +264,74 @@
     "options.bg.color": "Kleur",
     "options.bg.modulation": "Modulatie",
     "options.bg.image": "Afbeelding",
-    "options.bg.random": "Willekeurig"
+    "options.bg.random": "Willekeurig",
+    "tooltip": {
+      "btn_switch_edit": "Schakel naar bewerkmodus voor de getrainde scène",
+      "ppisp_freeze_from_sidecar": "PPISP-gewichten laden uit een sidecar-bestand",
+      "ppisp_sidecar_path": "Pad naar het PPISP-sidecar-bestand",
+      "ppisp_sidecar_browse": "Bladeren naar een PPISP-sidecar-bestand",
+      "ppisp_sidecar_clear": "Geselecteerde PPISP-sidecar wissen",
+      "bg_color": "Effen achtergrondkleur gebruikt tijdens training",
+      "bg_image_path": "Pad naar de achtergrondafbeelding voor training",
+      "bg_image_browse": "Bladeren naar een achtergrondafbeelding",
+      "bg_image_clear": "Geselecteerde achtergrondafbeelding wissen",
+      "dataset_path": "Pad naar de geladen dataset",
+      "dataset_images": "Aantal afbeeldingen in de dataset",
+      "dataset_output": "Uitvoermap voor getrainde artefacten",
+      "opt_strategy_display": "Actieve verdichtingsstrategie",
+      "bilateral_grid_x": "X-resolutie van bilateraal raster",
+      "bilateral_grid_y": "Y-resolutie van bilateraal raster",
+      "bilateral_grid_w": "Kleur/intensiteit-bins van bilateraal raster",
+      "bilateral_grid_lr": "Leersnelheid van bilateraal raster",
+      "prune_opacity": "Verwijder Gaussians onder deze dekking",
+      "revised_opacity": "Gebruik de herziene dekking-formule",
+      "min_opacity": "Minimale dekking-drempel voor pruning",
+      "grow_scale_3d": "Verdichten wanneer 3D-schaal dit overschrijdt",
+      "grow_scale_2d": "Verdichten wanneer 2D-schermschaal dit overschrijdt",
+      "prune_scale_3d": "Verwijderen wanneer 3D-schaal dit overschrijdt",
+      "prune_scale_2d": "Verwijderen wanneer 2D-schermschaal dit overschrijdt",
+      "pause_refine_after_reset": "Iteraties om verfijning te pauzeren na dekking-reset",
+      "sparsify_steps": "Aantal sparsificatiestappen",
+      "init_rho": "Initiële sparsity-straf (rho)",
+      "prune_ratio": "Uiteindelijke fractie Gaussians te verwijderen aan het eind van sparsificatie",
+      "opt": {
+        "strategy": {
+          "mrnf": "Standaard 3DGS-strategie met MRNF-verfijning",
+          "igs_plus": "Verbeterde 3DGS+ met verfijnde groei/pruning",
+          "mcmc": "MCMC-strategie met sampling-gebaseerde verdichting"
+        },
+        "sh_degree": {
+          "0": "Alleen diffuus — snelste, geen blikrichting-afhankelijke kleur",
+          "1": "SH eerste orde — basale speculaire aanwijzingen",
+          "2": "SH tweede orde — betere blikrichting-afhankelijke kleur",
+          "3": "SH derde orde — beste kwaliteit, meeste VRAM"
+        },
+        "tile_mode": {
+          "full": "Rasterisatie op volledige resolutie",
+          "half": "Rasterisatie op halve resolutie (~4× sneller)",
+          "quarter": "Rasterisatie op kwartresolutie (~16× sneller)"
+        },
+        "mask_mode": {
+          "none": "Train op de hele afbeelding, geen masker",
+          "segment": "Gebruik segmentatiemasker voor voorgrond",
+          "ignore": "Negeer gemaskeerde pixels in de loss",
+          "alpha_consistent": "Alpha-consistentie met masker afdwingen"
+        },
+        "bg_mode": {
+          "color": "Gebruik een vaste achtergrondkleur",
+          "modulation": "Achtergrond moduleren met gereconstrueerde alpha",
+          "image": "Gebruik een achtergrondafbeelding",
+          "random": "Achtergrondkleur per stap willekeurig maken"
+        },
+        "resize_factor": {
+          "auto": "Automatisch herschaalfactor kiezen voor VRAM",
+          "1": "Trainen op originele afbeeldingsresolutie",
+          "2": "Trainen op halve afbeeldingsresolutie",
+          "4": "Trainen op kwart afbeeldingsresolutie",
+          "8": "Trainen op een achtste afbeeldingsresolutie"
+        }
+      }
+    }
   },
   "scene": {
     "add_ply": "PLY Toevoegen...",
@@ -300,8 +368,8 @@
     "background": "Achtergrond",
     "enable_for_training": "Inschakelen voor training",
     "disable_for_training": "Uitschakelen voor training",
-    "enable_all_training": "Alles inschakelen voor training",
-    "disable_all_training": "Alles uitschakelen voor training",
+    "enable_all_training": "Geselecteerde camera's inschakelen",
+    "disable_all_training": "Geselecteerde camera's uitschakelen",
     "training_enabled_tooltip": "Opgenomen in training",
     "training_disabled_tooltip": "Uitgesloten van training",
     "go_to_keyframe": "Ga naar keyframe-weergave",
@@ -315,7 +383,10 @@
     "keyframe_easing.ease_out": "Langzaam uit",
     "keyframe_easing.ease_in_out": "Langzaam in/uit",
     "keyframe_label": "Keyframe {index}  ({time:.2f}s)",
-    "search": "Zoeken"
+    "search": "Zoeken",
+    "show_in_file_manager": "Tonen in bestandsbeheer",
+    "go_to_image": "Ga naar afbeelding",
+    "open_in_gt_compare": "Openen in GT-vergelijking"
   },
   "export": {
     "title": "Exporteren",
@@ -323,6 +394,7 @@
     "format.sog_supersplat": "SOG (SuperSplat)",
     "format.spz_niantic": "SPZ (Niantic)",
     "format.usd_openusd": "USD (OpenUSD)",
+    "format.usdz_nurec": "USDZ (NuRec)",
     "format.html_viewer": "HTML Viewer",
     "select_models": "Selecteer Modellen:",
     "all": "Alle",
@@ -372,6 +444,8 @@
     "step": "Stap",
     "loss": "Verlies",
     "eta": "ETA",
+    "psnr": "PSNR",
+    "ssim": "SSIM",
     "unknown": "Onbekend",
     "dataset_no_trainer": "Dataset (Geen Trainer)",
     "dataset_ready": "Dataset (Gereed)",
@@ -439,6 +513,7 @@
     "equirectangular": "Equirectangulair",
     "gut_mode": "GUT (3DGUT)",
     "mip_filter": "Mip Filter",
+    "camera_metrics": "Camerametrieken",
     "appearance_correction": "PPISP Correction",
     "ppisp_mode": "Mode",
     "ppisp_mode_manual": "Manual",
@@ -472,7 +547,11 @@
     "mesh_shadow_enabled": "Schaduwen",
     "mesh_shadow_resolution": "Schaduwresolutie",
     "camera_frustum_scale": "Frustum schaal",
-    "voxel_size": "Voxelgrootte"
+    "voxel_size": "Voxelgrootte",
+    "theme_vignette": "Vignette",
+    "theme_vignette_intensity": "Vignet-intensiteit",
+    "theme_vignette_radius": "Vignetstraal",
+    "theme_vignette_softness": "Vignetzachtheid"
   },
   "toolbar": {
     "selection": "Selectie (1)",
@@ -507,7 +586,8 @@
     "perspective": "Perspectief",
     "orthographic": "Orthografisch",
     "sequencer": "Sequencer",
-    "ellipsoid": "Ellipsoid"
+    "ellipsoid": "Ellipsoid",
+    "histogram": "Histogram"
   },
   "transform": {
     "node": "Node: %s",
@@ -550,7 +630,8 @@
     "idle": "Inactief",
     "running": "Actief",
     "finished": "Voltooid",
-    "save_steps": "Bewaar Stappen",
+    "save_steps": "Bewaar/Eval Stappen",
+    "save_eval_steps": "Bewaar/Eval Stappen",
     "new_step": "Nieuwe Stap",
     "no_save_steps": "Geen bewaar stappen geconfigureerd",
     "sparsity": "Sparsity Instellingen",
@@ -575,6 +656,18 @@
     "ppisp_gamma_channel": "Gamma-offset per kanaal",
     "ppisp_crf_toe": "Schaduwcompressie (toe van CRF-curve)",
     "ppisp_crf_shoulder": "Hooglicht-roll-off (shoulder van CRF-curve)",
+    "theme_vignette": "Donker maken van viewportranden inschakelen",
+    "theme_vignette_intensity": "Donkerheid van vignet aanpassen (0-1)",
+    "theme_vignette_radius": "Aanpassen waar het vignet begint (0-1)",
+    "theme_vignette_softness": "Zachtheid van de vignetrand aanpassen (0-1)",
+    "simplify_source": "Geselecteerd splat-knooppunt dat als invoer voor de vereenvoudiging wordt gebruikt",
+    "simplify_target": "Doelaantal Gaussians om in het vereenvoudigde resultaat te behouden",
+    "simplify_knn_k": "Grootte van de buurt die wordt gebruikt om samenvoegkandidaten te beoordelen",
+    "simplify_merge_cap": "Maximale fractie Gaussians die in één doorgang kunnen samenvoegen",
+    "simplify_opacity_prune": "Verwijder Gaussians onder deze opaciteitsdrempel vóór het samenvoegen",
+    "simplify_output": "Naam van het nieuwe vereenvoudigde splat-knooppunt dat aan de scène wordt toegevoegd",
+    "simplify_apply": "Maak een nieuw vereenvoudigd splat-knooppunt van de geselecteerde bron",
+    "simplify_cancel": "Annuleer de actieve splat-vereenvoudigingstaak",
     "render_scale": "Viewer resolutie (lager = minder VRAM)",
     "point_cloud_forced": "Gedwongen voor training start",
     "desaturate_unselected": "Dim niet-geselecteerde PLY's",
@@ -597,9 +690,13 @@
     "selection_colors": "Kleuren voor selectie visualisatie",
     "seq_camera_path": "Camerapad-visualisatie in-/uitschakelen",
     "seq_first": "Naar eerste keyframe springen",
+    "seq_prev_keyframe": "Naar vorige keyframe springen",
+    "seq_prev": "Naar vorige keyframe springen",
     "seq_stop": "Afspelen stoppen",
     "seq_play": "Animatie afspelen",
     "seq_pause": "Animatie pauzeren",
+    "seq_next_keyframe": "Naar volgende keyframe springen",
+    "seq_next": "Naar volgende keyframe springen",
     "seq_last": "Naar laatste keyframe springen",
     "seq_loop_off": "Herhaald afspelen inschakelen",
     "seq_loop_on": "Herhaald afspelen uitschakelen",
@@ -615,8 +712,75 @@
     "seq_quality": "CRF-kwaliteit (lager = betere kwaliteit, groter bestand)",
     "seq_export": "Video exporteren vanuit camerapad",
     "seq_clear": "Alle keyframes verwijderen",
+    "seq_dock": "Sequencer vastzetten",
+    "seq_undock": "Sequencer losmaken",
     "seq_interval": "Rasterinterval",
-    "seq_preview_size": "PiP-voorbeeldschaal"
+    "seq_preview_size": "PiP-voorbeeldschaal",
+    "transform_position_axis": "Verschuif de selectie langs deze as",
+    "transform_rotation_axis": "Roteer de selectie rond deze as (graden)",
+    "transform_scale_axis": "Schaal de selectie langs deze as",
+    "transform_scale_uniform": "Uniforme schaal over alle assen",
+    "transform_reset": "Transformatie terugzetten naar identiteit",
+    "environment_mode": "Achtergrondbron: effen kleur of HDRI",
+    "environment_map_path": "Kies een HDRI-omgevingskaart",
+    "environment_exposure": "HDRI-belichting in EV-stops",
+    "environment_rotation": "Roteer HDRI rond de verticale as",
+    "voxel_size": "Voxel-celgrootte voor ruimtelijke queries",
+    "axes_size": "Lengte van de coördinaatas-lijnen",
+    "grid_plane": "Vlak waarop het raster wordt getekend",
+    "grid_opacity": "Dekking van rasterlijnen",
+    "camera_frustum_scale": "Visuele schaal van camerafrustums",
+    "camera_metrics_mode": "Beeldkwaliteitsstatistieken weergegeven op trainingscamera's",
+    "selection_color_committed": "Kleur voor bevestigde selecties",
+    "selection_color_preview": "Kleur voor selectievoorbeeld",
+    "selection_color_center_marker": "Kleur voor de selectie-middenmarkering",
+    "mesh_wireframe": "Mesh als draadframe weergeven",
+    "mesh_wireframe_color": "Kleur van draadframelijnen",
+    "mesh_wireframe_width": "Breedte van draadframelijnen",
+    "mesh_light_intensity": "Lichtintensiteit van mesh",
+    "mesh_ambient": "Bijdrage van omgevingslicht aan mesh",
+    "mesh_backface_culling": "Achterliggende driehoeken niet renderen",
+    "mesh_shadow_enabled": "Schaduwen werpen en ontvangen op mesh",
+    "mesh_shadow_resolution": "Resolutie van schaduwmap",
+    "ppisp_vignette_enabled": "Vignet toepassen als onderdeel van correctie",
+    "ppisp_vignette_strength": "Vignet verdonkering in de hoeken",
+    "opt": {
+      "environment_mode": {
+        "solid_color": "Renderen met effen achtergrondkleur",
+        "equirect": "Renderen met 360° HDR-omgevingskaart"
+      },
+      "environment_map_preset": {
+        "kloofendal": "Ingebouwd: Kloofendal Pure Sky",
+        "alps": "Ingebouwd: Alps Field",
+        "custom": "Laatst geladen aangepaste HDRI"
+      },
+      "grid_plane": {
+        "yz": "Raster op YZ-vlak tonen (rechter aanzicht)",
+        "xz": "Raster op XZ-vlak tonen (bovenaanzicht)",
+        "xy": "Raster op XY-vlak tonen (vooraanzicht)"
+      },
+      "sh_degree": {
+        "0": "Alleen diffuus — geen blikrichting-afhankelijke verlichting",
+        "1": "SH eerste orde — basale blikrichting-afhankelijke verlichting",
+        "2": "SH tweede orde — meer richtingsdetail",
+        "3": "SH derde orde — volledige blikrichting-afhankelijke kwaliteit"
+      },
+      "camera_metrics": {
+        "off": "Kwaliteitsstatistieken verbergen",
+        "psnr": "Toon PSNR per trainingscamera",
+        "psnr_ssim": "Toon PSNR en SSIM per trainingscamera"
+      },
+      "shadow_resolution": {
+        "512": "512×512 schaduwmap (lage kwaliteit, snel)",
+        "1024": "1024×1024 schaduwmap (gebalanceerd)",
+        "2048": "2048×2048 schaduwmap (hoge kwaliteit)",
+        "4096": "4096×4096 schaduwmap (beste kwaliteit, traag)"
+      },
+      "ppisp_mode": {
+        "manual": "Handmatig: pas correctieschuifregelaars direct aan",
+        "auto": "Auto: gebruik de getrainde controller voor correctie"
+      }
+    }
   },
   "exit_popup": {
     "title": "Applicatie Afsluiten?",
@@ -766,7 +930,8 @@
     "ppisp_freeze_gaussians": "Gaussians bevriezen:",
     "disabled": "Uitgeschakeld",
     "ppisp_freeze_from_sidecar": "Frozen Sidecar:",
-    "ppisp_sidecar_path": "Sidecar Path:"
+    "ppisp_sidecar_path": "Sidecar Path:",
+    "enable_eval": "Enable Eval:"
   },
   "image_preview": {
     "title": "Afbeeldingsvoorbeeld",
@@ -826,7 +991,10 @@
     "no_image": "Geen afbeelding",
     "zoom": "Zoom",
     "fit": "Passend",
-    "storage_section": "OPSLAG"
+    "storage_section": "OPSLAG",
+    "color_picker": "Pipet",
+    "rotate_left": "90° linksom draaien",
+    "rotate_right": "90° rechtsom draaien"
   },
   "startup": {
     "supported_by": "Ondersteund door",
@@ -969,7 +1137,9 @@
     "confirm_uninstall_message": "Weet je zeker dat je \"{name}\" wilt verwijderen?",
     "confirm_uninstall_yes": "Ja",
     "confirm_uninstall_no": "Nee",
-    "load_on_startup": "Laden bij opstarten"
+    "load_on_startup": "Laden bij opstarten",
+    "view.grid": "Rasterweergave",
+    "view.list": "Lijstweergave"
   },
   "sequencer": {
     "edit_focal_length": "Brandpuntsafstand bewerken...",
@@ -1005,7 +1175,16 @@
     "keyframe_preview": "Keyframe {} voorbeeld"
   },
   "rendering_panel": {
-    "fov_format": "FOV: {hfov:.1f}° H / {vfov:.1f}° V"
+    "fov_format": "FOV: {hfov:.1f}° H / {vfov:.1f}° V",
+    "section_simplify": "Splat-vereenvoudiging",
+    "simplify_source": "Bron",
+    "simplify_select_source": "Selecteer een splat-knooppunt",
+    "simplify_target": "Doel",
+    "simplify_knn_k": "kNN K",
+    "simplify_merge_cap": "Samenvoeglimiet",
+    "simplify_opacity_prune": "Opaciteitssnoei",
+    "simplify_original": "Origineel",
+    "simplify_output": "Uitvoer"
   },
   "scripts_panel": {
     "actions": "Acties",
@@ -1095,5 +1274,135 @@
     "clear_confirm": "Alle keyframes verwijderen?",
     "confirm": "Bevestigen",
     "cancel": "Annuleren"
+  },
+  "histogram": {
+    "title_eyebrow": "Gaussian Analysis",
+    "field": "Field",
+    "log_scale": "Logaritmische schaal",
+    "samples": "Samples",
+    "range": "Range",
+    "mean": "Mean",
+    "median": "Median",
+    "p95": "P95",
+    "peak_bin": "Peak Bin",
+    "bin_count": "{count} bins",
+    "bins": "Bins",
+    "compare_x_bins": "X-bins",
+    "compare_y_bins": "Y-bins",
+    "marked": "Marked",
+    "count": "Count",
+    "clear": "Clear",
+    "delete": "Delete",
+    "no_marked_range": "No marked range",
+    "gaussian_count": "{count} Gaussians",
+    "range_value": "{min} to {max}",
+    "status_drag_delete": "Left-drag across the histogram to mark a range, then delete it.",
+    "status_selection": "Marked range becomes the active Gaussian selection.",
+    "summary": "{metric} distribution across {count} Gaussians",
+    "bin_tooltip": "Bin {index}: {left} to {right} | {count} Gaussians",
+    "compare_with": "Compare With",
+    "compare_bin_count": "{x_count} x {y_count} bins",
+    "compare": {
+      "off": "Off",
+      "summary": "{x_metric} vs {y_metric} across {count} Gaussians",
+      "range_value": "X {x_range} | Y {y_range}",
+      "status_selection": "Marked compare region becomes the active Gaussian selection.",
+      "bin_tooltip": "X {x_range} | Y {y_range} | {count} Gaussians",
+      "empty": {
+        "title": "Compare unavailable",
+        "message": "Choose a second metric to see how two Gaussian properties cluster together.",
+        "metric_unavailable": {
+          "title": "Compare metric unavailable",
+          "message": "The comparison metric could not be read from the combined Gaussian model."
+        },
+        "no_visible_values": {
+          "title": "No comparable values",
+          "message": "The selected metric pair does not contain any visible finite samples to visualize."
+        }
+      }
+    },
+    "delete_failed": {
+      "title": "Delete Failed",
+      "status": "Delete failed: {message}",
+      "unexpected": "The delete pipeline raised an unexpected error.",
+      "invalid_result": "The delete pipeline returned an invalid result.",
+      "reported_failure": "The delete pipeline reported a failure."
+    },
+    "empty": {
+      "unavailable": {
+        "title": "Histogram unavailable",
+        "message": "Switch to a view or edit scene with Gaussian splats to inspect a distribution."
+      },
+      "no_scene": {
+        "title": "No scene loaded",
+        "message": "Load a Gaussian scene, then reopen the histogram panel."
+      },
+      "no_visible_gaussians": {
+        "title": "No visible Gaussians",
+        "message": "The histogram only works when the active scene exposes a visible Gaussian model."
+      },
+      "metric_unavailable": {
+        "title": "Metric unavailable",
+        "message": "The selected metric could not be read from the combined Gaussian model."
+      },
+      "no_visible_values": {
+        "title": "No visible values",
+        "message": "The selected metric does not contain any visible finite samples to visualize."
+      }
+    },
+    "metric": {
+      "opacity": {
+        "label": "Opacity",
+        "description": "Activated Gaussian opacity in [0, 1]."
+      },
+      "position_x": {
+        "label": "Position X",
+        "description": "Gaussian world-space center on the X axis."
+      },
+      "position_y": {
+        "label": "Position Y",
+        "description": "Gaussian world-space center on the Y axis."
+      },
+      "position_z": {
+        "label": "Position Z",
+        "description": "Gaussian world-space center on the Z axis."
+      },
+      "scale_x": {
+        "label": "Scale X",
+        "description": "Activated Gaussian scale on the X axis."
+      },
+      "scale_y": {
+        "label": "Scale Y",
+        "description": "Activated Gaussian scale on the Y axis."
+      },
+      "scale_z": {
+        "label": "Scale Z",
+        "description": "Activated Gaussian scale on the Z axis."
+      },
+      "scale_max": {
+        "label": "Scale Max",
+        "description": "Largest activated scale component per Gaussian."
+      },
+      "volume": {
+        "label": "Volume",
+        "description": "Ellipsoid volume derived from activated Gaussian scales."
+      },
+      "anisotropy": {
+        "label": "Anisotropy",
+        "description": "Ratio of largest to smallest activated scale. 1 is sphere-like; larger values are spikier."
+      },
+      "erank": {
+        "label": "Effectieve rang",
+        "description": "Entropiegebaseerde effectieve rang van geactiveerde Gauss-schalen. 1 is lijnvormig, 2 plaatvormig, 3 bolvormig."
+      },
+      "distance": {
+        "label": "Distance",
+        "description": "Distance from the current scene center."
+      }
+    },
+    "undo": "Undo",
+    "redo": "Redo",
+    "undo_named": "Undo: {name}",
+    "redo_named": "Redo: {name}"
   }
 }

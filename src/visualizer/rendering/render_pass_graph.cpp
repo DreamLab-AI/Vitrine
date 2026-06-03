@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "render_pass_graph.hpp"
+#include "passes/environment_pass.hpp"
 #include "passes/mesh_pass.hpp"
 #include "passes/overlay_pass.hpp"
 #include "passes/point_cloud_pass.hpp"
@@ -14,6 +15,7 @@
 namespace lfs::vis {
 
     RenderPassGraph::RenderPassGraph() {
+        passes_.push_back(std::make_unique<EnvironmentPass>());
         passes_.push_back(std::make_unique<SplitViewPass>());
         passes_.push_back(std::make_unique<SplatRasterPass>());
         splat_raster_pass_ = static_cast<SplatRasterPass*>(passes_.back().get());

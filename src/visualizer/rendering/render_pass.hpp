@@ -53,6 +53,7 @@ namespace lfs::vis {
         glm::ivec2 viewport_offset{0};
         float start_position = 0.0f;
         float end_position = 1.0f;
+        int grid_plane = 1;
 
         [[nodiscard]] bool valid() const {
             return viewport != nullptr && render_size.x > 0 && render_size.y > 0;
@@ -96,6 +97,7 @@ namespace lfs::vis {
                     .translation = source.getTranslation(),
                     .size = size,
                     .focal_length_mm = settings.focal_length_mm,
+                    .intrinsics_override = std::nullopt,
                     .near_plane = lfs::rendering::DEFAULT_NEAR_PLANE,
                     .far_plane = settings.depth_clip_enabled ? settings.depth_clip_far
                                                              : lfs::rendering::DEFAULT_FAR_PLANE,
@@ -150,6 +152,7 @@ namespace lfs::vis {
         float near_plane = lfs::rendering::DEFAULT_NEAR_PLANE;
         float far_plane = lfs::rendering::DEFAULT_FAR_PLANE;
         bool orthographic = false;
+        bool color_has_alpha = false;
 
         [[nodiscard]] const std::shared_ptr<lfs::core::Tensor>& primaryDepth() const {
             return depth_panels[0].depth;
@@ -164,6 +167,7 @@ namespace lfs::vis {
             .near_plane = result.near_plane,
             .far_plane = result.far_plane,
             .orthographic = result.orthographic,
+            .color_has_alpha = result.color_has_alpha,
         };
         for (size_t i = 0; i < result.depth_panel_count && i < metadata.depth_panels.size(); ++i) {
             metadata.depth_panels[i] = {
@@ -176,13 +180,14 @@ namespace lfs::vis {
     }
 
     // Pass execution order (defined in RenderingManager constructor):
-    //   [pre] SplatRasterPass — GT comparison pre-render (before loop, at GT dimensions)
-    //   [0]   SplitViewPass   — Side-by-side views (blocks scene raster passes if active)
-    //   [1]   SplatRasterPass — Render splats to offscreen FBO
-    //   [2]   PointCloudPass  — Pre-training point cloud (mutually exclusive with splats)
-    //   [3]   PresentPass     — Present cached GPU frame
-    //   [4]   MeshPass        — Render meshes, composite with splats
-    //   [5]   OverlayPass     — Grid, crop boxes, frustums, pivot, axes
+    //   [pre] SplatRasterPass  — GT comparison pre-render (before loop, at GT dimensions)
+    //   [0]   EnvironmentPass  — Clear scene target and render background
+    //   [1]   SplitViewPass    — Side-by-side views (blocks scene raster passes if active)
+    //   [2]   SplatRasterPass  — Render splats to offscreen FBO
+    //   [3]   PointCloudPass   — Pre-training point cloud (mutually exclusive with splats)
+    //   [4]   PresentPass      — Present cached GPU frame over the environment
+    //   [5]   MeshPass         — Render meshes, composite with splats
+    //   [6]   OverlayPass      — Grid, crop boxes, frustums, pivot, axes
     //
     // Inter-pass coordination flags:
     //   split_view_executed — Set by SplitViewPass. Skips SplatRaster/PointCloud/Mesh.
@@ -203,6 +208,23 @@ namespace lfs::vis {
         DirtyMask additional_dirty = 0;
         std::optional<std::chrono::steady_clock::time_point> pivot_animation_end;
     };
+
+    inline void applyGTComparisonRenderCamera(
+        lfs::rendering::FrameView& frame_view,
+        bool& equirectangular,
+        const std::optional<GTComparisonContext>& gt_context) {
+        if (!gt_context || !gt_context->render_camera.has_value()) {
+            return;
+        }
+
+        const auto& render_camera = *gt_context->render_camera;
+        frame_view.rotation = render_camera.rotation;
+        frame_view.translation = render_camera.translation;
+        frame_view.intrinsics_override = render_camera.intrinsics;
+        frame_view.orthographic = false;
+        frame_view.ortho_scale = lfs::rendering::DEFAULT_ORTHO_SCALE;
+        equirectangular = render_camera.equirectangular;
+    }
 
     std::optional<std::shared_lock<std::shared_mutex>> acquireRenderLock(const FrameContext& ctx);
 

@@ -6,12 +6,26 @@
 #include "core/logger.hpp"
 #include "rendering/gl_state_guard.hpp"
 #include "scene/scene_manager.hpp"
+#include "theme/theme.hpp"
+#include "training/training_manager.hpp"
 #include <algorithm>
 #include <cassert>
 #include <glad/glad.h>
 #include <unordered_set>
 
 namespace lfs::vis {
+
+    namespace {
+        [[nodiscard]] lfs::rendering::ScreenSpaceVignette makeViewportVignette() {
+            const auto& vignette = theme().vignette;
+            return {
+                .enabled = vignette.enabled,
+                .intensity = vignette.intensity,
+                .radius = vignette.radius,
+                .softness = vignette.softness,
+            };
+        }
+    } // namespace
 
     void OverlayPass::execute(lfs::rendering::RenderingEngine& engine,
                               const FrameContext& ctx,
@@ -22,7 +36,8 @@ namespace lfs::vis {
             return;
 
         const auto render_overlays = [&](const Viewport& source_viewport,
-                                         const lfs::rendering::ViewportData& viewport) {
+                                         const lfs::rendering::ViewportData& viewport,
+                                         const int grid_plane) {
             if (settings.depth_filter_enabled) {
                 const lfs::rendering::BoundingBox depth_box{
                     .min = settings.depth_filter_min,
@@ -53,7 +68,7 @@ namespace lfs::vis {
             }
 
             if (settings.show_crop_box && ctx.scene_manager) {
-                const auto visible_cropboxes = ctx.scene_manager->getScene().getVisibleCropBoxes();
+                const auto& visible_cropboxes = ctx.scene_state.cropboxes;
                 const core::NodeId selected_cropbox_id = ctx.scene_manager->getSelectedNodeCropBoxId();
 
                 for (const auto& cb : visible_cropboxes) {
@@ -87,7 +102,7 @@ namespace lfs::vis {
             }
 
             if (settings.show_ellipsoid && ctx.scene_manager) {
-                const auto visible_ellipsoids = ctx.scene_manager->getScene().getVisibleEllipsoids();
+                const auto& visible_ellipsoids = ctx.scene_state.ellipsoids;
                 const core::NodeId selected_ellipsoid_id = ctx.scene_manager->getSelectedNodeEllipsoidId();
 
                 for (const auto& el : visible_ellipsoids) {
@@ -173,12 +188,6 @@ namespace lfs::vis {
                         }
                     }
 
-                    glm::mat4 scene_transform(1.0f);
-                    auto visible_transforms = ctx.scene_manager->getScene().getVisibleNodeTransforms();
-                    if (!visible_transforms.empty()) {
-                        scene_transform = visible_transforms[0];
-                    }
-
                     LOG_TRACE("Rendering {} camera frustums with scale {}, focused index: {} (ID: {})",
                               cameras.size(), settings.camera_frustum_scale, focused_index, ctx.hovered_camera_id);
 
@@ -192,16 +201,29 @@ namespace lfs::vis {
                         }
                     }
 
-                    const lfs::rendering::CameraFrustumRenderRequest request{
+                    lfs::rendering::CameraFrustumRenderRequest request{
                         .viewport = viewport,
                         .scale = settings.camera_frustum_scale,
                         .train_color = settings.train_camera_color,
                         .eval_color = settings.eval_camera_color,
+                        .per_camera_colors = {},
                         .focused_index = focused_index,
-                        .scene_transform = scene_transform,
+                        .scene_transforms = ctx.scene_state.camera_scene_transforms,
                         .equirectangular_view = settings.equirectangular,
                         .disabled_uids = std::move(disabled_uids),
                         .emphasized_uids = std::move(emphasized_uids)};
+
+                    if (const auto* trainer_manager = ctx.scene_manager->getTrainerManager()) {
+                        if (const auto* trainer = trainer_manager->getTrainer()) {
+                            std::vector<std::array<float, 3>> loss_colors;
+                            if (trainer->fillCameraLossColors(cameras, loss_colors)) {
+                                request.per_camera_colors.reserve(loss_colors.size());
+                                for (const auto& color : loss_colors) {
+                                    request.per_camera_colors.emplace_back(color[0], color[1], color[2]);
+                                }
+                            }
+                        }
+                    }
 
                     if (auto frustum_result = engine.renderCameraFrustums(cameras, request);
                         !frustum_result) {
@@ -215,7 +237,7 @@ namespace lfs::vis {
                 !settings.equirectangular) {
                 if (const auto result = engine.renderGrid(
                         viewport,
-                        static_cast<lfs::rendering::GridPlane>(settings.grid_plane),
+                        static_cast<lfs::rendering::GridPlane>(grid_plane),
                         settings.grid_opacity);
                     !result) {
                     LOG_WARN("Grid render failed: {}", result.error());
@@ -224,29 +246,38 @@ namespace lfs::vis {
         };
 
         if (ctx.view_panels.size() > 1 && ctx.render_size.x > 1 && ctx.render_size.y > 0) {
-            lfs::rendering::GLViewportGuard viewport_guard;
-            lfs::rendering::GLScissorEnableGuard scissor_guard;
-            glEnable(GL_SCISSOR_TEST);
+            {
+                lfs::rendering::GLViewportGuard viewport_guard;
+                lfs::rendering::GLScissorEnableGuard scissor_guard;
+                glEnable(GL_SCISSOR_TEST);
 
-            for (const auto& panel : ctx.view_panels) {
-                if (!panel.valid()) {
-                    continue;
+                for (const auto& panel : ctx.view_panels) {
+                    if (!panel.valid()) {
+                        continue;
+                    }
+
+                    glViewport(ctx.viewport_pos.x + panel.viewport_offset.x,
+                               ctx.viewport_pos.y + panel.viewport_offset.y,
+                               panel.render_size.x,
+                               panel.render_size.y);
+                    glScissor(ctx.viewport_pos.x + panel.viewport_offset.x,
+                              ctx.viewport_pos.y + panel.viewport_offset.y,
+                              panel.render_size.x,
+                              panel.render_size.y);
+                    render_overlays(*panel.viewport, ctx.makeViewportData(panel), panel.grid_plane);
                 }
-
-                glViewport(ctx.viewport_pos.x + panel.viewport_offset.x,
-                           ctx.viewport_pos.y + panel.viewport_offset.y,
-                           panel.render_size.x,
-                           panel.render_size.y);
-                glScissor(ctx.viewport_pos.x + panel.viewport_offset.x,
-                          ctx.viewport_pos.y + panel.viewport_offset.y,
-                          panel.render_size.x,
-                          panel.render_size.y);
-                render_overlays(*panel.viewport, ctx.makeViewportData(panel));
             }
-            return;
+        } else {
+            render_overlays(ctx.viewport, ctx.makeViewportData(), settings.grid_plane);
         }
 
-        render_overlays(ctx.viewport, ctx.makeViewportData());
+        const auto vignette = makeViewportVignette();
+        if (vignette.active()) {
+            glViewport(ctx.viewport_pos.x, ctx.viewport_pos.y, ctx.render_size.x, ctx.render_size.y);
+            if (auto result = engine.renderScreenSpaceVignette(ctx.render_size, vignette); !result) {
+                LOG_WARN("Screen-space vignette render failed: {}", result.error());
+            }
+        }
     }
 
 } // namespace lfs::vis

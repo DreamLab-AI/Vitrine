@@ -5,6 +5,7 @@
 #pragma once
 
 #include "core/executable_path.hpp"
+#include "core/path_utils.hpp"
 #include <filesystem>
 #include <stdexcept>
 #include <string>
@@ -42,9 +43,9 @@ namespace lfs::vis {
         // Build error message showing all searched locations
         std::string error_msg = "Cannot find asset: " + asset_name + "\nSearched in:\n";
         for (const auto& path : search_paths) {
-            error_msg += "  - " + path.string() + "\n";
+            error_msg += "  - " + lfs::core::path_to_utf8(path) + "\n";
         }
-        error_msg += "\nExecutable directory: " + lfs::core::getExecutableDir().string();
+        error_msg += "\nExecutable directory: " + lfs::core::path_to_utf8(lfs::core::getExecutableDir());
 
         throw std::runtime_error(error_msg);
     }
@@ -75,7 +76,7 @@ namespace lfs::vis {
 
         std::string error_msg = "Cannot find shader: " + shader_name + "\nSearched in:\n";
         for (const auto& path : search_paths) {
-            error_msg += "  - " + path.string() + "\n";
+            error_msg += "  - " + lfs::core::path_to_utf8(path) + "\n";
         }
         throw std::runtime_error(error_msg);
     }

@@ -40,6 +40,7 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           submodules: recursive
 
       - name: Free disk space
@@ -115,7 +116,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /github/home/.cache/vcpkg/archives
-          key: vcpkg-pkgs-${{ runner.os }}-${{ hashFiles('**/vcpkg.json') }}
+          key: vcpkg-pkgs-${{ runner.os }}-linux-gui-v1-${{ hashFiles('**/vcpkg.json') }}
           restore-keys: vcpkg-pkgs-${{ runner.os }}-
 
       - name: Configure

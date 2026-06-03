@@ -790,7 +790,12 @@ namespace lfs::training {
         if (iter >= _params->stop_refine) {
             return;
         }
-        const lfs::core::Tensor prune_mask = (_splat_data->get_opacity() < _params->prune_opacity);
+        auto prune_mask = (_splat_data->get_opacity() < _params->prune_opacity)
+                              .logical_or(compute_near_zero_rotation_mask(_splat_data->rotation_raw()));
+        if (_free_mask.is_valid() && prune_mask.numel() > 0) {
+            auto active_mask = _free_mask.slice(0, 0, prune_mask.numel()).logical_not();
+            prune_mask = prune_mask.logical_and(active_mask);
+        }
         remove(prune_mask);
     }
 

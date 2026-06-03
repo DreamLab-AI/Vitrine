@@ -160,6 +160,17 @@ namespace lfs::rendering {
                    equalMat4(a.transform, b.transform);
         }
 
+        [[nodiscard]] bool equalIntrinsics(
+            const std::optional<CameraIntrinsics>& a,
+            const std::optional<CameraIntrinsics>& b) {
+            return (!a && !b) ||
+                   (a && b &&
+                    a->focal_x == b->focal_x &&
+                    a->focal_y == b->focal_y &&
+                    a->center_x == b->center_x &&
+                    a->center_y == b->center_y);
+        }
+
         [[nodiscard]] bool equalEllipsoid(const Ellipsoid& a, const Ellipsoid& b) {
             return equalVec3(a.radii, b.radii) &&
                    equalMat4(a.transform, b.transform);
@@ -213,6 +224,12 @@ namespace lfs::rendering {
                 return "gut";
             if (a.equirectangular != b.equirectangular)
                 return "equirectangular";
+            if (a.transparent_background != b.transparent_background)
+                return "transparent_background";
+            if (a.frame_view.focal_length_mm != b.frame_view.focal_length_mm)
+                return "frame_view.focal_length_mm";
+            if (!equalIntrinsics(a.frame_view.intrinsics_override, b.frame_view.intrinsics_override))
+                return "frame_view.intrinsics_override";
             if (!equalVec3(a.frame_view.background_color, b.frame_view.background_color))
                 return "frame_view.background_color";
             if (a.frame_view.far_plane != b.frame_view.far_plane)
@@ -257,6 +274,7 @@ namespace lfs::rendering {
                 .view_translation = request.frame_view.translation,
                 .viewport_size = request.frame_view.size,
                 .focal_length_mm = request.frame_view.focal_length_mm,
+                .intrinsics_override = request.frame_view.intrinsics_override,
                 .scaling_modifier = request.scaling_modifier,
                 .antialiasing = request.antialiasing,
                 .mip_filter = request.mip_filter,
@@ -290,7 +308,8 @@ namespace lfs::rendering {
                 .dim_non_emphasized = request.overlay.emphasis.dim_non_emphasized,
                 .emphasis_flash_intensity = request.overlay.emphasis.flash_intensity,
                 .orthographic = request.frame_view.orthographic,
-                .ortho_scale = request.frame_view.ortho_scale};
+                .ortho_scale = request.frame_view.ortho_scale,
+                .transparent_background = request.transparent_background};
         }
 
         [[nodiscard]] RenderingPipeline::RasterRequest makeHoveredGaussianQueryPipelineRequest(
@@ -301,6 +320,7 @@ namespace lfs::rendering {
                 .view_translation = request.frame_view.translation,
                 .viewport_size = request.frame_view.size,
                 .focal_length_mm = request.frame_view.focal_length_mm,
+                .intrinsics_override = request.frame_view.intrinsics_override,
                 .scaling_modifier = request.scaling_modifier,
                 .antialiasing = false,
                 .mip_filter = request.mip_filter,
@@ -357,6 +377,7 @@ namespace lfs::rendering {
                 .view_translation = request.frame_view.translation,
                 .viewport_size = request.frame_view.size,
                 .focal_length_mm = request.frame_view.focal_length_mm,
+                .intrinsics_override = request.frame_view.intrinsics_override,
                 .scaling_modifier = request.render.scaling_modifier,
                 .antialiasing = false,
                 .mip_filter = false,
@@ -388,7 +409,8 @@ namespace lfs::rendering {
                 .emphasized_node_mask = {},
                 .orthographic = request.frame_view.orthographic,
                 .ortho_scale = request.frame_view.ortho_scale,
-                .point_cloud_crop_params = makePointCloudCropParams(request)};
+                .point_cloud_crop_params = makePointCloudCropParams(request),
+                .transparent_background = request.transparent_background};
         }
 
     } // namespace
@@ -532,6 +554,14 @@ namespace lfs::rendering {
             return std::unexpected(std::string("Failed to create shaders: ") + result.error().what());
         }
         quad_shader_ = std::move(*result);
+
+        result = load_shader("screen_vignette", "screen_quad.vert", "screen_vignette.frag", false);
+        if (!result) {
+            LOG_WARN("Failed to create vignette shader, disabling screen-space vignette: {}",
+                     result.error().what());
+        } else {
+            vignette_shader_ = std::move(*result);
+        }
         LOG_DEBUG("Screen quad shader loaded successfully");
         return {};
     }
@@ -637,9 +667,12 @@ namespace lfs::rendering {
             .valid = result.valid,
             .depth_is_ndc = result.depth_is_ndc,
             .external_depth_texture = result.external_depth_texture,
+            .depth_texcoord_scale = result.depth_texcoord_scale,
+            .flip_y = result.flip_y,
             .near_plane = result.near_plane,
             .far_plane = result.far_plane,
-            .orthographic = result.orthographic};
+            .orthographic = result.orthographic,
+            .color_has_alpha = result.color_has_alpha};
     }
 
     Result<GpuFrame> RenderingEngineImpl::uploadRenderResultToGpuFrame(
@@ -653,7 +686,11 @@ namespace lfs::rendering {
 
         invalidatePresentUploadCache();
 
-        const glm::vec2 texcoord_scale = screen_renderer_->getTexcoordScale();
+        const glm::vec2 color_texcoord_scale = screen_renderer_->getTexcoordScale();
+        const glm::vec2 depth_texcoord_scale =
+            result.external_depth_texture != 0
+                ? result.depth_texcoord_scale
+                : glm::vec2(1.0f);
         const GLuint uploaded_depth_texture =
             result.external_depth_texture != 0
                 ? result.external_depth_texture
@@ -662,11 +699,13 @@ namespace lfs::rendering {
         return GpuFrame{
             .color = {.id = screen_renderer_->getUploadedColorTexture(),
                       .size = viewport_size,
-                      .texcoord_scale = texcoord_scale},
+                      .texcoord_scale = color_texcoord_scale},
             .depth = {.id = uploaded_depth_texture,
                       .size = viewport_size,
-                      .texcoord_scale = texcoord_scale},
+                      .texcoord_scale = depth_texcoord_scale},
+            .flip_y = result.flip_y,
             .depth_is_ndc = result.depth_is_ndc,
+            .color_has_alpha = result.color_has_alpha,
             .near_plane = result.near_plane,
             .far_plane = result.far_plane,
             .orthographic = result.orthographic};
@@ -876,6 +915,7 @@ namespace lfs::rendering {
             .view_translation = request.frame_view.translation,
             .viewport_size = request.frame_view.size,
             .focal_length_mm = request.frame_view.focal_length_mm,
+            .intrinsics_override = request.frame_view.intrinsics_override,
             .scaling_modifier = 1.0f,
             .antialiasing = false,
             .mip_filter = false,
@@ -985,7 +1025,11 @@ namespace lfs::rendering {
             return std::unexpected(upload_result.error());
         }
 
-        const glm::vec2 texcoord_scale = screen_renderer_->getTexcoordScale();
+        const glm::vec2 color_texcoord_scale = screen_renderer_->getTexcoordScale();
+        const glm::vec2 depth_texcoord_scale =
+            metadata.external_depth_texture != 0
+                ? metadata.depth_texcoord_scale
+                : glm::vec2(1.0f);
         const GLuint uploaded_depth_texture =
             metadata.external_depth_texture != 0
                 ? metadata.external_depth_texture
@@ -994,11 +1038,13 @@ namespace lfs::rendering {
         return GpuFrame{
             .color = {.id = screen_renderer_->getUploadedColorTexture(),
                       .size = viewport_size,
-                      .texcoord_scale = texcoord_scale},
+                      .texcoord_scale = color_texcoord_scale},
             .depth = {.id = uploaded_depth_texture,
                       .size = viewport_size,
-                      .texcoord_scale = texcoord_scale},
+                      .texcoord_scale = depth_texcoord_scale},
+            .flip_y = metadata.flip_y,
             .depth_is_ndc = metadata.depth_is_ndc,
+            .color_has_alpha = metadata.color_has_alpha,
             .near_plane = metadata.near_plane,
             .far_plane = metadata.far_plane,
             .orthographic = metadata.orthographic};
@@ -1047,6 +1093,9 @@ namespace lfs::rendering {
             gpu_frame_readback_size_ == frame.color.size) {
             Tensor image_hwc;
             if (auto read_result = gpu_frame_readback_interop_->readToTensor(image_hwc, width, height); read_result) {
+                if (image_hwc.ndim() == 3 && image_hwc.size(2) == 4) {
+                    image_hwc = image_hwc.slice(2, 0, 3).contiguous();
+                }
                 return std::make_shared<Tensor>(image_hwc.permute({2, 0, 1}).contiguous());
             }
 
@@ -1103,6 +1152,7 @@ namespace lfs::rendering {
         last_presented_near_plane_ = 0.0f;
         last_presented_far_plane_ = 0.0f;
         last_presented_orthographic_ = false;
+        last_presented_color_has_alpha_ = false;
         has_present_upload_cache_ = false;
     }
 
@@ -1138,7 +1188,10 @@ namespace lfs::rendering {
             frame.color.id,
             params,
             frame.color.texcoord_scale,
-            frame.depth.valid() ? frame.depth.id : 0);
+            frame.depth.texcoord_scale,
+            frame.depth.valid() ? frame.depth.id : 0,
+            frame.flip_y,
+            frame.color_has_alpha);
     }
 
     Result<void> RenderingEngineImpl::ensureRenderResultUploaded(
@@ -1157,6 +1210,7 @@ namespace lfs::rendering {
         const bool same_near = (last_presented_near_plane_ == metadata.near_plane);
         const bool same_far = (last_presented_far_plane_ == metadata.far_plane);
         const bool same_projection = (last_presented_orthographic_ == metadata.orthographic);
+        const bool same_alpha = (last_presented_color_has_alpha_ == metadata.color_has_alpha);
 
         const bool needs_upload = !has_present_upload_cache_ ||
                                   !same_image_ptr ||
@@ -1165,7 +1219,8 @@ namespace lfs::rendering {
                                   !same_depth_mode ||
                                   !same_near ||
                                   !same_far ||
-                                  !same_projection;
+                                  !same_projection ||
+                                  !same_alpha;
 
         if (!needs_upload) {
             LOG_TRACE("Skipping screen upload (unchanged frame payload)");
@@ -1181,6 +1236,7 @@ namespace lfs::rendering {
         internal_result.near_plane = metadata.near_plane;
         internal_result.far_plane = metadata.far_plane;
         internal_result.orthographic = metadata.orthographic;
+        internal_result.color_has_alpha = metadata.color_has_alpha;
 
         if (auto upload_result = RenderingPipeline::uploadToScreen(internal_result, *screen_renderer_, viewport_size);
             !upload_result) {
@@ -1195,6 +1251,7 @@ namespace lfs::rendering {
         last_presented_near_plane_ = metadata.near_plane;
         last_presented_far_plane_ = metadata.far_plane;
         last_presented_orthographic_ = metadata.orthographic;
+        last_presented_color_has_alpha_ = metadata.color_has_alpha;
         has_present_upload_cache_ = true;
         return {};
     }
@@ -1353,7 +1410,8 @@ namespace lfs::rendering {
 
         return camera_frustum_renderer_.render(
             cameras, view, proj, request.scale, request.train_color, request.eval_color,
-            request.scene_transform, request.equirectangular_view,
+            request.per_camera_colors,
+            request.scene_transform, request.scene_transforms, request.equirectangular_view,
             request.disabled_uids, request.emphasized_uids);
     }
 
@@ -1370,36 +1428,20 @@ namespace lfs::rendering {
 
         return camera_frustum_renderer_.pickCamera(
             cameras, request.mouse_pos, request.viewport_pos, request.viewport_size, view, proj,
-            request.scale, request.scene_transform);
+            request.scale, request.scene_transform, request.scene_transforms);
     }
 
     void RenderingEngineImpl::clearFrustumCache() {
         camera_frustum_renderer_.clearThumbnailCache();
     }
 
-    void RenderingEngineImpl::setFrustumImageLoader(std::shared_ptr<lfs::io::PipelinedImageLoader> loader) {
-        camera_frustum_renderer_.setImageLoader(std::move(loader));
+    void RenderingEngineImpl::setFrustumImageLoader(std::shared_ptr<lfs::io::PipelinedImageLoader> loader,
+                                                    const bool allow_fallback) {
+        camera_frustum_renderer_.setImageLoader(std::move(loader), allow_fallback);
     }
 
     glm::mat4 RenderingEngineImpl::createViewMatrix(const ViewportData& viewport) const {
-        glm::mat3 flip_yz = glm::mat3(1, 0, 0, 0, -1, 0, 0, 0, -1);
-        glm::mat3 R_inv = glm::transpose(viewport.rotation);
-        glm::vec3 t_inv = -R_inv * viewport.translation;
-
-        R_inv = flip_yz * R_inv;
-        t_inv = flip_yz * t_inv;
-
-        glm::mat4 view(1.0f);
-        for (int i = 0; i < 3; ++i) {
-            for (int j = 0; j < 3; ++j) {
-                view[i][j] = R_inv[i][j];
-            }
-        }
-        view[3][0] = t_inv.x;
-        view[3][1] = t_inv.y;
-        view[3][2] = t_inv.z;
-
-        return view;
+        return viewport.getViewMatrix();
     }
 
     glm::mat4 RenderingEngineImpl::createProjectionMatrix(const ViewportData& viewport) const {
@@ -1469,8 +1511,9 @@ namespace lfs::rendering {
             mesh_renderer_.getDepthTexture(),
             splat_frame.near_plane,
             splat_frame.far_plane,
-            true,
+            splat_frame.flip_y,
             splat_frame.color.texcoord_scale,
+            splat_frame.depth.texcoord_scale,
             splat_frame.depth_is_ndc);
     }
 
@@ -1484,6 +1527,56 @@ namespace lfs::rendering {
         return depth_compositor_.presentMeshOnly(
             mesh_renderer_.getColorTexture(),
             mesh_renderer_.getDepthTexture());
+    }
+
+    Result<void> RenderingEngineImpl::renderScreenSpaceVignette(
+        const glm::ivec2& viewport_size,
+        ScreenSpaceVignette vignette) {
+        if (!vignette.active()) {
+            return {};
+        }
+
+        if (!isInitialized()) {
+            LOG_ERROR("Rendering engine not initialized");
+            return std::unexpected("Rendering engine not initialized");
+        }
+
+        if (!vignette_shader_.valid()) {
+            return {};
+        }
+
+        GLStateGuard state_guard;
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+        if (auto result = vignette_shader_.bind(); !result) {
+            return result;
+        }
+
+        if (auto result = vignette_shader_.set("u_viewport_size", glm::vec2(viewport_size)); !result) {
+            vignette_shader_.unbind();
+            return result;
+        }
+        if (auto result = vignette_shader_.set("u_vignette_intensity", vignette.intensity); !result) {
+            vignette_shader_.unbind();
+            return result;
+        }
+        if (auto result = vignette_shader_.set("u_vignette_radius", vignette.radius); !result) {
+            vignette_shader_.unbind();
+            return result;
+        }
+        if (auto result = vignette_shader_.set("u_vignette_softness", vignette.softness); !result) {
+            vignette_shader_.unbind();
+            return result;
+        }
+
+        auto render_result = screen_renderer_->renderQuad(vignette_shader_);
+        if (auto result = vignette_shader_.unbind(); !result) {
+            return result;
+        }
+        return render_result;
     }
 
 } // namespace lfs::rendering

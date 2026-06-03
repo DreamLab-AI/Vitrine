@@ -35,7 +35,6 @@
     "help.about": "O LichtFeld Studio"
   },
   "window": {
-    "getting_started": "Wprowadzenie",
     "about": "O LichtFeld Studio",
     "input_settings": "Ustawienia Wejścia",
     "debug_info": "Informacje Debugowania",
@@ -43,21 +42,20 @@
     "scene": "Scena",
     "rendering": "Renderowanie",
     "training": "Trening",
-    "preferences": "Preferencje"
+    "preferences": "Preferencje",
+    "histogram": "Histogram"
   },
   "getting_started": {
-    "title": "PRZEWODNIK SZYBKIEGO STARTU",
+    "title": "Wprowadzenie",
     "description": "Dowiedz się, jak przygotować zbiory danych i rozpocząć pracę z LichtFeld Studio:",
     "wiki_section": "WIKI & FAQ",
+    "video_automotive": "3dgs for automotive marketing",
     "video_intro": "Trening na Obrazach Equirectangular 360",
     "video_latest": "LichtFeld v0.3.0 Przegląd Funkcji",
     "video_reality_scan": "Zbiór Danych Reality Scan",
     "video_colmap": "Samouczek COLMAP",
     "video_lichtfeld": "Samouczek LichtFeld",
-    "video_masks": "Samouczek Masek",
-    "loading": "Ładowanie...",
-    "wiki_label": "Wiki:",
-    "watch_tooltip": "Obejrzyj: {title}"
+    "video_masks": "Samouczek Masek"
   },
   "about": {
     "title": "LICHTFELD STUDIO",
@@ -93,7 +91,7 @@
     "section.losses": "Parametry Strat",
     "section.initialization": "Inicjalizacja",
     "section.thresholds": "Progi",
-    "section.save_steps": "Kroki Zapisu",
+    "section.save_steps": "Kroki Zapisu/Evaluacji",
     "section.basic_params": "Parametry Treningu",
     "section.advanced_params": "Zaawansowane Parametry Treningu",
     "section.sparsity": "Ustawienia Rzadkości",
@@ -105,6 +103,7 @@
     "dataset.cpu_cache": "CPU Cache:",
     "dataset.fs_cache": "FS Cache:",
     "dataset.output": "Output:",
+    "dataset.test_every": "Test Every:",
     "opt.strategy": "Strategy:",
     "opt.learning_rates": "Learning Rates:",
     "opt.iterations": "Iterations:",
@@ -180,7 +179,9 @@
     "tooltip.max_width": "Maksymalna szerokość obrazu w pikselach",
     "tooltip.cpu_cache": "Cache zdekodowanych obrazów w RAM",
     "tooltip.fs_cache": "Cache zdekodowanych obrazów na dysku",
-    "tooltip.save_steps": "Iteracje do zapisu checkpointów",
+    "tooltip.test_every": "Użyj co N-tego obrazu jako zestawu testowego",
+    "tooltip.enable_eval": "Włącz ewaluację podczas treningu (oblicza PSNR/SSIM na zestawie testowym). Nieznacznie zmniejsza prędkość treningu.",
+    "tooltip.save_steps": "Iteracje do zapisu checkpointów ORAZ wykonania ewaluacji (jeśli Włącz Ewaluację jest zaznaczone). Ewaluacja jest zawsze wykonywana w tych samych iteracjach co checkpointy.",
     "tooltip.lr_position": "Tempo uczenia dla pozycji",
     "tooltip.lr_sh_coeff": "Tempo uczenia dla harmonik sferycznych",
     "tooltip.lr_opacity": "Tempo uczenia dla przezroczystości",
@@ -263,7 +264,74 @@
     "options.bg.color": "Kolor",
     "options.bg.modulation": "Modulacja",
     "options.bg.image": "Obraz",
-    "options.bg.random": "Losowe"
+    "options.bg.random": "Losowe",
+    "tooltip": {
+      "btn_switch_edit": "Przełącz na tryb edycji wytrenowanej sceny",
+      "ppisp_freeze_from_sidecar": "Załaduj wagi PPISP z pliku sidecar",
+      "ppisp_sidecar_path": "Ścieżka do pliku sidecar PPISP",
+      "ppisp_sidecar_browse": "Przeglądaj plik sidecar PPISP",
+      "ppisp_sidecar_clear": "Wyczyść wybrany sidecar PPISP",
+      "bg_color": "Jednolity kolor tła używany podczas treningu",
+      "bg_image_path": "Ścieżka do obrazu tła używanego podczas treningu",
+      "bg_image_browse": "Przeglądaj obraz tła",
+      "bg_image_clear": "Wyczyść wybrany obraz tła",
+      "dataset_path": "Ścieżka do załadowanego zbioru danych",
+      "dataset_images": "Liczba obrazów w zbiorze danych",
+      "dataset_output": "Katalog wyjściowy dla wytrenowanych artefaktów",
+      "opt_strategy_display": "Aktywna strategia zagęszczania",
+      "bilateral_grid_x": "Rozdzielczość X siatki bilateralnej",
+      "bilateral_grid_y": "Rozdzielczość Y siatki bilateralnej",
+      "bilateral_grid_w": "Kosze koloru/intensywności siatki bilateralnej",
+      "bilateral_grid_lr": "Współczynnik uczenia siatki bilateralnej",
+      "prune_opacity": "Usuń Gaussy poniżej tego krycia",
+      "revised_opacity": "Użyj zmienionego wzoru krycia",
+      "min_opacity": "Minimalny próg krycia do przycinania",
+      "grow_scale_3d": "Zagęszczaj, gdy skala 3D przekroczy tę wartość",
+      "grow_scale_2d": "Zagęszczaj, gdy skala 2D ekranu przekroczy tę wartość",
+      "prune_scale_3d": "Przycinaj, gdy skala 3D przekroczy tę wartość",
+      "prune_scale_2d": "Przycinaj, gdy skala 2D ekranu przekroczy tę wartość",
+      "pause_refine_after_reset": "Iteracje wstrzymania udoskonalania po zresetowaniu krycia",
+      "sparsify_steps": "Liczba kroków sparsyfikacji",
+      "init_rho": "Początkowa kara sparsity (rho)",
+      "prune_ratio": "Końcowy ułamek Gaussów do przycięcia po sparsyfikacji",
+      "opt": {
+        "strategy": {
+          "mrnf": "Domyślna strategia 3DGS z udoskonalaniem MRNF",
+          "igs_plus": "Ulepszony 3DGS+ z udoskonalonym wzrostem/przycinaniem",
+          "mcmc": "Strategia MCMC z zagęszczaniem opartym na próbkowaniu"
+        },
+        "sh_degree": {
+          "0": "Tylko rozpraszanie — najszybsze, brak koloru zależnego od widoku",
+          "1": "SH pierwszego rzędu — podstawowe wskaźniki lustrzane",
+          "2": "SH drugiego rzędu — lepszy kolor zależny od widoku",
+          "3": "SH trzeciego rzędu — najlepsza jakość, najwięcej VRAM"
+        },
+        "tile_mode": {
+          "full": "Rasteryzacja w pełnej rozdzielczości",
+          "half": "Rasteryzacja w połowicznej rozdzielczości (~4× szybciej)",
+          "quarter": "Rasteryzacja w ćwierć rozdzielczości (~16× szybciej)"
+        },
+        "mask_mode": {
+          "none": "Trenuj na całym obrazie, bez maskowania",
+          "segment": "Użyj maski segmentacji dla pierwszego planu",
+          "ignore": "Ignoruj zamaskowane piksele w stracie",
+          "alpha_consistent": "Wymuś spójność alfa z maską"
+        },
+        "bg_mode": {
+          "color": "Użyj stałego koloru tła",
+          "modulation": "Moduluj tło zrekonstruowaną alfą",
+          "image": "Użyj obrazu tła",
+          "random": "Losowy kolor tła w każdym kroku"
+        },
+        "resize_factor": {
+          "auto": "Automatyczny wybór współczynnika skalowania dla VRAM",
+          "1": "Trenuj w oryginalnej rozdzielczości obrazu",
+          "2": "Trenuj w połowicznej rozdzielczości obrazu",
+          "4": "Trenuj w ćwierć rozdzielczości obrazu",
+          "8": "Trenuj w jednej ósmej rozdzielczości obrazu"
+        }
+      }
+    }
   },
   "scene": {
     "add_ply": "Dodaj PLY...",
@@ -300,8 +368,8 @@
     "background": "Tło",
     "enable_for_training": "Włącz do treningu",
     "disable_for_training": "Wyłącz z treningu",
-    "enable_all_training": "Włącz wszystkie do treningu",
-    "disable_all_training": "Wyłącz wszystkie z treningu",
+    "enable_all_training": "Włącz wybrane kamery",
+    "disable_all_training": "Wyłącz wybrane kamery",
     "training_enabled_tooltip": "Uwzględniono w treningu",
     "training_disabled_tooltip": "Wykluczono z treningu",
     "go_to_keyframe": "Przejdź do widoku klatki kluczowej",
@@ -315,7 +383,10 @@
     "keyframe_easing.ease_out": "Lagodne wyjscie",
     "keyframe_easing.ease_in_out": "Lagodne wejscie/wyjscie",
     "keyframe_label": "Klatka kluczowa {index}  ({time:.2f}s)",
-    "search": "Szukaj"
+    "search": "Szukaj",
+    "show_in_file_manager": "Pokaż w menedżerze plików",
+    "go_to_image": "Przejdź do obrazu",
+    "open_in_gt_compare": "Otwórz w porównaniu GT"
   },
   "export": {
     "title": "Eksportuj",
@@ -323,6 +394,7 @@
     "format.sog_supersplat": "SOG (SuperSplat)",
     "format.spz_niantic": "SPZ (Niantic)",
     "format.usd_openusd": "USD (OpenUSD)",
+    "format.usdz_nurec": "USDZ (NuRec)",
     "format.html_viewer": "Przeglądarka HTML",
     "select_models": "Wybierz Modele:",
     "all": "Wszystkie",
@@ -372,6 +444,8 @@
     "step": "Krok",
     "loss": "Strata",
     "eta": "Pozostały Czas",
+    "psnr": "PSNR",
+    "ssim": "SSIM",
     "unknown": "Nieznany",
     "dataset_no_trainer": "Zbiór Danych (Bez Trenera)",
     "dataset_ready": "Zbiór Danych (Gotowy)",
@@ -439,6 +513,7 @@
     "equirectangular": "Równokątne",
     "gut_mode": "GUT (3DGUT)",
     "mip_filter": "Filtr Mip",
+    "camera_metrics": "Metryki kamery",
     "appearance_correction": "PPISP Correction",
     "ppisp_mode": "Mode",
     "ppisp_mode_manual": "Manual",
@@ -472,7 +547,11 @@
     "mesh_shadow_enabled": "Cienie",
     "mesh_shadow_resolution": "Rozdzielczość cieni",
     "camera_frustum_scale": "Skala ostrosłupa",
-    "voxel_size": "Rozmiar voksela"
+    "voxel_size": "Rozmiar voksela",
+    "theme_vignette": "Vignette",
+    "theme_vignette_intensity": "Intensywność winietowania",
+    "theme_vignette_radius": "Promień winietowania",
+    "theme_vignette_softness": "Miękkość winietowania"
   },
   "toolbar": {
     "selection": "Zaznaczenie (1)",
@@ -507,7 +586,8 @@
     "perspective": "Perspektywa",
     "orthographic": "Ortograficzna",
     "sequencer": "Sekwencer",
-    "ellipsoid": "Ellipsoid"
+    "ellipsoid": "Ellipsoid",
+    "histogram": "Histogram"
   },
   "transform": {
     "node": "Węzeł: %s",
@@ -550,7 +630,8 @@
     "idle": "Bezczynny",
     "running": "Działa",
     "finished": "Ukończono",
-    "save_steps": "Kroki Zapisu",
+    "save_steps": "Kroki Zapisu/Evaluacji",
+    "save_eval_steps": "Kroki Zapisu/Evaluacji",
     "new_step": "Nowy Krok",
     "no_save_steps": "Nie skonfigurowano kroków zapisu",
     "sparsity": "Ustawienia Rzadkości",
@@ -575,6 +656,18 @@
     "ppisp_gamma_channel": "Przesunięcie gamma na kanał",
     "ppisp_crf_toe": "Kompresja cieni (toe krzywej CRF)",
     "ppisp_crf_shoulder": "Wygładzanie świateł (shoulder krzywej CRF)",
+    "theme_vignette": "Włącz przyciemnianie krawędzi widoku",
+    "theme_vignette_intensity": "Dostosuj ciemność winietowania (0-1)",
+    "theme_vignette_radius": "Dostosuj, gdzie zaczyna się winietowanie (0-1)",
+    "theme_vignette_softness": "Dostosuj miękkość krawędzi winietowania (0-1)",
+    "simplify_source": "Wybrany węzeł splat używany jako wejście uproszczenia",
+    "simplify_target": "Docelowa liczba Gaussów, które mają pozostać w uproszczonym wyniku",
+    "simplify_knn_k": "Rozmiar sąsiedztwa używany do oceny kandydatów do scalania",
+    "simplify_merge_cap": "Maksymalny udział Gaussów, które mogą zostać scalone w jednym przebiegu",
+    "simplify_opacity_prune": "Usuń Gaussy poniżej tego progu nieprzezroczystości przed scalaniem",
+    "simplify_output": "Nazwa nowego uproszczonego węzła splat, który zostanie dodany do sceny",
+    "simplify_apply": "Utwórz nowy uproszczony węzeł splat z wybranego źródła",
+    "simplify_cancel": "Anuluj aktywne zadanie upraszczania splatów",
     "render_scale": "Rozdzielczość widoku (niższa = mniej VRAM)",
     "point_cloud_forced": "Wymuszone przed rozpoczęciem treningu",
     "desaturate_unselected": "Przyciemnij niezaznaczone PLY",
@@ -597,9 +690,13 @@
     "selection_colors": "Kolory wizualizacji zaznaczenia",
     "seq_camera_path": "Przełącz wizualizację ścieżki kamery",
     "seq_first": "Przejdź do pierwszej klatki kluczowej",
+    "seq_prev_keyframe": "Przejdź do poprzedniej klatki kluczowej",
+    "seq_prev": "Przejdź do poprzedniej klatki kluczowej",
     "seq_stop": "Zatrzymaj odtwarzanie",
     "seq_play": "Odtwórz animację",
     "seq_pause": "Wstrzymaj animację",
+    "seq_next_keyframe": "Przejdź do następnej klatki kluczowej",
+    "seq_next": "Przejdź do następnej klatki kluczowej",
     "seq_last": "Przejdź do ostatniej klatki kluczowej",
     "seq_loop_off": "Włącz odtwarzanie w pętli",
     "seq_loop_on": "Wyłącz odtwarzanie w pętli",
@@ -615,8 +712,75 @@
     "seq_quality": "Jakość CRF (niższa = lepsza jakość, większy plik)",
     "seq_export": "Eksportuj wideo ze ścieżki kamery",
     "seq_clear": "Usuń wszystkie klatki kluczowe",
+    "seq_dock": "Zadokuj sekwencer",
+    "seq_undock": "Oddokuj sekwencer",
     "seq_interval": "Interwał siatki",
-    "seq_preview_size": "Skala podglądu PiP"
+    "seq_preview_size": "Skala podglądu PiP",
+    "transform_position_axis": "Przesuń zaznaczenie wzdłuż tej osi",
+    "transform_rotation_axis": "Obróć zaznaczenie wokół tej osi (stopnie)",
+    "transform_scale_axis": "Skaluj zaznaczenie wzdłuż tej osi",
+    "transform_scale_uniform": "Jednolite skalowanie na wszystkich osiach",
+    "transform_reset": "Zresetuj transformację do tożsamości",
+    "environment_mode": "Źródło tła: jednolity kolor lub HDRI",
+    "environment_map_path": "Wybierz mapę środowiska HDRI",
+    "environment_exposure": "Ekspozycja HDRI w jednostkach EV",
+    "environment_rotation": "Obróć HDRI wokół osi pionowej",
+    "voxel_size": "Rozmiar komórki voxel dla zapytań przestrzennych",
+    "axes_size": "Długość linii osi współrzędnych",
+    "grid_plane": "Płaszczyzna, na której rysowana jest siatka",
+    "grid_opacity": "Krycie linii siatki",
+    "camera_frustum_scale": "Wizualny rozmiar frustów kamer",
+    "camera_metrics_mode": "Wskaźniki jakości obrazu pokazywane nad kamerami treningowymi",
+    "selection_color_committed": "Kolor zatwierdzonych zaznaczeń",
+    "selection_color_preview": "Kolor podglądu zaznaczenia",
+    "selection_color_center_marker": "Kolor znacznika środka zaznaczenia",
+    "mesh_wireframe": "Renderuj siatkę jako szkielet",
+    "mesh_wireframe_color": "Kolor linii szkieletu",
+    "mesh_wireframe_width": "Szerokość linii szkieletu",
+    "mesh_light_intensity": "Intensywność światła siatki",
+    "mesh_ambient": "Udział światła otoczenia siatki",
+    "mesh_backface_culling": "Pomijaj renderowanie tylnych trójkątów",
+    "mesh_shadow_enabled": "Rzucaj i odbieraj cienie na siatce",
+    "mesh_shadow_resolution": "Rozdzielczość mapy cieni",
+    "ppisp_vignette_enabled": "Zastosuj winietowanie w ramach korekcji",
+    "ppisp_vignette_strength": "Ściemnienie winiety w narożnikach",
+    "opt": {
+      "environment_mode": {
+        "solid_color": "Renderuj z jednolitym kolorem tła",
+        "equirect": "Renderuj z mapą środowiska HDR 360°"
+      },
+      "environment_map_preset": {
+        "kloofendal": "Wbudowany: Kloofendal Pure Sky",
+        "alps": "Wbudowany: Alps Field",
+        "custom": "Ostatnio załadowane niestandardowe HDRI"
+      },
+      "grid_plane": {
+        "yz": "Pokaż siatkę na płaszczyźnie YZ (widok z prawej)",
+        "xz": "Pokaż siatkę na płaszczyźnie XZ (widok z góry)",
+        "xy": "Pokaż siatkę na płaszczyźnie XY (widok z przodu)"
+      },
+      "sh_degree": {
+        "0": "Tylko rozpraszanie — brak oświetlenia zależnego od widoku",
+        "1": "SH pierwszego rzędu — podstawowe oświetlenie zależne od widoku",
+        "2": "SH drugiego rzędu — więcej szczegółów kierunkowych",
+        "3": "SH trzeciego rzędu — pełna jakość zależna od widoku"
+      },
+      "camera_metrics": {
+        "off": "Ukryj wskaźniki jakości",
+        "psnr": "Pokaż PSNR dla każdej kamery treningowej",
+        "psnr_ssim": "Pokaż PSNR i SSIM dla każdej kamery treningowej"
+      },
+      "shadow_resolution": {
+        "512": "Mapa cieni 512×512 (niska jakość, szybko)",
+        "1024": "Mapa cieni 1024×1024 (zrównoważona)",
+        "2048": "Mapa cieni 2048×2048 (wysoka jakość)",
+        "4096": "Mapa cieni 4096×4096 (najlepsza jakość, wolno)"
+      },
+      "ppisp_mode": {
+        "manual": "Ręczny: bezpośrednio dostosuj suwaki korekcji",
+        "auto": "Auto: użyj wyuczonego kontrolera do korekcji"
+      }
+    }
   },
   "exit_popup": {
     "title": "Zakończyć Aplikację?",
@@ -766,7 +930,8 @@
     "ppisp_freeze_gaussians": "Zamroź Gaussowskie:",
     "disabled": "Wyłączony",
     "ppisp_freeze_from_sidecar": "Frozen Sidecar:",
-    "ppisp_sidecar_path": "Sidecar Path:"
+    "ppisp_sidecar_path": "Sidecar Path:",
+    "enable_eval": "Enable Eval:"
   },
   "image_preview": {
     "title": "Podgląd obrazu",
@@ -826,7 +991,10 @@
     "no_image": "Brak obrazu",
     "zoom": "Zoom",
     "fit": "Dopasuj",
-    "storage_section": "MAGAZYN"
+    "storage_section": "MAGAZYN",
+    "color_picker": "Pobierz",
+    "rotate_left": "Obróć 90° w lewo",
+    "rotate_right": "Obróć 90° w prawo"
   },
   "startup": {
     "supported_by": "Wspierane przez",
@@ -969,7 +1137,9 @@
     "confirm_uninstall_message": "Czy na pewno chcesz odinstalować \"{name}\"?",
     "confirm_uninstall_yes": "Tak",
     "confirm_uninstall_no": "Nie",
-    "load_on_startup": "Ładuj przy starcie"
+    "load_on_startup": "Ładuj przy starcie",
+    "view.grid": "Widok siatki",
+    "view.list": "Widok listy"
   },
   "sequencer": {
     "edit_focal_length": "Edytuj ogniskowa...",
@@ -1005,7 +1175,16 @@
     "keyframe_preview": "Podgląd klatki kluczowej {}"
   },
   "rendering_panel": {
-    "fov_format": "FOV: {hfov:.1f}° H / {vfov:.1f}° V"
+    "fov_format": "FOV: {hfov:.1f}° H / {vfov:.1f}° V",
+    "section_simplify": "Uproszczenie splatów",
+    "simplify_source": "Źródło",
+    "simplify_select_source": "Wybierz węzeł splat",
+    "simplify_target": "Cel",
+    "simplify_knn_k": "kNN K",
+    "simplify_merge_cap": "Limit scalania",
+    "simplify_opacity_prune": "Przycinanie nieprzezroczystości",
+    "simplify_original": "Oryginał",
+    "simplify_output": "Wyjście"
   },
   "scripts_panel": {
     "actions": "Akcje",
@@ -1095,5 +1274,135 @@
     "clear_confirm": "Usunąć wszystkie klatki kluczowe?",
     "confirm": "Potwierdź",
     "cancel": "Anuluj"
+  },
+  "histogram": {
+    "title_eyebrow": "Gaussian Analysis",
+    "field": "Field",
+    "log_scale": "Skala logarytmiczna",
+    "samples": "Samples",
+    "range": "Range",
+    "mean": "Mean",
+    "median": "Median",
+    "p95": "P95",
+    "peak_bin": "Peak Bin",
+    "bin_count": "{count} bins",
+    "bins": "Kosze",
+    "compare_x_bins": "Kosze X",
+    "compare_y_bins": "Kosze Y",
+    "marked": "Marked",
+    "count": "Count",
+    "clear": "Clear",
+    "delete": "Delete",
+    "no_marked_range": "No marked range",
+    "gaussian_count": "{count} Gaussians",
+    "range_value": "{min} to {max}",
+    "status_drag_delete": "Left-drag across the histogram to mark a range, then delete it.",
+    "status_selection": "Marked range becomes the active Gaussian selection.",
+    "summary": "{metric} distribution across {count} Gaussians",
+    "bin_tooltip": "Bin {index}: {left} to {right} | {count} Gaussians",
+    "compare_with": "Compare With",
+    "compare_bin_count": "{x_count} x {y_count} koszy",
+    "compare": {
+      "off": "Off",
+      "summary": "{x_metric} vs {y_metric} across {count} Gaussians",
+      "range_value": "X {x_range} | Y {y_range}",
+      "status_selection": "Marked compare region becomes the active Gaussian selection.",
+      "bin_tooltip": "X {x_range} | Y {y_range} | {count} Gaussians",
+      "empty": {
+        "title": "Compare unavailable",
+        "message": "Choose a second metric to see how two Gaussian properties cluster together.",
+        "metric_unavailable": {
+          "title": "Compare metric unavailable",
+          "message": "The comparison metric could not be read from the combined Gaussian model."
+        },
+        "no_visible_values": {
+          "title": "No comparable values",
+          "message": "The selected metric pair does not contain any visible finite samples to visualize."
+        }
+      }
+    },
+    "delete_failed": {
+      "title": "Delete Failed",
+      "status": "Delete failed: {message}",
+      "unexpected": "The delete pipeline raised an unexpected error.",
+      "invalid_result": "The delete pipeline returned an invalid result.",
+      "reported_failure": "The delete pipeline reported a failure."
+    },
+    "empty": {
+      "unavailable": {
+        "title": "Histogram unavailable",
+        "message": "Switch to a view or edit scene with Gaussian splats to inspect a distribution."
+      },
+      "no_scene": {
+        "title": "No scene loaded",
+        "message": "Load a Gaussian scene, then reopen the histogram panel."
+      },
+      "no_visible_gaussians": {
+        "title": "No visible Gaussians",
+        "message": "The histogram only works when the active scene exposes a visible Gaussian model."
+      },
+      "metric_unavailable": {
+        "title": "Metric unavailable",
+        "message": "The selected metric could not be read from the combined Gaussian model."
+      },
+      "no_visible_values": {
+        "title": "No visible values",
+        "message": "The selected metric does not contain any visible finite samples to visualize."
+      }
+    },
+    "metric": {
+      "opacity": {
+        "label": "Opacity",
+        "description": "Activated Gaussian opacity in [0, 1]."
+      },
+      "position_x": {
+        "label": "Position X",
+        "description": "Gaussian world-space center on the X axis."
+      },
+      "position_y": {
+        "label": "Position Y",
+        "description": "Gaussian world-space center on the Y axis."
+      },
+      "position_z": {
+        "label": "Position Z",
+        "description": "Gaussian world-space center on the Z axis."
+      },
+      "scale_x": {
+        "label": "Scale X",
+        "description": "Activated Gaussian scale on the X axis."
+      },
+      "scale_y": {
+        "label": "Scale Y",
+        "description": "Activated Gaussian scale on the Y axis."
+      },
+      "scale_z": {
+        "label": "Scale Z",
+        "description": "Activated Gaussian scale on the Z axis."
+      },
+      "scale_max": {
+        "label": "Scale Max",
+        "description": "Largest activated scale component per Gaussian."
+      },
+      "volume": {
+        "label": "Volume",
+        "description": "Ellipsoid volume derived from activated Gaussian scales."
+      },
+      "anisotropy": {
+        "label": "Anisotropy",
+        "description": "Ratio of largest to smallest activated scale. 1 is sphere-like; larger values are spikier."
+      },
+      "erank": {
+        "label": "Ranga efektywna",
+        "description": "Entropijna ranga efektywna aktywowanych skal Gaussa. 1 oznacza kształt liniowy, 2 płaszczyznowy, 3 kulisty."
+      },
+      "distance": {
+        "label": "Distance",
+        "description": "Distance from the current scene center."
+      }
+    },
+    "undo": "Undo",
+    "redo": "Redo",
+    "undo_named": "Undo: {name}",
+    "redo_named": "Redo: {name}"
   }
 }

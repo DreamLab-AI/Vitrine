@@ -1,28 +1,84 @@
 /* SPDX-FileCopyrightText: 2026 LichtFeld Studio Authors
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
+#include "core/camera.hpp"
 #include "core/event_bridge/event_bridge.hpp"
 #include "core/event_bus.hpp"
 #include "core/events.hpp"
 #include "core/point_cloud.hpp"
 #include "core/services.hpp"
 #include "core/tensor.hpp"
+#include "rendering/coordinate_conventions.hpp"
 #include "visualizer/rendering/passes/mesh_pass.hpp"
 #include "visualizer/rendering/passes/point_cloud_pass.hpp"
 #include "visualizer/rendering/passes/splat_raster_pass.hpp"
 #include "visualizer/rendering/render_pass.hpp"
 #include "visualizer/rendering/rendering_manager.hpp"
+#include "visualizer/rendering/split_view_composition.hpp"
 #include "visualizer/rendering/split_view_service.hpp"
 #include "visualizer/rendering/viewport_artifact_service.hpp"
 #include "visualizer/rendering/viewport_frame_lifecycle_service.hpp"
 #include "visualizer/rendering/viewport_request_builder.hpp"
 #include "visualizer/scene/scene_manager.hpp"
 
+#include <cmath>
 #include <filesystem>
+#include <glm/gtc/matrix_transform.hpp>
 #include <gtest/gtest.h>
 #include <vector>
 
 namespace lfs::vis {
+
+    namespace {
+        std::unique_ptr<lfs::core::SplatData> makeTestSplat(const float x) {
+            using lfs::core::DataType;
+            using lfs::core::Device;
+            using lfs::core::Tensor;
+
+            return std::make_unique<lfs::core::SplatData>(
+                0,
+                Tensor::from_vector({x, 0.0f, 2.0f}, {size_t{1}, size_t{3}}, Device::CPU),
+                Tensor::from_vector({1.0f, 1.0f, 1.0f}, {size_t{1}, size_t{1}, size_t{3}}, Device::CPU),
+                Tensor::zeros({size_t{1}, size_t{0}, size_t{3}}, Device::CPU, DataType::Float32),
+                Tensor::from_vector({0.0f, 0.0f, 0.0f}, {size_t{1}, size_t{3}}, Device::CPU),
+                Tensor::from_vector({1.0f, 0.0f, 0.0f, 0.0f}, {size_t{1}, size_t{4}}, Device::CPU),
+                Tensor::from_vector({8.0f}, {size_t{1}, size_t{1}}, Device::CPU),
+                1.0f);
+        }
+
+        std::shared_ptr<lfs::core::PointCloud> makeTestPointCloud() {
+            using lfs::core::Device;
+            using lfs::core::Tensor;
+
+            auto means = Tensor::from_vector(
+                {0.0f, 0.0f, 0.0f,
+                 1.0f, 0.0f, 0.0f},
+                {size_t{2}, size_t{3}},
+                Device::CPU);
+            auto colors = Tensor::from_vector(
+                {1.0f, 0.0f, 0.0f,
+                 0.0f, 1.0f, 0.0f},
+                {size_t{2}, size_t{3}},
+                Device::CPU);
+            return std::make_shared<lfs::core::PointCloud>(std::move(means), std::move(colors));
+        }
+
+        void expectVisualizerTranslationFromData(const glm::mat4& transform, const glm::vec3& data_translation) {
+            const glm::vec3 expected =
+                lfs::rendering::visualizerWorldPointFromDataWorld(data_translation);
+            EXPECT_FLOAT_EQ(transform[3][0], expected.x);
+            EXPECT_FLOAT_EQ(transform[3][1], expected.y);
+            EXPECT_FLOAT_EQ(transform[3][2], expected.z);
+        }
+
+        void expectMat3Near(const glm::mat3& actual, const glm::mat3& expected, const float epsilon = 1e-5f) {
+            for (int col = 0; col < 3; ++col) {
+                for (int row = 0; row < 3; ++row) {
+                    EXPECT_NEAR(actual[col][row], expected[col][row], epsilon);
+                }
+            }
+        }
+    } // namespace
 
     class RenderingManagerEventsTest : public ::testing::Test {
     protected:
@@ -144,6 +200,159 @@ namespace lfs::vis {
         EXPECT_EQ(service.focusedPanel(), SplitViewPanelId::Left);
     }
 
+    TEST(SplitViewServiceTest, GtRenderCameraUsesVisualizerCameraAxesAndNormalizedSceneRotation) {
+        using lfs::core::Camera;
+        using lfs::core::CameraModelType;
+        using lfs::core::Device;
+        using lfs::core::Tensor;
+
+        Camera camera(
+            Tensor::from_vector(
+                {1.0f, 0.0f, 0.0f,
+                 0.0f, 1.0f, 0.0f,
+                 0.0f, 0.0f, 1.0f},
+                {size_t{3}, size_t{3}},
+                Device::CPU),
+            Tensor::from_vector({0.0f, 0.0f, 0.0f}, {size_t{3}}, Device::CPU),
+            500.0f,
+            600.0f,
+            320.0f,
+            240.0f,
+            Tensor(),
+            Tensor(),
+            CameraModelType::PINHOLE,
+            "test.png",
+            {},
+            {},
+            640,
+            480,
+            7);
+
+        glm::mat4 scene_transform(1.0f);
+        scene_transform = glm::translate(scene_transform, glm::vec3(1.0f, 2.0f, 3.0f));
+        scene_transform = glm::scale(scene_transform, glm::vec3(2.0f, 3.0f, 4.0f));
+
+        const auto render_camera =
+            detail::buildGTRenderCamera(camera, {1280, 960}, scene_transform);
+        ASSERT_TRUE(render_camera.has_value());
+
+        expectMat3Near(
+            render_camera->rotation,
+            lfs::rendering::DATA_TO_VISUALIZER_CAMERA_AXES);
+        EXPECT_EQ(render_camera->translation, glm::vec3(1.0f, 2.0f, 3.0f));
+        ASSERT_TRUE(render_camera->intrinsics.has_value());
+        EXPECT_FLOAT_EQ(render_camera->intrinsics->focal_x, 1000.0f);
+        EXPECT_FLOAT_EQ(render_camera->intrinsics->focal_y, 1200.0f);
+        EXPECT_FLOAT_EQ(render_camera->intrinsics->center_x, 640.0f);
+        EXPECT_FLOAT_EQ(render_camera->intrinsics->center_y, 480.0f);
+        EXPECT_FALSE(render_camera->equirectangular);
+    }
+
+    TEST(SplitViewServiceTest, SharedCameraPoseHelperNormalizesSceneRotationAndAppliesVisualizerAxes) {
+        const glm::mat3 world_to_camera = glm::mat3(1.0f);
+        const glm::vec3 world_to_camera_translation(0.0f, 0.0f, 0.0f);
+
+        glm::mat4 scene_transform(1.0f);
+        scene_transform = glm::translate(scene_transform, glm::vec3(1.0f, 2.0f, 3.0f));
+        scene_transform = glm::scale(scene_transform, glm::vec3(2.0f, 3.0f, 4.0f));
+
+        const auto pose = lfs::rendering::visualizerCameraPoseFromDataWorldToCamera(
+            world_to_camera,
+            world_to_camera_translation,
+            scene_transform);
+
+        expectMat3Near(pose.rotation, lfs::rendering::DATA_TO_VISUALIZER_CAMERA_AXES);
+        EXPECT_EQ(pose.translation, glm::vec3(1.0f, 2.0f, 3.0f));
+    }
+
+    TEST(RenderingManagerEventsTest, OrthographicTogglePreservesApparentZoomAtPivotInBothDirections) {
+        RenderingManager manager;
+        auto settings = manager.getSettings();
+        settings.focal_length_mm = 50.0f;
+        manager.updateSettings(settings);
+
+        constexpr float viewport_height = 900.0f;
+        constexpr float distance_to_pivot = 7.5f;
+
+        manager.setOrthographic(true, viewport_height, distance_to_pivot);
+        const auto ortho_settings = manager.getSettings();
+        ASSERT_TRUE(ortho_settings.orthographic);
+
+        const float expected_scale = viewport_height /
+                                     (2.0f * distance_to_pivot *
+                                      std::tan(glm::radians(lfs::rendering::focalLengthToVFov(50.0f)) * 0.5f));
+        EXPECT_NEAR(ortho_settings.ortho_scale, expected_scale, 1e-4f);
+
+        settings = ortho_settings;
+        settings.ortho_scale *= 1.75f;
+        manager.updateSettings(settings);
+
+        manager.setOrthographic(false, viewport_height, distance_to_pivot);
+        const auto perspective_settings = manager.getSettings();
+        ASSERT_FALSE(perspective_settings.orthographic);
+
+        const float expected_vfov = glm::degrees(2.0f * std::atan(
+                                                            viewport_height / (2.0f * distance_to_pivot * settings.ortho_scale)));
+        const float expected_focal = lfs::rendering::vFovToFocalLength(expected_vfov);
+        EXPECT_NEAR(perspective_settings.focal_length_mm, expected_focal, 1e-4f);
+    }
+
+    TEST(SplitViewServiceTest, GtComparisonPlanPreservesGtTextureOrigin) {
+        Viewport viewport(640, 480);
+        RenderSettings settings;
+        settings.split_view_mode = SplitViewMode::GTComparison;
+        settings.split_position = 0.4f;
+
+        FrameContext ctx{
+            .viewport = viewport,
+            .settings = settings,
+            .render_size = {640, 480},
+            .current_camera_id = 7,
+        };
+
+        FrameResources res;
+        res.gt_context = GTComparisonContext{
+            .gt_texture_id = 11,
+            .camera_id = 7,
+            .dimensions = {320, 240},
+            .gpu_aligned_dims = {320, 256},
+            .render_texcoord_scale = {1.0f, 240.0f / 256.0f},
+            .gt_texcoord_scale = {1.0f, 1.0f},
+            .gt_texture_origin = lfs::rendering::TextureOrigin::TopLeft,
+        };
+        res.cached_gpu_frame = lfs::rendering::GpuFrame{
+            .color = {.id = 22, .size = {320, 240}},
+        };
+
+        const auto plan = buildSplitViewCompositionPlan(ctx, res);
+        ASSERT_TRUE(plan.has_value());
+        ASSERT_TRUE(plan->panels[0].panel.presentation.flip_y.has_value());
+        EXPECT_TRUE(*plan->panels[0].panel.presentation.flip_y);
+        EXPECT_FALSE(plan->panels[1].panel.presentation.flip_y.has_value());
+    }
+
+    TEST(SplitViewServiceTest, CurrentSceneTransformUsesIdentityForMultipleVisiblePointClouds) {
+        SceneManager manager;
+        auto& scene = manager.getScene();
+
+        const auto left_parent = scene.addGroup("LeftParent");
+        const auto right_parent = scene.addGroup("RightParent");
+
+        scene.setNodeTransform(
+            "LeftParent",
+            glm::translate(glm::mat4(1.0f), glm::vec3(1.0f, 2.0f, 3.0f)));
+        scene.setNodeTransform(
+            "RightParent",
+            glm::translate(glm::mat4(1.0f), glm::vec3(-4.0f, 5.0f, 6.0f)));
+
+        scene.addPointCloud("LeftCloud", makeTestPointCloud(), left_parent);
+        scene.addPointCloud("RightCloud", makeTestPointCloud(), right_parent);
+
+        EXPECT_EQ(
+            detail::currentSceneTransform(&manager, -1),
+            lfs::rendering::dataWorldTransformToVisualizerWorld(glm::mat4(1.0f)));
+    }
+
     TEST_F(SceneManagerRenderStateTest, DatasetReadyStateKeepsVisiblePointCloudWhenTrainingModelIsEmpty) {
         SceneManager manager;
         manager.changeContentType(SceneManager::ContentType::Dataset);
@@ -181,6 +390,360 @@ namespace lfs::vis {
         EXPECT_EQ(state.combined_model->size(), 0u);
         ASSERT_NE(state.point_cloud, nullptr);
         EXPECT_EQ(state.point_cloud->size(), 1);
+        EXPECT_EQ(state.point_cloud_transform,
+                  lfs::rendering::dataWorldTransformToVisualizerWorld(glm::mat4(1.0f)));
+    }
+
+    TEST_F(SceneManagerRenderStateTest, PointCloudTransformIsTrackedSeparatelyFromModelTransforms) {
+        SceneManager manager;
+        auto& scene = manager.getScene();
+
+        scene.addPointCloud("PointCloud", makeTestPointCloud());
+        scene.setNodeTransform(
+            "PointCloud",
+            glm::translate(glm::mat4(1.0f), glm::vec3(3.0f, -2.0f, 5.0f)));
+
+        const auto state = manager.buildRenderState();
+        ASSERT_NE(state.point_cloud, nullptr);
+        EXPECT_TRUE(state.model_transforms.empty());
+        expectVisualizerTranslationFromData(state.point_cloud_transform, {3.0f, -2.0f, 5.0f});
+    }
+
+    TEST_F(SceneManagerRenderStateTest, VisiblePointCloudDoesNotPolluteModelTransformArray) {
+        SceneManager manager;
+        auto& scene = manager.getScene();
+
+        scene.addPointCloud("PointCloud", makeTestPointCloud());
+        scene.setNodeTransform(
+            "PointCloud",
+            glm::translate(glm::mat4(1.0f), glm::vec3(9.0f, 8.0f, 7.0f)));
+        scene.addSplat("Model", makeTestSplat(0.0f));
+        scene.setNodeTransform(
+            "Model",
+            glm::translate(glm::mat4(1.0f), glm::vec3(1.0f, 2.0f, 3.0f)));
+
+        const auto state = manager.buildRenderState();
+        ASSERT_EQ(state.model_transforms.size(), 1u);
+        expectVisualizerTranslationFromData(state.model_transforms[0], {1.0f, 2.0f, 3.0f});
+    }
+
+    TEST_F(SceneManagerRenderStateTest, MultipleVisiblePointCloudsAreMergedAcrossParentTransforms) {
+        SceneManager manager;
+        auto& scene = manager.getScene();
+
+        const auto left_parent = scene.addGroup("LeftParent");
+        const auto right_parent = scene.addGroup("RightParent");
+
+        scene.setNodeTransform(
+            "LeftParent",
+            glm::translate(glm::mat4(1.0f), glm::vec3(1.0f, 2.0f, 3.0f)));
+        scene.setNodeTransform(
+            "RightParent",
+            glm::translate(glm::mat4(1.0f), glm::vec3(-4.0f, 5.0f, 6.0f)));
+
+        auto left_means = lfs::core::Tensor::from_vector(
+            {0.0f, 0.0f, 0.0f,
+             1.0f, 0.0f, 0.0f},
+            {size_t{2}, size_t{3}},
+            lfs::core::Device::CPU);
+        auto left_colors = lfs::core::Tensor::from_vector(
+            {1.0f, 0.0f, 0.0f,
+             0.0f, 1.0f, 0.0f},
+            {size_t{2}, size_t{3}},
+            lfs::core::Device::CPU);
+        scene.addPointCloud(
+            "LeftCloud",
+            std::make_shared<lfs::core::PointCloud>(std::move(left_means), std::move(left_colors)),
+            left_parent);
+
+        auto right_means = lfs::core::Tensor::from_vector(
+            {0.0f, 1.0f, 0.0f},
+            {size_t{1}, size_t{3}},
+            lfs::core::Device::CPU);
+        auto right_colors = lfs::core::Tensor::from_vector(
+            {0.0f, 0.0f, 1.0f},
+            {size_t{1}, size_t{3}},
+            lfs::core::Device::CPU);
+        scene.addPointCloud(
+            "RightCloud",
+            std::make_shared<lfs::core::PointCloud>(std::move(right_means), std::move(right_colors)),
+            right_parent);
+
+        const auto state = manager.buildRenderState();
+        ASSERT_NE(state.point_cloud, nullptr);
+        EXPECT_EQ(state.point_cloud->size(), 3);
+        EXPECT_TRUE(state.model_transforms.empty());
+        EXPECT_EQ(state.point_cloud_transform,
+                  lfs::rendering::dataWorldTransformToVisualizerWorld(glm::mat4(1.0f)));
+
+        auto means_cpu = state.point_cloud->means.cpu();
+        auto acc = means_cpu.accessor<float, 2>();
+        EXPECT_FLOAT_EQ(acc(0, 0), 1.0f);
+        EXPECT_FLOAT_EQ(acc(0, 1), 2.0f);
+        EXPECT_FLOAT_EQ(acc(0, 2), 3.0f);
+        EXPECT_FLOAT_EQ(acc(1, 0), 2.0f);
+        EXPECT_FLOAT_EQ(acc(1, 1), 2.0f);
+        EXPECT_FLOAT_EQ(acc(1, 2), 3.0f);
+        EXPECT_FLOAT_EQ(acc(2, 0), -4.0f);
+        EXPECT_FLOAT_EQ(acc(2, 1), 6.0f);
+        EXPECT_FLOAT_EQ(acc(2, 2), 6.0f);
+    }
+
+    TEST_F(SceneManagerRenderStateTest, MultipleVisiblePointCloudMergeRefreshesWhenSourceDataChanges) {
+        SceneManager manager;
+        auto& scene = manager.getScene();
+
+        const auto left_parent = scene.addGroup("LeftParent");
+        const auto right_parent = scene.addGroup("RightParent");
+
+        auto left_point_cloud = std::make_shared<lfs::core::PointCloud>(
+            lfs::core::Tensor::from_vector(
+                {0.0f, 0.0f, 0.0f},
+                {size_t{1}, size_t{3}},
+                lfs::core::Device::CPU),
+            lfs::core::Tensor::from_vector(
+                {1.0f, 0.0f, 0.0f},
+                {size_t{1}, size_t{3}},
+                lfs::core::Device::CPU));
+        auto right_point_cloud = std::make_shared<lfs::core::PointCloud>(
+            lfs::core::Tensor::from_vector(
+                {1.0f, 1.0f, 1.0f},
+                {size_t{1}, size_t{3}},
+                lfs::core::Device::CPU),
+            lfs::core::Tensor::from_vector(
+                {0.0f, 1.0f, 0.0f},
+                {size_t{1}, size_t{3}},
+                lfs::core::Device::CPU));
+
+        scene.addPointCloud("LeftCloud", left_point_cloud, left_parent);
+        scene.addPointCloud("RightCloud", right_point_cloud, right_parent);
+
+        const auto initial_state = manager.buildRenderState();
+        ASSERT_NE(initial_state.point_cloud, nullptr);
+        ASSERT_EQ(initial_state.point_cloud->size(), 2);
+
+        right_point_cloud->means = lfs::core::Tensor::from_vector(
+            {10.0f, 20.0f, 30.0f},
+            {size_t{1}, size_t{3}},
+            lfs::core::Device::CPU);
+
+        const auto updated_state = manager.buildRenderState();
+        ASSERT_NE(updated_state.point_cloud, nullptr);
+        ASSERT_EQ(updated_state.point_cloud->size(), 2);
+
+        auto means_cpu = updated_state.point_cloud->means.cpu();
+        auto acc = means_cpu.accessor<float, 2>();
+        EXPECT_FLOAT_EQ(acc(0, 0), 0.0f);
+        EXPECT_FLOAT_EQ(acc(0, 1), 0.0f);
+        EXPECT_FLOAT_EQ(acc(0, 2), 0.0f);
+        EXPECT_FLOAT_EQ(acc(1, 0), 10.0f);
+        EXPECT_FLOAT_EQ(acc(1, 1), 20.0f);
+        EXPECT_FLOAT_EQ(acc(1, 2), 30.0f);
+    }
+
+    TEST_F(SceneManagerRenderStateTest, MultipleVisiblePointCloudMergeRefreshesWhenSourceTensorChangesInPlace) {
+        SceneManager manager;
+        auto& scene = manager.getScene();
+
+        const auto left_parent = scene.addGroup("LeftParent");
+        const auto right_parent = scene.addGroup("RightParent");
+
+        auto left_point_cloud = std::make_shared<lfs::core::PointCloud>(
+            lfs::core::Tensor::from_vector(
+                {0.0f, 0.0f, 0.0f},
+                {size_t{1}, size_t{3}},
+                lfs::core::Device::CPU),
+            lfs::core::Tensor::from_vector(
+                {1.0f, 0.0f, 0.0f},
+                {size_t{1}, size_t{3}},
+                lfs::core::Device::CPU));
+        auto right_point_cloud = std::make_shared<lfs::core::PointCloud>(
+            lfs::core::Tensor::from_vector(
+                {1.0f, 1.0f, 1.0f},
+                {size_t{1}, size_t{3}},
+                lfs::core::Device::CPU),
+            lfs::core::Tensor::from_vector(
+                {0.0f, 1.0f, 0.0f},
+                {size_t{1}, size_t{3}},
+                lfs::core::Device::CPU));
+
+        scene.addPointCloud("LeftCloud", left_point_cloud, left_parent);
+        scene.addPointCloud("RightCloud", right_point_cloud, right_parent);
+
+        const auto initial_state = manager.buildRenderState();
+        ASSERT_NE(initial_state.point_cloud, nullptr);
+        ASSERT_EQ(initial_state.point_cloud->size(), 2);
+
+        right_point_cloud->means.copy_(lfs::core::Tensor::from_vector(
+            {7.0f, 8.0f, 9.0f},
+            {size_t{1}, size_t{3}},
+            lfs::core::Device::CPU));
+
+        const auto updated_state = manager.buildRenderState();
+        ASSERT_NE(updated_state.point_cloud, nullptr);
+        ASSERT_EQ(updated_state.point_cloud->size(), 2);
+
+        auto means_cpu = updated_state.point_cloud->means.cpu();
+        auto acc = means_cpu.accessor<float, 2>();
+        EXPECT_FLOAT_EQ(acc(0, 0), 0.0f);
+        EXPECT_FLOAT_EQ(acc(0, 1), 0.0f);
+        EXPECT_FLOAT_EQ(acc(0, 2), 0.0f);
+        EXPECT_FLOAT_EQ(acc(1, 0), 7.0f);
+        EXPECT_FLOAT_EQ(acc(1, 1), 8.0f);
+        EXPECT_FLOAT_EQ(acc(1, 2), 9.0f);
+    }
+
+    TEST_F(SceneManagerRenderStateTest, PlyComparisonBuildsFullFrameWipeFromCombinedSceneMasks) {
+        SceneManager manager;
+        manager.changeContentType(SceneManager::ContentType::SplatFiles);
+
+        auto& scene = manager.getScene();
+        const auto left_id = scene.addSplat("left", makeTestSplat(0.0f));
+        const auto right_id = scene.addSplat("right", makeTestSplat(1.0f));
+
+        RenderSettings settings;
+        settings.split_view_mode = SplitViewMode::PLYComparison;
+        settings.split_position = 0.35f;
+        settings.show_rings = true;
+        settings.depth_filter_enabled = true;
+        settings.depth_filter_min = {-1.0f, -1.0f, -1.0f};
+        settings.depth_filter_max = {1.0f, 1.0f, 1.0f};
+
+        Viewport viewport(640, 480);
+        const auto scene_state = manager.buildRenderState();
+        ASSERT_NE(scene_state.combined_model, nullptr);
+
+        const FrameContext ctx{
+            .viewport = viewport,
+            .scene_manager = &manager,
+            .model = manager.getModelForRendering(),
+            .scene_state = scene_state,
+            .settings = settings,
+            .render_size = {640, 480},
+            .viewport_pos = {0, 0},
+        };
+
+        const auto plan = buildSplitViewCompositionPlan(ctx, FrameResources{});
+        ASSERT_TRUE(plan.has_value());
+        ASSERT_EQ(plan->panels.size(), 2u);
+
+        EXPECT_EQ(plan->panels[0].panel.content.model, ctx.model);
+        EXPECT_EQ(plan->panels[1].panel.content.model, ctx.model);
+        EXPECT_EQ(plan->panels[0].panel.content.model_transform, glm::mat4(1.0f));
+        EXPECT_EQ(plan->panels[1].panel.content.model_transform, glm::mat4(1.0f));
+
+        for (size_t i = 0; i < plan->panels.size(); ++i) {
+            const auto& panel = plan->panels[i].panel;
+            ASSERT_TRUE(panel.content.gaussian_render.has_value());
+            EXPECT_EQ(panel.content.gaussian_render->frame_view.size, ctx.render_size);
+            EXPECT_FALSE(panel.presentation.normalize_x_to_panel);
+            EXPECT_EQ(panel.content.gaussian_render->scene.model_transforms, &ctx.scene_state.model_transforms);
+            EXPECT_EQ(panel.content.gaussian_render->scene.transform_indices, ctx.scene_state.transform_indices);
+            ASSERT_EQ(panel.content.gaussian_render->scene.node_visibility_mask.size(), 2u);
+            EXPECT_EQ(panel.content.gaussian_render->scene.node_visibility_mask[0], i == 0);
+            EXPECT_EQ(panel.content.gaussian_render->scene.node_visibility_mask[1], i == 1);
+            EXPECT_TRUE(panel.content.gaussian_render->filters.view_volume.has_value());
+            EXPECT_TRUE(panel.content.gaussian_render->overlay.markers.show_rings);
+            EXPECT_EQ(panel.content.gaussian_render->overlay.emphasis.mask, ctx.scene_state.selection_mask);
+            EXPECT_FALSE(panel.content.gaussian_render->overlay.cursor.enabled);
+            EXPECT_EQ(panel.content.gaussian_render->overlay.emphasis.transient_mask.mask, nullptr);
+            EXPECT_EQ(panel.content.gaussian_render->overlay.emphasis.focused_gaussian_id, -1);
+        }
+
+        EXPECT_EQ(scene.getVisibleNodeIndex(left_id), 0);
+        EXPECT_EQ(scene.getVisibleNodeIndex(right_id), 1);
+    }
+
+    TEST_F(SceneManagerRenderStateTest, SwitchToEditModePlyComparisonUsesCombinedSceneMasks) {
+        using lfs::core::DataType;
+        using lfs::core::Device;
+        using lfs::core::Tensor;
+
+        SceneManager manager;
+        manager.changeContentType(SceneManager::ContentType::Dataset);
+
+        auto& scene = manager.getScene();
+        scene.addSplat("Model", makeTestSplat(0.0f));
+        scene.setTrainingModelNode("Model");
+
+        manager.switchToEditMode();
+        const auto trained_id = scene.getNodeIdByName("Trained Model");
+        const auto bike_id = scene.addSplat("bike", makeTestSplat(1.0f));
+
+        const auto cropbox_id = scene.getOrCreateCropBoxForSplat(trained_id);
+        auto* cropbox = scene.getCropBoxData(cropbox_id);
+        ASSERT_NE(cropbox, nullptr);
+        cropbox->min = {-1.0f, -1.0f, -1.0f};
+        cropbox->max = {1.0f, 1.0f, 1.0f};
+
+        auto scene_state = manager.buildRenderState();
+        scene_state.selection_mask = std::make_shared<Tensor>(
+            Tensor::zeros({size_t{2}}, Device::CPU, DataType::UInt8));
+        scene_state.selected_node_mask = {true, false};
+
+        Tensor transient_selection =
+            Tensor::zeros({size_t{2}}, Device::CPU, DataType::Bool);
+
+        RenderSettings settings;
+        settings.split_view_mode = SplitViewMode::PLYComparison;
+        settings.split_position = 0.4f;
+        settings.use_crop_box = true;
+        settings.show_rings = true;
+        settings.depth_filter_enabled = true;
+        settings.depth_filter_min = {-2.0f, -2.0f, -2.0f};
+        settings.depth_filter_max = {2.0f, 2.0f, 2.0f};
+        settings.desaturate_unselected = true;
+
+        Viewport viewport(640, 480);
+        const FrameContext ctx{
+            .viewport = viewport,
+            .scene_manager = &manager,
+            .model = manager.getModelForRendering(),
+            .scene_state = std::move(scene_state),
+            .settings = settings,
+            .render_size = {640, 480},
+            .viewport_pos = {0, 0},
+            .cursor_preview =
+                {.active = true,
+                 .x = 32.0f,
+                 .y = 24.0f,
+                 .radius = 10.0f,
+                 .add_mode = true,
+                 .selection_tensor = &transient_selection,
+                 .preview_selection = &transient_selection,
+                 .focused_gaussian_id = 0},
+        };
+
+        const auto plan = buildSplitViewCompositionPlan(ctx, FrameResources{});
+        ASSERT_TRUE(plan.has_value());
+        ASSERT_EQ(plan->panels.size(), 2u);
+
+        for (size_t i = 0; i < plan->panels.size(); ++i) {
+            const auto& panel = plan->panels[i].panel;
+            ASSERT_TRUE(panel.content.gaussian_render.has_value());
+            EXPECT_EQ(panel.content.model, ctx.model);
+            EXPECT_EQ(panel.content.model_transform, glm::mat4(1.0f));
+            EXPECT_EQ(panel.content.gaussian_render->scene.model_transforms, &ctx.scene_state.model_transforms);
+            EXPECT_EQ(panel.content.gaussian_render->scene.transform_indices, ctx.scene_state.transform_indices);
+            ASSERT_EQ(panel.content.gaussian_render->scene.node_visibility_mask.size(), 2u);
+            EXPECT_EQ(panel.content.gaussian_render->scene.node_visibility_mask[0], i == 0);
+            EXPECT_EQ(panel.content.gaussian_render->scene.node_visibility_mask[1], i == 1);
+
+            EXPECT_TRUE(panel.content.gaussian_render->filters.crop_region.has_value());
+            EXPECT_EQ(panel.content.gaussian_render->filters.crop_region->parent_node_index, 0);
+            EXPECT_TRUE(panel.content.gaussian_render->filters.view_volume.has_value());
+            EXPECT_TRUE(panel.content.gaussian_render->overlay.markers.show_rings);
+            EXPECT_EQ(panel.content.gaussian_render->overlay.emphasis.mask, ctx.scene_state.selection_mask);
+            EXPECT_EQ(panel.content.gaussian_render->overlay.emphasis.emphasized_node_mask,
+                      ctx.scene_state.selected_node_mask);
+            EXPECT_TRUE(panel.content.gaussian_render->overlay.emphasis.dim_non_emphasized);
+            EXPECT_FALSE(panel.content.gaussian_render->overlay.cursor.enabled);
+            EXPECT_EQ(panel.content.gaussian_render->overlay.emphasis.transient_mask.mask, nullptr);
+            EXPECT_EQ(panel.content.gaussian_render->overlay.emphasis.focused_gaussian_id, -1);
+        }
+
+        EXPECT_EQ(scene.getVisibleNodeIndex(trained_id), 0);
+        EXPECT_EQ(scene.getVisibleNodeIndex(bike_id), 1);
     }
 
     TEST(ViewportFrameLifecycleServiceTest, ResizeActiveDefersFullRefreshUntilDebounceCompletes) {
@@ -361,6 +924,22 @@ namespace lfs::vis {
         EXPECT_EQ(manager.getSettings().split_view_mode, SplitViewMode::Disabled);
     }
 
+    TEST_F(RenderingManagerEventsTest, SceneClearedResetsFrustumLoaderSyncCache) {
+        RenderingManager manager;
+        manager.frustum_loader_sync_initialized_ = true;
+        manager.synced_frustum_allow_fallback_ = true;
+        manager.frustum_loader_dirty_.store(true, std::memory_order_relaxed);
+        manager.frustum_loader_poll_until_ready_.store(true, std::memory_order_relaxed);
+
+        lfs::core::events::state::SceneCleared{}.emit();
+
+        EXPECT_TRUE(manager.frustum_loader_sync_initialized_);
+        EXPECT_FALSE(manager.synced_frustum_loader_);
+        EXPECT_FALSE(manager.synced_frustum_allow_fallback_);
+        EXPECT_FALSE(manager.frustum_loader_dirty_.load(std::memory_order_relaxed));
+        EXPECT_FALSE(manager.frustum_loader_poll_until_ready_.load(std::memory_order_relaxed));
+    }
+
     TEST_F(RenderingManagerEventsTest, ToggleIndependentSplitViewInitializesSecondaryViewport) {
         RenderingManager manager;
         Viewport primary_viewport(800, 600);
@@ -394,6 +973,63 @@ namespace lfs::vis {
 
         EXPECT_EQ(manager.getSettings().split_view_mode, SplitViewMode::Disabled);
         EXPECT_EQ(manager.getFocusedSplitPanel(), SplitViewPanelId::Left);
+    }
+
+    TEST_F(RenderingManagerEventsTest, IndependentSplitGridPlaneTracksPanelsIndependently) {
+        RenderingManager manager;
+        Viewport primary_viewport(800, 600);
+
+        auto settings = manager.getSettings();
+        settings.grid_plane = 2;
+        manager.updateSettings(settings);
+
+        lfs::core::events::cmd::ToggleIndependentSplitView{
+            .viewport = &primary_viewport,
+        }
+            .emit();
+
+        ASSERT_EQ(manager.getSettings().split_view_mode, SplitViewMode::IndependentDual);
+        EXPECT_EQ(manager.getGridPlaneForPanel(SplitViewPanelId::Left), 2);
+        EXPECT_EQ(manager.getGridPlaneForPanel(SplitViewPanelId::Right), 2);
+
+        manager.setGridPlaneForPanel(SplitViewPanelId::Left, 0);
+        manager.setGridPlaneForPanel(SplitViewPanelId::Right, 1);
+
+        EXPECT_EQ(manager.getGridPlaneForPanel(SplitViewPanelId::Left), 0);
+        EXPECT_EQ(manager.getGridPlaneForPanel(SplitViewPanelId::Right), 1);
+
+        manager.setFocusedSplitPanel(SplitViewPanelId::Left);
+        EXPECT_EQ(manager.getSettings().grid_plane, 0);
+
+        manager.setFocusedSplitPanel(SplitViewPanelId::Right);
+        EXPECT_EQ(manager.getSettings().grid_plane, 1);
+    }
+
+    TEST_F(RenderingManagerEventsTest, GridSettingsChangedOnlyUpdatesFocusedPanelInIndependentSplit) {
+        RenderingManager manager;
+        Viewport primary_viewport(800, 600);
+
+        lfs::core::events::cmd::ToggleIndependentSplitView{
+            .viewport = &primary_viewport,
+        }
+            .emit();
+
+        ASSERT_EQ(manager.getSettings().split_view_mode, SplitViewMode::IndependentDual);
+
+        manager.setGridPlaneForPanel(SplitViewPanelId::Left, 0);
+        manager.setGridPlaneForPanel(SplitViewPanelId::Right, 1);
+        manager.setFocusedSplitPanel(SplitViewPanelId::Right);
+
+        lfs::core::events::ui::GridSettingsChanged{
+            .enabled = true,
+            .plane = 2,
+            .opacity = 0.25f,
+        }
+            .emit();
+
+        EXPECT_EQ(manager.getGridPlaneForPanel(SplitViewPanelId::Left), 0);
+        EXPECT_EQ(manager.getGridPlaneForPanel(SplitViewPanelId::Right), 2);
+        EXPECT_EQ(manager.getSettings().grid_plane, 2);
     }
 
 } // namespace lfs::vis

@@ -118,10 +118,12 @@ namespace gsplat_fwd {
         CameraModelType camera_model,
         const UnscentedTransformParameters& ut_params,
         ShutterType rs_type,
-        const float* radial_coeffs,       // [C, 6/4] optional
-        const float* tangential_coeffs,   // [C, 2] optional
-        const float* thin_prism_coeffs,   // [C, 2] optional
-        const int* transform_indices,     // [N_total] optional
+        const float* radial_coeffs,     // [C, 6/4] optional
+        const float* tangential_coeffs, // [C, 2] optional
+        const float* thin_prism_coeffs, // [C, 2] optional
+        const float* model_transforms,  // [num_transforms, 4, 4] row-major optional
+        const int* transform_indices,   // [N_total] optional
+        int num_transforms,
         const bool* node_visibility_mask, // optional
         int num_visibility_nodes,
         const int* visible_indices, // [M] maps output idx → global gaussian idx, nullptr = all visible
@@ -139,14 +141,17 @@ namespace gsplat_fwd {
 
     void rasterize_to_pixels_from_world_3dgs_fwd(
         // Gaussian parameters (N_total-sized, use visible_indices for access)
-        const float* means,       // [N_total, 3]
-        const float* quats,       // [N_total, 4]
-        const float* scales,      // [N_total, 3]
-        const float* colors,      // [C, M, channels] (M-sized from SH)
-        const float* opacities,   // [N_total]
-        const float* backgrounds, // [C, channels] (can be nullptr)
-        const bool* masks,        // [C, tile_height, tile_width] (can be nullptr)
-        const float* depths,      // [C, M] per-gaussian depths (M-sized from projection)
+        const float* means,            // [N_total, 3]
+        const float* quats,            // [N_total, 4]
+        const float* scales,           // [N_total, 3]
+        const float* colors,           // [C, M, channels] (M-sized from SH)
+        const float* opacities,        // [N_total]
+        const float* backgrounds,      // [C, channels] (can be nullptr)
+        const bool* masks,             // [C, tile_height, tile_width] (can be nullptr)
+        const float* depths,           // [C, M] per-gaussian depths (M-sized from projection)
+        const float* model_transforms, // [num_transforms, 4, 4] row-major optional
+        const int* transform_indices,  // [N_total] optional
+        int num_transforms,
         // dimensions
         uint32_t C,
         uint32_t N,

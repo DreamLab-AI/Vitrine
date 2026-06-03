@@ -13,6 +13,11 @@ endif()
 
 cmake_minimum_required(VERSION 3.30)
 
+option(LFS_ENFORCE_LINUX_GUI_BACKENDS "Fail configure when Linux SDL3 would lack X11 and Wayland support" ON)
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/LinuxGuiSanity.cmake")
+lfs_linux_preflight_gui_backends()
+
 # Suppress CMake developer warnings
 set(CMAKE_SUPPRESS_DEVELOPER_WARNINGS ON CACHE BOOL "" FORCE)
 
@@ -25,7 +30,7 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "MinSizeRel" "RelWithDebInfo")
 endif()
 
-project(LichtFeld-Studio LANGUAGES CUDA CXX C)
+project(LichtFeld-Studio VERSION 0.5.2 LANGUAGES CUDA CXX C)
 
 # Disable C++20 module scanning
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
@@ -39,12 +44,23 @@ execute_process(
     ERROR_QUIET
 )
 execute_process(
-    COMMAND git describe --dirty
+    COMMAND git describe --tags --dirty --always --match "v*"
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     OUTPUT_VARIABLE GIT_TAGGED_VERSION
     OUTPUT_STRIP_TRAILING_WHITESPACE
     ERROR_QUIET
 )
+if(NOT GIT_COMMIT_HASH_SHORT AND DEFINED ENV{GITHUB_SHA} AND NOT "$ENV{GITHUB_SHA}" STREQUAL "")
+    string(SUBSTRING "$ENV{GITHUB_SHA}" 0 7 GIT_COMMIT_HASH_SHORT)
+endif()
+if(NOT GIT_TAGGED_VERSION)
+    if(DEFINED ENV{GITHUB_REF_TYPE} AND "$ENV{GITHUB_REF_TYPE}" STREQUAL "tag" AND
+       DEFINED ENV{GITHUB_REF_NAME} AND NOT "$ENV{GITHUB_REF_NAME}" STREQUAL "")
+        set(GIT_TAGGED_VERSION "$ENV{GITHUB_REF_NAME}")
+    elseif(GIT_COMMIT_HASH_SHORT)
+        set(GIT_TAGGED_VERSION "${GIT_COMMIT_HASH_SHORT}")
+    endif()
+endif()
 if(NOT GIT_COMMIT_HASH_SHORT)
     set(GIT_COMMIT_HASH_SHORT "unknown")
 endif()
@@ -253,6 +269,7 @@ find_package(Threads REQUIRED)
 find_package(OpenGL REQUIRED)
 find_package(glad REQUIRED)
 find_package(SDL3 REQUIRED)
+lfs_validate_linux_sdl_video_backends()
 find_package(glm REQUIRED)
 find_package(imgui REQUIRED)
 find_package(implot REQUIRED)
@@ -507,6 +524,55 @@ if(WIN32 AND CUDAToolkit_FOUND)
     message(STATUS "Post-build: CUDA DLLs will be copied from ${CUDAToolkit_BIN_DIR}")
 endif()
 
+# =============================================================================
+# VCPKG DLL COPYING - Ensure all vcpkg DLLs are available at runtime
+# =============================================================================
+# vcpkg's VCPKG_APPLOCAL_DEPS feature may not copy all needed DLLs.
+# This explicitly copies vcpkg DLLs to ensure they're available at runtime.
+# 
+# IMPORTANT: For Release builds, copy ONLY release DLLs to avoid loading debug CRT.
+# For Debug builds, copy both because some vcpkg packages (e.g., zlib) are release-only.
+if(WIN32 AND DEFINED VCPKG_TARGET_TRIPLET)
+    set(_vcpkg_debug_bin_dir "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/debug/bin")
+    set(_vcpkg_release_bin_dir "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/bin")
+    
+    # Always copy release DLLs - needed for both Release and Debug builds
+    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${_vcpkg_release_bin_dir}"
+            "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+        COMMENT "Copying vcpkg release DLLs"
+    )
+    
+    # Only copy debug DLLs for Debug builds (they link to debug CRT which breaks Release)
+    # For single-config generators (Ninja, Makefiles): check CMAKE_BUILD_TYPE
+    # For multi-config generators (VS, Xcode): use generator expression
+    get_property(_is_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+    if(_is_multi_config)
+        # Multi-config: use generator expression to conditionally copy
+        add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E $<IF:$<CONFIG:Debug>,copy_directory,true>
+                "${_vcpkg_debug_bin_dir}"
+                "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+            COMMENT "Copying vcpkg debug DLLs (Debug config only)"
+        )
+        message(STATUS "Post-build: vcpkg DLLs - release always, debug for Debug config only (multi-config)")
+    else()
+        # Single-config: check CMAKE_BUILD_TYPE at configure time
+        if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+            add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    "${_vcpkg_debug_bin_dir}"
+                    "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+                COMMENT "Copying vcpkg debug DLLs"
+            )
+            message(STATUS "Post-build: vcpkg DLLs - copying both release and debug (Debug build)")
+        else()
+            message(STATUS "Post-build: vcpkg DLLs - copying release only (${CMAKE_BUILD_TYPE} build)")
+        endif()
+    endif()
+endif()
+
 # Before extension post-build copying: remove stale 'extensions' file if present (prevent mkdir failure)
 set(_target_extensions_dir "${CMAKE_BINARY_DIR}/extensions")
 if(EXISTS "${_target_extensions_dir}" AND NOT IS_DIRECTORY "${_target_extensions_dir}")
@@ -621,6 +687,12 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_SOURCE_DIR}/src/visualizer/gui/assets/core11-logo-dark.png"
         "${RESOURCE_DIR}/assets/"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/src/visualizer/gui/assets/volinga-logo.png"
+        "${RESOURCE_DIR}/assets/"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/src/visualizer/gui/assets/volinga-logo-dark.png"
+        "${RESOURCE_DIR}/assets/"
     COMMENT "Copying application assets"
 )
 
@@ -631,6 +703,50 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
         "${RESOURCE_DIR}/locales"
     COMMENT "Copying locale files"
 )
+
+# OpenUSD runtime resources (schema/file-format plugin metadata).
+# Copy them beside the app under ../lib/usd and register that path at startup.
+set(_USD_PLUGIN_SOURCE_DIR "")
+foreach(_candidate
+    "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/lib/usd"
+    "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/bin/usd"
+    "${CMAKE_BINARY_DIR}/src/python/usd")
+    if(NOT _USD_PLUGIN_SOURCE_DIR AND EXISTS "${_candidate}")
+        set(_USD_PLUGIN_SOURCE_DIR "${_candidate}")
+    endif()
+endforeach()
+
+set(_USD_ROOT_INDEX "")
+foreach(_candidate
+    "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/lib/usd/plugInfo.json"
+    "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/bin/usd/plugInfo.json"
+    "${CMAKE_BINARY_DIR}/src/python/usd/plugInfo.json")
+    if(NOT _USD_ROOT_INDEX AND EXISTS "${_candidate}")
+        set(_USD_ROOT_INDEX "${_candidate}")
+    endif()
+endforeach()
+
+set(_USD_PLUGIN_DEST "$<TARGET_FILE_DIR:${PROJECT_NAME}>/../lib/usd")
+
+if(EXISTS "${_USD_PLUGIN_SOURCE_DIR}")
+    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${_USD_PLUGIN_DEST}"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+            "${_USD_PLUGIN_SOURCE_DIR}"
+            "${_USD_PLUGIN_DEST}"
+        COMMENT "Copying OpenUSD plugin resources (per-module)"
+    )
+    message(STATUS "Post-build: OpenUSD plugin resources will be copied from ${_USD_PLUGIN_SOURCE_DIR}")
+endif()
+
+if(EXISTS "${_USD_ROOT_INDEX}")
+    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${_USD_ROOT_INDEX}"
+            "${_USD_PLUGIN_DEST}/plugInfo.json"
+        COMMENT "Copying OpenUSD root plugin index"
+    )
+endif()
 
 message(STATUS "Post-build: Resources will be copied to \${BUILD_DIR}/resources/")
 
@@ -832,6 +948,7 @@ install(DIRECTORY "${CMAKE_SOURCE_DIR}/src/visualizer/gui/assets/icon" DESTINATI
 install(DIRECTORY "${CMAKE_SOURCE_DIR}/src/visualizer/gui/assets/fonts" DESTINATION "${INSTALL_RESOURCE_DIR}/assets")
 install(FILES "${CMAKE_SOURCE_DIR}/src/rendering/resources/assets/JetBrainsMono-Regular.ttf" DESTINATION "${INSTALL_RESOURCE_DIR}/assets/fonts")
 install(DIRECTORY "${CMAKE_SOURCE_DIR}/src/visualizer/gui/assets/themes" DESTINATION "${INSTALL_RESOURCE_DIR}/assets")
+install(DIRECTORY "${CMAKE_SOURCE_DIR}/src/visualizer/gui/assets/environments" DESTINATION "${INSTALL_RESOURCE_DIR}/assets")
 install(FILES "${CMAKE_SOURCE_DIR}/src/visualizer/gui/assets/lichtfeld-icon.png" DESTINATION "${INSTALL_RESOURCE_DIR}/assets")
 install(FILES "${CMAKE_SOURCE_DIR}/src/visualizer/gui/assets/lichtfeld-splash-logo.png" DESTINATION "${INSTALL_RESOURCE_DIR}/assets")
 install(FILES "${CMAKE_SOURCE_DIR}/src/visualizer/gui/assets/lichtfeld-splash-logo-dark.png" DESTINATION "${INSTALL_RESOURCE_DIR}/assets")
@@ -839,8 +956,20 @@ install(FILES "${CMAKE_SOURCE_DIR}/src/visualizer/gui/assets/lichtfeld-splash-lo
 install(FILES "${CMAKE_SOURCE_DIR}/src/visualizer/gui/assets/lichtfeld-splash-loading-dark.png" DESTINATION "${INSTALL_RESOURCE_DIR}/assets")
 install(FILES "${CMAKE_SOURCE_DIR}/src/visualizer/gui/assets/core11-logo.png" DESTINATION "${INSTALL_RESOURCE_DIR}/assets")
 install(FILES "${CMAKE_SOURCE_DIR}/src/visualizer/gui/assets/core11-logo-dark.png" DESTINATION "${INSTALL_RESOURCE_DIR}/assets")
+install(FILES "${CMAKE_SOURCE_DIR}/src/visualizer/gui/assets/volinga-logo.png" DESTINATION "${INSTALL_RESOURCE_DIR}/assets")
+install(FILES "${CMAKE_SOURCE_DIR}/src/visualizer/gui/assets/volinga-logo-dark.png" DESTINATION "${INSTALL_RESOURCE_DIR}/assets")
 install(DIRECTORY "${CMAKE_SOURCE_DIR}/src/visualizer/gui/rmlui/resources/" DESTINATION "${INSTALL_RESOURCE_DIR}/assets/rmlui")
 install(DIRECTORY "${CMAKE_SOURCE_DIR}/src/visualizer/gui/resources/locales" DESTINATION "${INSTALL_RESOURCE_DIR}")
+
+# OpenUSD plugin resources (schema definitions + plugInfo.json files)
+if(EXISTS "${_USD_PLUGIN_SOURCE_DIR}")
+    install(DIRECTORY "${_USD_PLUGIN_SOURCE_DIR}/" DESTINATION "${CMAKE_INSTALL_LIBDIR}/usd"
+            PATTERN "__pycache__" EXCLUDE
+            PATTERN "*.pyc" EXCLUDE)
+endif()
+if(EXISTS "${_USD_ROOT_INDEX}")
+    install(FILES "${_USD_ROOT_INDEX}" DESTINATION "${CMAKE_INSTALL_LIBDIR}/usd")
+endif()
 
 # Plugin development documentation
 set(DOC_INSTALL_DIR "${CMAKE_INSTALL_DATADIR}/doc/LichtFeld-Studio")

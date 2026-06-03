@@ -54,6 +54,7 @@ namespace lfs::vis::gui {
                     const std::string& active_tab,
                     float screen_x, float screen_y,
                     int screen_w, int screen_h);
+        void blurFocus();
 
         bool wantsInput() const { return wants_input_; }
         bool wantsKeyboard() const { return wants_keyboard_; }
@@ -101,7 +102,6 @@ namespace lfs::vis::gui {
         bool wants_keyboard_ = false;
 
         bool splitter_dragging_ = false;
-        float drag_start_y_ = 0;
 
         bool resize_dragging_ = false;
 

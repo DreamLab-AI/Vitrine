@@ -10,6 +10,7 @@
 #include <RmlUi/Core/Context.h>
 #include <RmlUi/Core/DataTypeRegister.h>
 #include <RmlUi/Core/DataVariable.h>
+#include <RmlUi/Core/Elements/ElementFormControlInput.h>
 #include <RmlUi/Core/StyleSheetSpecification.h>
 #include <RmlUi/Core/Tween.h>
 #include <cassert>
@@ -26,6 +27,7 @@ namespace lfs::python {
 
     namespace {
         std::unordered_map<Rml::ElementDocument*, std::vector<Rml::ElementPtr>> s_held_elements;
+        std::unordered_map<Rml::Element*, Rml::ElementDocument*> s_detached_element_documents;
         std::unordered_set<Rml::ElementDocument*> s_dirty_documents;
         std::map<std::string, DataModelArrayStorage> s_model_storage;
         std::unordered_map<std::string, Rml::DataModelHandle> s_active_handles;
@@ -138,10 +140,53 @@ namespace lfs::python {
             return record;
         }
 
+        void register_detached_subtree(Rml::ElementDocument* doc, Rml::Element* element) {
+            if (!doc || !element)
+                return;
+
+            s_detached_element_documents[element] = doc;
+            for (int i = 0; i < element->GetNumChildren(); ++i) {
+                register_detached_subtree(doc, element->GetChild(i));
+            }
+        }
+
+        void unregister_detached_subtree(Rml::Element* element) {
+            if (!element)
+                return;
+
+            s_detached_element_documents.erase(element);
+            for (int i = 0; i < element->GetNumChildren(); ++i) {
+                unregister_detached_subtree(element->GetChild(i));
+            }
+        }
+
+        Rml::ElementDocument* resolve_document(Rml::Element* element) {
+            for (Rml::Element* current = element; current; current = current->GetParentNode()) {
+                if (auto* doc = current->GetOwnerDocument()) {
+                    return doc;
+                }
+                if (auto* doc = rmlui_dynamic_cast<Rml::ElementDocument*>(current)) {
+                    return doc;
+                }
+                if (auto it = s_detached_element_documents.find(current);
+                    it != s_detached_element_documents.end()) {
+                    return it->second;
+                }
+            }
+
+            return nullptr;
+        }
+
+        bool is_detached_subtree_rooted(Rml::Element* element) {
+            return element && !element->GetOwnerDocument() &&
+                   !rmlui_dynamic_cast<Rml::ElementDocument*>(element) &&
+                   resolve_document(element) != nullptr;
+        }
+
         void mark_document_dirty(Rml::Element* element) {
             if (!element)
                 return;
-            if (auto* doc = element->GetOwnerDocument()) {
+            if (auto* doc = resolve_document(element)) {
                 s_dirty_documents.insert(doc);
                 request_redraw();
             }
@@ -157,6 +202,7 @@ namespace lfs::python {
         for (auto vi = vec.begin(); vi != vec.end(); ++vi) {
             if (vi->get() == raw) {
                 auto ptr = std::move(*vi);
+                unregister_detached_subtree(ptr.get());
                 vec.erase(vi);
                 return ptr;
             }
@@ -165,10 +211,17 @@ namespace lfs::python {
     }
 
     void storeHeldElement(Rml::ElementDocument* doc, Rml::ElementPtr elem) {
+        register_detached_subtree(doc, elem.get());
         s_held_elements[doc].push_back(std::move(elem));
     }
 
     void clearHeldElements(Rml::ElementDocument* doc) {
+        auto it = s_held_elements.find(doc);
+        if (it != s_held_elements.end()) {
+            for (auto& elem : it->second) {
+                unregister_detached_subtree(elem.get());
+            }
+        }
         s_held_elements.erase(doc);
     }
 
@@ -299,59 +352,92 @@ namespace lfs::python {
     int PyRmlElement::num_children() { return elem_->GetNumChildren(); }
 
     nb::object PyRmlElement::append_child(const std::string& tag_name) {
-        auto* doc = elem_->GetOwnerDocument();
-        assert(doc);
+        auto* doc = resolve_document(elem_);
+        if (!doc) {
+            LOG_ERROR("append_child: failed to resolve owning document for <{}>", elem_->GetTagName());
+            return nb::none();
+        }
         auto new_elem = doc->CreateElement(tag_name);
         if (!new_elem)
             return nb::none();
         Rml::Element* raw = new_elem.get();
+        const bool parent_detached = is_detached_subtree_rooted(elem_);
         elem_->AppendChild(std::move(new_elem));
+        if (parent_detached) {
+            register_detached_subtree(doc, raw);
+        }
         mark_document_dirty(elem_);
         return nb::cast(PyRmlElement(raw));
     }
 
     nb::object PyRmlElement::append_child_element(PyRmlElement& child) {
-        auto* doc = elem_->GetOwnerDocument();
-        assert(doc);
+        auto* doc = resolve_document(elem_);
+        if (!doc) {
+            LOG_ERROR("append_child_element: failed to resolve owning document for <{}>",
+                      elem_->GetTagName());
+            return nb::none();
+        }
         auto held = extractHeldElement(doc, child.raw());
         if (!held) {
-            LOG_ERROR("append_child: element not in holding area");
+            LOG_ERROR("append_child_element: element not in holding area");
             return nb::none();
         }
         Rml::Element* raw = held.get();
+        const bool parent_detached = is_detached_subtree_rooted(elem_);
         elem_->AppendChild(std::move(held));
+        if (parent_detached) {
+            register_detached_subtree(doc, raw);
+        }
         mark_document_dirty(elem_);
         return nb::cast(PyRmlElement(raw));
     }
 
     nb::object PyRmlElement::insert_before(const std::string& tag_name, PyRmlElement& ref_child) {
-        auto* doc = elem_->GetOwnerDocument();
-        assert(doc);
+        auto* doc = resolve_document(elem_);
+        if (!doc) {
+            LOG_ERROR("insert_before: failed to resolve owning document for <{}>", elem_->GetTagName());
+            return nb::none();
+        }
         auto new_elem = doc->CreateElement(tag_name);
         if (!new_elem)
             return nb::none();
         Rml::Element* raw = new_elem.get();
+        const bool parent_detached = is_detached_subtree_rooted(elem_);
         elem_->InsertBefore(std::move(new_elem), ref_child.raw());
+        if (parent_detached) {
+            register_detached_subtree(doc, raw);
+        }
         mark_document_dirty(elem_);
         return nb::cast(PyRmlElement(raw));
     }
 
     nb::object PyRmlElement::insert_before_element(PyRmlElement& child, PyRmlElement& ref_child) {
-        auto* doc = elem_->GetOwnerDocument();
-        assert(doc);
+        auto* doc = resolve_document(elem_);
+        if (!doc) {
+            LOG_ERROR("insert_before_element: failed to resolve owning document for <{}>",
+                      elem_->GetTagName());
+            return nb::none();
+        }
         auto held = extractHeldElement(doc, child.raw());
         if (!held) {
-            LOG_ERROR("insert_before: element not in holding area");
+            LOG_ERROR("insert_before_element: element not in holding area");
             return nb::none();
         }
         Rml::Element* raw = held.get();
+        const bool parent_detached = is_detached_subtree_rooted(elem_);
         elem_->InsertBefore(std::move(held), ref_child.raw());
+        if (parent_detached) {
+            register_detached_subtree(doc, raw);
+        }
         mark_document_dirty(elem_);
         return nb::cast(PyRmlElement(raw));
     }
 
     void PyRmlElement::remove_child(PyRmlElement& child) {
-        elem_->RemoveChild(child.raw());
+        auto removed = elem_->RemoveChild(child.raw());
+        if (removed) {
+            unregister_detached_subtree(removed.get());
+        }
         mark_document_dirty(elem_);
     }
 
@@ -573,6 +659,14 @@ namespace lfs::python {
 
     bool PyRmlElement::focus() { return elem_->Focus(); }
     void PyRmlElement::blur() { elem_->Blur(); }
+    bool PyRmlElement::select() {
+        if (auto* input = rmlui_dynamic_cast<Rml::ElementFormControlInput*>(elem_)) {
+            input->Select();
+            mark_document_dirty(input);
+            return true;
+        }
+        return false;
+    }
 
     void PyRmlElement::submit(const std::string& name, const std::string& value) {
         Rml::Element* element = elem_;
@@ -648,10 +742,12 @@ namespace lfs::python {
 
     void PyDataModelHandle::dirty(const std::string& name) {
         handle_.DirtyVariable(name);
+        request_redraw();
     }
 
     void PyDataModelHandle::dirty_all() {
         handle_.DirtyAllVariables();
+        request_redraw();
     }
 
     bool PyDataModelHandle::is_dirty(const std::string& name) {
@@ -671,6 +767,7 @@ namespace lfs::python {
             return;
         arr_it->second = std::move(updated);
         handle_.DirtyVariable(name);
+        request_redraw();
     }
 
     void PyDataModelHandle::update_record_list(const std::string& name, nb::list items) {
@@ -688,6 +785,7 @@ namespace lfs::python {
             return;
         arr_it->second = std::move(updated);
         handle_.DirtyVariable(name);
+        request_redraw();
     }
 
     // --- PyDataModelConstructor ---
@@ -977,6 +1075,7 @@ namespace lfs::python {
                  nb::arg("align_top") = true)
             .def("focus", &PyRmlElement::focus)
             .def("blur", &PyRmlElement::blur)
+            .def("select", &PyRmlElement::select)
             .def("submit", &PyRmlElement::submit, nb::arg("name") = "",
                  nb::arg("value") = "");
 

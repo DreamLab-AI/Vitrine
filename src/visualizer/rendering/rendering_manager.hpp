@@ -22,17 +22,23 @@
 #include "viewport_overlay_service.hpp"
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
 namespace lfs::core {
     class Tensor;
+}
+
+namespace lfs::io {
+    class PipelinedImageLoader;
 }
 
 namespace lfs::core::events::ui {
@@ -47,12 +53,14 @@ namespace lfs::core::events::cmd {
 
 namespace lfs::vis {
     class SceneManager;
+    class TrainerManager;
 
     class LFS_VIS_API RenderingManager {
     public:
         struct RenderContext {
             const Viewport& viewport;
             const RenderSettings& settings;
+            glm::ivec2 logical_screen_size{0, 0};
             const ViewportRegion* viewport_region = nullptr;
             SceneManager* scene_manager = nullptr;
         };
@@ -63,11 +71,6 @@ namespace lfs::vis {
         // Initialize rendering resources
         void initialize();
         bool isInitialized() const { return initialized_; }
-
-        // Set initial viewport size (must be called before initialize())
-        void setInitialViewportSize(const glm::ivec2& size) {
-            initial_viewport_size_ = size;
-        }
 
         // Main render function
         void renderFrame(const RenderContext& context);
@@ -80,6 +83,15 @@ namespace lfs::vis {
                                 unsigned int target_fbo,
                                 unsigned int target_texture,
                                 int width, int height);
+
+        // Render preview image directly into an external texture without touching
+        // the shared viewport presentation textures.
+        bool renderPreviewTexture(SceneManager* scene_manager,
+                                  const glm::mat3& camera_rotation,
+                                  const glm::vec3& camera_position,
+                                  float focal_length_mm,
+                                  unsigned int target_texture,
+                                  int width, int height);
 
         void markDirty();
         void markDirty(DirtyMask flags);
@@ -127,8 +139,10 @@ namespace lfs::vis {
         [[nodiscard]] float getSplitPosition() const;
         [[nodiscard]] std::optional<float> getSplitDividerScreenX(const glm::vec2& viewport_pos,
                                                                   const glm::vec2& viewport_size) const;
-        void setFocusedSplitPanel(SplitViewPanelId panel) { split_view_service_.setFocusedPanel(panel); }
+        void setFocusedSplitPanel(SplitViewPanelId panel);
         [[nodiscard]] SplitViewPanelId getFocusedSplitPanel() const { return split_view_service_.focusedPanel(); }
+        [[nodiscard]] int getGridPlaneForPanel(SplitViewPanelId panel) const;
+        void setGridPlaneForPanel(SplitViewPanelId panel, int plane);
         [[nodiscard]] Viewport& resolvePanelViewport(Viewport& primary_viewport,
                                                      SplitViewPanelId panel = SplitViewPanelId::Left);
         [[nodiscard]] const Viewport& resolvePanelViewport(const Viewport& primary_viewport,
@@ -198,12 +212,27 @@ namespace lfs::vis {
         }
         int getCurrentCameraId() const { return camera_interaction_service_.currentCameraId(); }
 
+        struct CameraMetricsOverlayState {
+            int camera_id = -1;
+            int iteration = -1;
+            float psnr = 0.0f;
+            std::optional<float> ssim;
+            bool used_mask = false;
+        };
+
+        void setLatestCameraMetrics(CameraMetricsOverlayState metrics);
+        void clearLatestCameraMetrics();
+        [[nodiscard]] std::optional<CameraMetricsOverlayState> getLatestCameraMetrics() const;
+
         // FPS monitoring
         float getCurrentFPS() const { return framerate_controller_.getCurrentFPS(); }
         float getAverageFPS() const { return framerate_controller_.getAverageFPS(); }
 
         // Access to rendering engine (for initialization only)
         lfs::rendering::RenderingEngine* getRenderingEngine();
+        [[nodiscard]] lfs::rendering::RenderingEngine* getRenderingEngineIfInitialized() const {
+            return initialized_ ? engine_.get() : nullptr;
+        }
 
         // Camera frustum picking
         int pickCameraFrustum(const glm::vec2& mouse_pos);
@@ -330,7 +359,26 @@ namespace lfs::vis {
         bool consumeResizeCompleted() { return frame_lifecycle_service_.consumeResizeCompleted(); }
 
     private:
+        struct CameraMetricsJobRequest {
+            uint64_t generation = 0;
+            TrainerManager* trainer_manager = nullptr;
+            int camera_id = -1;
+            int iteration = -1;
+            RenderSettings settings{};
+        };
+
+        static constexpr auto CAMERA_METRICS_REFRESH_INTERVAL = std::chrono::milliseconds(500);
+
         void applySplitModeChange(const SplitViewService::ModeChangeResult& result);
+        void queueCameraMetricsRefreshIfStale(SceneManager* scene_manager);
+        void invalidateCameraMetricsRequests(bool clear_latest = false);
+        void cameraMetricsWorkerLoop(std::stop_token stop_token);
+        void clearFrustumThumbnailState();
+        void invalidateFrustumImageLoaderSync(bool poll_until_ready = false);
+        void syncFrustumImageLoader(SceneManager* scene_manager);
+        void storeFrustumImageLoaderSyncState(std::shared_ptr<lfs::io::PipelinedImageLoader> loader,
+                                              bool allow_fallback,
+                                              bool wait_for_active_loader);
         void setupEventHandlers();
         void handleToggleSplitView();
         void handleToggleIndependentSplitView(const lfs::core::events::cmd::ToggleIndependentSplitView& event);
@@ -340,6 +388,8 @@ namespace lfs::vis {
         void handleRenderSettingsChanged(const lfs::core::events::ui::RenderSettingsChanged& event);
         void handleWindowResized();
         void handleGridSettingsChanged(const lfs::core::events::ui::GridSettingsChanged& event);
+        void handleTrainingStarted();
+        void handleTrainingCompleted();
         void handleSceneLoaded();
         void handleSceneChanged();
         void handleSceneCleared();
@@ -349,6 +399,8 @@ namespace lfs::vis {
         void handleCropBoxChanged(bool enabled);
         void handleEllipsoidChanged(bool enabled);
         void handlePointCloudModeChanged(const lfs::core::events::ui::PointCloudModeChanged& event);
+        [[nodiscard]] static int clampGridPlane(int plane);
+        void syncGridPlanesLocked(int plane);
 
         // Core components
         std::unique_ptr<lfs::rendering::RenderingEngine> engine_;
@@ -370,10 +422,24 @@ namespace lfs::vis {
 
         // Settings
         RenderSettings settings_;
+        std::array<int, 2> panel_grid_planes_{{1, 1}};
         mutable std::mutex settings_mutex_;
+        mutable std::mutex camera_metrics_mutex_;
+        mutable std::mutex frustum_loader_sync_mutex_;
+        std::optional<CameraMetricsOverlayState> latest_camera_metrics_;
+        std::optional<CameraMetricsJobRequest> pending_camera_metrics_request_;
+        std::optional<CameraMetricsJobRequest> active_camera_metrics_request_;
+        std::condition_variable_any camera_metrics_cv_;
+        std::jthread camera_metrics_worker_;
+        uint64_t camera_metrics_request_generation_ = 0;
+        std::chrono::steady_clock::time_point last_camera_metrics_refresh_time_{};
+        std::shared_ptr<lfs::io::PipelinedImageLoader> synced_frustum_loader_;
+        std::atomic<bool> frustum_loader_dirty_{true};
+        std::atomic<bool> frustum_loader_poll_until_ready_{false};
+        bool frustum_loader_sync_initialized_ = false;
+        bool synced_frustum_allow_fallback_ = true;
 
         bool initialized_ = false;
-        glm::ivec2 initial_viewport_size_{1280, 720}; // Default fallback
 
         ViewportInteractionContext viewport_interaction_context_;
 
@@ -381,6 +447,8 @@ namespace lfs::vis {
         uint64_t render_count_ = 0;
 
         ViewportOverlayService viewport_overlay_service_;
+
+        friend class RenderingManagerEventsTest_SceneClearedResetsFrustumLoaderSyncCache_Test;
     };
 
 } // namespace lfs::vis

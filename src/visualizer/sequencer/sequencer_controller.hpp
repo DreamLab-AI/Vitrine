@@ -42,6 +42,8 @@ namespace lfs::vis {
 
         void seek(float time);
         void seekToFirstKeyframe();
+        void seekToPreviousKeyframe();
+        void seekToNextKeyframe();
         void seekToLastKeyframe();
         void beginScrub();
         void scrub(float time);

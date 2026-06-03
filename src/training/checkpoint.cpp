@@ -227,6 +227,10 @@ namespace lfs::training {
             LOG_INFO("Checkpoint saved: {} ({} Gaussians, iter {}{})",
                      lfs::core::path_to_utf8(checkpoint_path), header.num_gaussians, iteration,
                      extras);
+            lfs::core::events::state::CheckpointSaved{
+                .iteration = iteration,
+                .path = checkpoint_path}
+                .emit();
             return {};
 
         } catch (const std::exception& e) {

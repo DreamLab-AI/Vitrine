@@ -13,7 +13,7 @@ class NewProjectOperator(Operator):
     description = "Clear the scene to start a new project"
 
     def execute(self, context) -> set:
-        lf.clear_scene()
+        lf.new_project()
         return {"FINISHED"}
 
 

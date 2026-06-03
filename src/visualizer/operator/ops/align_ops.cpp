@@ -11,6 +11,7 @@
 #include "operator/operator_registry.hpp"
 #include "rendering/rendering_manager.hpp"
 #include "scene/scene_manager.hpp"
+#include "visualizer/scene_coordinate_utils.hpp"
 #include "visualizer_impl.hpp"
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -120,14 +121,38 @@ namespace lfs::vis::op {
             return glm::vec3(Viewport::INVALID_WORLD_POS);
         }
 
-        const float depth = rm->getDepthAtPixel(static_cast<int>(x), static_cast<int>(y));
-        if (depth < 0.0f) {
+        const auto viewport_pos = gm->getViewportPos();
+        const auto viewport_size = gm->getViewportSize();
+
+        const auto panel_info = rm->resolveViewerPanel(
+            gm->getViewer()->getViewport(),
+            viewport_pos,
+            viewport_size,
+            glm::vec2(static_cast<float>(x), static_cast<float>(y)));
+        if (!panel_info || !panel_info->valid()) {
             return glm::vec3(Viewport::INVALID_WORLD_POS);
         }
 
-        const auto& viewport = gm->getViewer()->getViewport();
-        return viewport.unprojectPixel(static_cast<float>(x), static_cast<float>(y), depth,
-                                       rm->getFocalLengthMm());
+        const float scale_x = static_cast<float>(panel_info->render_width) / panel_info->width;
+        const float scale_y = static_cast<float>(panel_info->render_height) / panel_info->height;
+        const float render_x = (static_cast<float>(x) - panel_info->x) * scale_x;
+        const float render_y = (static_cast<float>(y) - panel_info->y) * scale_y;
+
+        const float depth = rm->getDepthAtPixel(
+            static_cast<int>(render_x),
+            static_cast<int>(render_y),
+            panel_info->panel);
+        if (depth <= 0.0f) {
+            return glm::vec3(Viewport::INVALID_WORLD_POS);
+        }
+
+        Viewport projection_viewport = *panel_info->viewport;
+        projection_viewport.windowSize = {panel_info->render_width, panel_info->render_height};
+        return projection_viewport.unprojectPixel(
+            render_x,
+            render_y,
+            depth,
+            rm->getFocalLengthMm());
     }
 
     void AlignPickPointOperator::captureTransformsBefore(const OperatorContext& ctx) {
@@ -158,14 +183,19 @@ namespace lfs::vis::op {
 
         const glm::vec3 v01 = p1 - p0;
         const glm::vec3 v02 = p2 - p0;
-        glm::vec3 normal = glm::normalize(glm::cross(v01, v02));
+        const glm::vec3 cross_v = glm::cross(v01, v02);
+        const float cross_len = glm::length(cross_v);
+        if (cross_len <= 1e-6f) {
+            return;
+        }
+        glm::vec3 normal = cross_v / cross_len;
         const glm::vec3 center = (p0 + p1 + p2) / 3.0f;
 
-        if (normal.y > 0.0f) {
+        constexpr glm::vec3 kTargetUp(0.0f, 1.0f, 0.0f);
+        if (glm::dot(normal, kTargetUp) < 0.0f) {
             normal = -normal;
         }
 
-        constexpr glm::vec3 kTargetUp(0.0f, -1.0f, 0.0f);
         const glm::vec3 axis = glm::cross(normal, kTargetUp);
         const float axis_len = glm::length(axis);
 
@@ -173,16 +203,28 @@ namespace lfs::vis::op {
         if (axis_len > 1e-6f) {
             const float angle = acos(glm::clamp(glm::dot(normal, kTargetUp), -1.0f, 1.0f));
             rotation = glm::rotate(glm::mat4(1.0f), angle, glm::normalize(axis));
-        } else if (glm::dot(normal, kTargetUp) < 0.0f) {
-            rotation = glm::rotate(glm::mat4(1.0f), glm::pi<float>(), glm::vec3(1.0f, 0.0f, 0.0f));
         }
 
         const glm::mat4 to_origin = glm::translate(glm::mat4(1.0f), -center);
-        const glm::mat4 from_origin = glm::translate(glm::mat4(1.0f), glm::vec3(center.x, 0.0f, center.z));
-        const glm::mat4 transform = from_origin * rotation * to_origin;
+        const glm::mat4 from_origin =
+            glm::translate(glm::mat4(1.0f), center - glm::dot(center, kTargetUp) * kTargetUp);
+        const glm::mat4 visualizer_transform = from_origin * rotation * to_origin;
 
-        for (const auto* node : scene.getNodes()) {
-            ctx.scene().setNodeTransform(node->name, transform * node->local_transform);
+        for (const auto node_id : scene.getRootNodes()) {
+            const auto* const node = scene.getNodeById(node_id);
+            if (!node) {
+                continue;
+            }
+
+            const glm::mat4 old_visualizer_world = vis::scene_coords::nodeVisualizerWorldTransform(scene, node_id);
+            const glm::mat4 new_visualizer_world = visualizer_transform * old_visualizer_world;
+            const auto new_local =
+                vis::scene_coords::nodeLocalTransformFromVisualizerWorld(scene, node_id, new_visualizer_world);
+            if (!new_local) {
+                continue;
+            }
+
+            ctx.scene().setNodeTransform(node->name, *new_local);
         }
 
         entry->captureAfter();

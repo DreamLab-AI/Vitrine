@@ -29,14 +29,17 @@ namespace gsplat_fwd {
         const uint32_t N,
         const uint32_t n_isects,
         const bool packed,
-        const vec3* __restrict__ means,           // [N_total, 3] (N-sized, use visible_indices for access)
-        const vec4* __restrict__ quats,           // [N_total, 4] (N-sized, use visible_indices for access)
-        const vec3* __restrict__ scales,          // [N_total, 3] (N-sized, use visible_indices for access)
-        const scalar_t* __restrict__ colors,      // [C, M, CDIM] or [nnz, CDIM] (M-sized from SH)
-        const scalar_t* __restrict__ opacities,   // [N_total] (N-sized, use visible_indices for access)
-        const scalar_t* __restrict__ backgrounds, // [C, CDIM]
-        const bool* __restrict__ masks,           // [C, tile_height, tile_width]
-        const scalar_t* __restrict__ depths,      // [C, M] per-gaussian depths (M-sized from projection)
+        const vec3* __restrict__ means,                // [N_total, 3] (N-sized, use visible_indices for access)
+        const vec4* __restrict__ quats,                // [N_total, 4] (N-sized, use visible_indices for access)
+        const vec3* __restrict__ scales,               // [N_total, 3] (N-sized, use visible_indices for access)
+        const scalar_t* __restrict__ colors,           // [C, M, CDIM] or [nnz, CDIM] (M-sized from SH)
+        const scalar_t* __restrict__ opacities,        // [N_total] (N-sized, use visible_indices for access)
+        const scalar_t* __restrict__ backgrounds,      // [C, CDIM]
+        const bool* __restrict__ masks,                // [C, tile_height, tile_width]
+        const scalar_t* __restrict__ depths,           // [C, M] per-gaussian depths (M-sized from projection)
+        const float* __restrict__ model_transforms,    // [num_transforms, 4, 4] row-major optional
+        const int32_t* __restrict__ transform_indices, // [N_total] optional
+        const int num_transforms,
         const uint32_t image_width,
         const uint32_t image_height,
         const uint32_t tile_size,
@@ -233,7 +236,28 @@ namespace gsplat_fwd {
 
                 // global_g indexes into N-sized arrays (means, quats, scales, opacities)
                 const int32_t global_g = (visible_indices != nullptr) ? visible_indices[g] : g;
-                const vec3 xyz = means[global_g];
+                const vec3 xyz_local = means[global_g];
+                vec3 xyz = xyz_local;
+                mat3 L_inv(1.0f);
+                if (model_transforms != nullptr && num_transforms > 0) {
+                    const int transform_idx = transform_indices != nullptr
+                                                  ? min(max(transform_indices[global_g], 0), num_transforms - 1)
+                                                  : 0;
+                    const float* const m = model_transforms + transform_idx * 16;
+                    xyz = apply_row_major_transform_point(m, xyz_local);
+
+                    // Invert the linear part so we can transform the world ray into model-local
+                    // space before applying the gaussian's local scale/rotation.
+                    const mat3 L = mat3(
+                        m[0], m[4], m[8],
+                        m[1], m[5], m[9],
+                        m[2], m[6], m[10]);
+                    const float det = glm::determinant(L);
+                    if (fabsf(det) > 1e-12f) {
+                        L_inv = glm::inverse(L);
+                    }
+                }
+
                 const float opac = opacities[global_g];
                 xyz_opacity_batch[tr] = {xyz.x, xyz.y, xyz.z, opac};
 
@@ -251,7 +275,7 @@ namespace gsplat_fwd {
                     0.f,
                     0.f,
                     1.0f / scale[2]);
-                mat3 iscl_rot = S * glm::transpose(R);
+                mat3 iscl_rot = (S * glm::transpose(R)) * L_inv;
                 iscl_rot_batch[tr] = iscl_rot;
             }
 
@@ -330,6 +354,9 @@ namespace gsplat_fwd {
         const float* backgrounds,
         const bool* masks,
         const float* depths,
+        const float* model_transforms, // [num_transforms, 4, 4] row-major optional
+        const int* transform_indices,  // [N_total] optional
+        int num_transforms,
         uint32_t C,
         uint32_t N,
         uint32_t n_isects,
@@ -401,6 +428,9 @@ namespace gsplat_fwd {
                 backgrounds,
                 masks,
                 depths,
+                model_transforms,
+                reinterpret_cast<const int32_t*>(transform_indices),
+                num_transforms,
                 image_width,
                 image_height,
                 tile_size,
@@ -438,6 +468,9 @@ namespace gsplat_fwd {
         const float* backgrounds,                                              \
         const bool* masks,                                                     \
         const float* depths,                                                   \
+        const float* model_transforms,                                         \
+        const int* transform_indices,                                          \
+        int num_transforms,                                                    \
         uint32_t C,                                                            \
         uint32_t N,                                                            \
         uint32_t n_isects,                                                     \

@@ -698,11 +698,11 @@ class Camera:
 
     @property
     def fov_x(self) -> float:
-        """Horizontal field of view in radians"""
+        """Horizontal field of view in degrees"""
 
     @property
     def fov_y(self) -> float:
-        """Vertical field of view in radians"""
+        """Vertical field of view in degrees"""
 
     @property
     def image_width(self) -> int:
@@ -741,24 +741,38 @@ class Camera:
         """Unique camera identifier"""
 
     @property
-    def R(self) -> lichtfeld.Tensor:
-        """Rotation matrix [3, 3]"""
+    def rotation(self) -> lichtfeld.Tensor:
+        """
+        Visualizer camera-to-world rotation [3, 3], directly usable with render_view()
+        """
 
     @property
-    def T(self) -> lichtfeld.Tensor:
-        """Translation vector [3]"""
+    def translation(self) -> lichtfeld.Tensor:
+        """Visualizer camera position [3], directly usable with render_view()"""
 
     @property
     def K(self) -> lichtfeld.Tensor:
         """Intrinsic matrix [3, 3]"""
 
     @property
+    def view_matrix(self) -> lichtfeld.Tensor:
+        """Visualizer world-to-camera view matrix [4, 4]"""
+
+    @property
+    def R(self) -> lichtfeld.Tensor:
+        """Deprecated raw dataset world-to-camera rotation [3, 3]"""
+
+    @property
+    def T(self) -> lichtfeld.Tensor:
+        """Deprecated raw dataset world-to-camera translation [3]"""
+
+    @property
     def world_view_transform(self) -> lichtfeld.Tensor:
-        """World-to-view transform [4, 4]"""
+        """Deprecated raw dataset world-to-camera transform [1, 4, 4]"""
 
     @property
     def cam_position(self) -> lichtfeld.Tensor:
-        """Camera position in world space [3]"""
+        """Deprecated raw dataset-world camera position [3]"""
 
     def load_image(self, resize_factor: int = 1, max_width: int = 3840) -> lichtfeld.Tensor:
         """Load image as tensor [C, H, W] on CUDA"""

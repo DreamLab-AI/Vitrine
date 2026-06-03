@@ -178,6 +178,19 @@ class ThemeSizes:
     @property
     def toolbar_spacing(self) -> float: ...
 
+class ThemeVignette:
+    @property
+    def enabled(self) -> bool: ...
+
+    @property
+    def intensity(self) -> float: ...
+
+    @property
+    def radius(self) -> float: ...
+
+    @property
+    def softness(self) -> float: ...
+
 class Theme:
     @property
     def name(self) -> str: ...
@@ -188,8 +201,20 @@ class Theme:
     @property
     def sizes(self) -> ThemeSizes: ...
 
+    @property
+    def vignette(self) -> ThemeVignette: ...
+
 def theme() -> Theme:
     """Get the current theme"""
+
+def set_theme_vignette_enabled(arg: bool, /) -> None:
+    """Set theme vignette enabled"""
+
+def set_theme_vignette_intensity(arg: float, /) -> None:
+    """Set theme vignette intensity"""
+
+def set_theme_vignette_style(arg0: float, arg1: float, arg2: float, /) -> None:
+    """Set vignette intensity, radius, and softness"""
 
 class PanelSpace(enum.Enum):
     SIDE_PANEL = 0
@@ -202,7 +227,9 @@ class PanelSpace(enum.Enum):
 
     SCENE_HEADER = 4
 
-    STATUS_BAR = 5
+    BOTTOM_DOCK = 5
+
+    STATUS_BAR = 6
 
 class PanelHeightMode(enum.Enum):
     FILL = 0
@@ -1850,6 +1877,11 @@ def open_image_dialog(start_dir: str = '') -> str:
     Open a file dialog to select an image file. Returns empty string if cancelled.
     """
 
+def open_environment_map_dialog(start_dir: str = '') -> str:
+    """
+    Open a file dialog to select an environment map (.hdr, .exr). Returns empty string if cancelled.
+    """
+
 def open_folder_dialog(title: str = 'Select Folder', start_dir: str = '') -> str:
     """
     Open a folder selection dialog. Returns empty string if cancelled. title is accepted for compatibility and currently ignored.
@@ -1903,6 +1935,11 @@ def save_spz_file_dialog(default_name: str = 'export') -> str:
 def save_usd_file_dialog(default_name: str = 'export') -> str:
     """
     Open a save file dialog for USD files. Returns empty string if cancelled.
+    """
+
+def save_usdz_file_dialog(default_name: str = 'export') -> str:
+    """
+    Open a save file dialog for USDZ files. Returns empty string if cancelled.
     """
 
 def save_html_file_dialog(default_name: str = 'viewer') -> str:
@@ -2060,6 +2097,22 @@ def execute_mirror(axis: str) -> None:
 def go_to_camera_view(cam_uid: int) -> None:
     """Go to camera view by UID"""
 
+def open_camera_preview(cam_uid: int) -> None:
+    """Open the image preview panel for a camera UID"""
+
+def toggle_gt_comparison() -> None:
+    """Toggle ground-truth comparison split view"""
+
+def is_gt_comparison_active() -> bool:
+    """
+    Returns true if ground-truth comparison split view is currently enabled.
+    """
+
+def reveal_in_file_manager(path: str) -> bool:
+    """
+    Reveal a file or directory in the OS file manager. Returns true on success.
+    """
+
 def apply_cropbox() -> None:
     """Apply the selected cropbox"""
 
@@ -2109,6 +2162,11 @@ def release_texture(texture_id: int) -> None:
 def get_image_info(path: str) -> tuple:
     """
     Get image dimensions without loading pixel data, returns (width, height, channels)
+    """
+
+def sample_image_color(path: str, x: int, y: int, radius: int = 10) -> tuple:
+    """
+    Sample average color around pixel (x, y) within given radius, returns (r, g, b) in 0..1
     """
 
 def preload_image_async(path: str) -> None:
@@ -2280,7 +2338,12 @@ def is_windows_platform() -> bool:
 
 def register_file_associations() -> bool:
     """
-    Register LichtFeld Studio as default handler for .ply, .sog, .spz, .usd, .usda, .usdc, .usdz files (Windows only)
+    Register LichtFeld Studio as a supported handler for .ply, .sog, .spz, .usd, .usda, .usdc, .usdz files (Windows only)
+    """
+
+def open_file_association_settings() -> bool:
+    """
+    Open the Windows Default Apps UI for LichtFeld Studio file associations (Windows only)
     """
 
 def unregister_file_associations() -> bool:

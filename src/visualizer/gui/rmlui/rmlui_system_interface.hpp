@@ -4,10 +4,10 @@
 
 #pragma once
 
+#include "core/export.hpp"
 #include <RmlUi/Core/SystemInterface.h>
 
 #include <cstdint>
-#include <unordered_set>
 
 struct SDL_Window;
 
@@ -22,6 +22,7 @@ namespace lfs::vis::gui {
         Arrow,
         TextInput,
         Hand,
+        Pipette,
         ResizeEW,
         ResizeNS,
         ResizeNWSE,
@@ -30,7 +31,7 @@ namespace lfs::vis::gui {
         NotAllowed,
     };
 
-    class RmlSystemInterface final : public Rml::SystemInterface {
+    class LFS_VIS_API RmlSystemInterface final : public Rml::SystemInterface {
     public:
         explicit RmlSystemInterface(SDL_Window* window);
 
@@ -59,7 +60,6 @@ namespace lfs::vis::gui {
         int current_context_window_x_ = 0;
         int current_context_window_y_ = 0;
         RmlCursorRequest cursor_request_ = RmlCursorRequest::None;
-        std::unordered_set<const Rml::Context*> active_contexts_;
     };
 
 } // namespace lfs::vis::gui

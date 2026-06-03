@@ -147,9 +147,6 @@ namespace lfs::rendering {
                                                        cudaGetErrorString(err)));
                 }
 
-                if (info.channels == 4) {
-                    image = image.slice(2, 0, 3).contiguous();
-                }
                 return image;
             }
 
@@ -173,9 +170,6 @@ namespace lfs::rendering {
                 }
 
                 Tensor image = image_f16.to(lfs::core::DataType::Float32);
-                if (info.channels == 4) {
-                    image = image.slice(2, 0, 3).contiguous();
-                }
                 return image;
             }
 
@@ -202,9 +196,6 @@ namespace lfs::rendering {
 
                 Tensor image = image_u8.to(lfs::core::DataType::Float32);
                 image.div_(255.0f);
-                if (info.channels == 4) {
-                    image = image.slice(2, 0, 3).contiguous();
-                }
                 return image;
             }
 
@@ -917,7 +908,8 @@ namespace lfs::rendering {
             }
 
             uploadImage(formatted.ptr<unsigned char>(),
-                        formatted.size(1), formatted.size(0));
+                        formatted.size(1), formatted.size(0),
+                        static_cast<int>(formatted.size(2)));
             return {};
         }
 

@@ -148,12 +148,13 @@ namespace lfs::vis {
 
         // Full transform for selected node (includes rotation and scale)
         void setSelectedNodeTransform(const glm::mat4& transform);
-        glm::mat4 getSelectedNodeTransform() const;      // Returns local transform
-        glm::mat4 getSelectedNodeWorldTransform() const; // Returns world transform
+        glm::mat4 getSelectedNodeTransform() const; // Returns local transform
+        [[nodiscard]] glm::mat4 getSelectedNodeVisualizerWorldTransform() const;
 
         // Multi-selection support
         [[nodiscard]] glm::vec3 getSelectionCenter() const;
-        [[nodiscard]] glm::vec3 getSelectionWorldCenter() const;
+        [[nodiscard]] glm::vec3 getSelectionWorldCenter() const; // Deprecated legacy data-world center for compatibility
+        [[nodiscard]] glm::vec3 getSelectionVisualizerWorldCenter() const;
 
         // Cropbox operations for selected node
         core::NodeId getSelectedNodeCropBoxId() const;
@@ -187,7 +188,7 @@ namespace lfs::vis {
 
         void loadCheckpointForTraining(const std::filesystem::path& path,
                                        const lfs::core::param::TrainingParameters& params);
-        void clear();
+        [[nodiscard]] bool clear();
         void switchToEditMode(); // Keep trained model, discard dataset
 
         // For rendering - gets appropriate model
@@ -231,6 +232,7 @@ namespace lfs::vis {
         /// Mirror selected gaussians along specified axis
         bool executeMirror(lfs::core::MirrorAxis axis);
 
+        [[nodiscard]] std::expected<void, std::string> softDeleteSelectedGaussians();
         void deleteSelectedGaussians();
         void invertSelection();
         void deselectAllGaussians();
@@ -247,6 +249,7 @@ namespace lfs::vis {
                                                   int camera_index = 0);
         [[nodiscard]] SelectionResult selectRing(float x, float y, const std::string& mode, int camera_index = 0);
         [[nodiscard]] SelectionResult applySelectionMask(const std::vector<uint8_t>& mask);
+        [[nodiscard]] SelectionResult applySelectionMask(const lfs::core::Tensor& mask);
 
         void initSelectionService();
         [[nodiscard]] SelectionService* getSelectionService() { return selection_service_.get(); }
@@ -264,6 +267,12 @@ namespace lfs::vis {
     private:
         void resetToEmptyState(bool trainer_already_cleared = false);
         void setupEventHandlers();
+        void finalizeDatasetSceneLoad(const std::filesystem::path& dataset_path,
+                                      const std::filesystem::path& scene_path,
+                                      lfs::core::events::state::SceneLoaded::Type type,
+                                      size_t num_gaussians,
+                                      int checkpoint_iteration = 0);
+        void syncDatasetCameraFrustumsToRenderSettings();
         void syncCropToolRenderSettings(const core::SceneNode* node);
         void loadPPISPCompanion(const std::filesystem::path& ppisp_path);
         void handleCropActivePly(const lfs::geometry::BoundingBox& crop_box, bool inverse);

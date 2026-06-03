@@ -10,6 +10,7 @@
 #include "core/logger.hpp"
 #include "gui/gui_focus_state.hpp"
 #include "gui/panel_layout.hpp"
+#include "gui/rmlui/rml_document_utils.hpp"
 #include "gui/rmlui/rml_theme.hpp"
 #include "gui/rmlui/rmlui_manager.hpp"
 #include "gui/rmlui/rmlui_render_interface.hpp"
@@ -21,6 +22,7 @@
 #include <RmlUi/Core.h>
 #include <RmlUi/Core/Element.h>
 #include <RmlUi/Core/Input.h>
+#include <algorithm>
 #include <cassert>
 #include <format>
 
@@ -68,7 +70,7 @@ namespace lfs::vis::gui {
 
         try {
             const auto rml_path = lfs::vis::getAssetPath("rmlui/global_context_menu.rml");
-            doc_ = ctx_->LoadDocument(rml_path.string());
+            doc_ = rml_documents::loadDocument(ctx_, rml_path);
             if (!doc_) {
                 LOG_ERROR("GlobalContextMenu: failed to load global_context_menu.rml");
                 return;
@@ -127,8 +129,10 @@ namespace lfs::vis::gui {
         rml_theme::applyTheme(doc_, base_rcss_, rml_theme::generateAllThemeMedia([this](const auto& th) { return generateThemeRCSS(th); }));
     }
 
-    void GlobalContextMenu::request(std::vector<ContextMenuItem> items, float screen_x, float screen_y) {
+    void GlobalContextMenu::request(std::vector<ContextMenuItem> items, float screen_x, float screen_y,
+                                    ActionCallback callback) {
         pending_items_ = std::move(items);
+        callback_ = std::move(callback);
         pending_x_ = screen_x;
         pending_y_ = screen_y;
         pending_open_ = true;
@@ -147,6 +151,7 @@ namespace lfs::vis::gui {
 
         open_ = false;
         focus_first_item_ = false;
+        callback_ = {};
         el_ctx_menu_->SetClass("visible", false);
         el_backdrop_->SetProperty("display", "none");
     }
@@ -172,12 +177,15 @@ namespace lfs::vis::gui {
         const float mx = input.mouse_x - input.screen_x;
         const float my = input.mouse_y - input.screen_y;
 
-        ctx_->ProcessMouseMove(static_cast<int>(mx), static_cast<int>(my), 0);
+        const int mods = sdlModsToRml(input.key_ctrl, input.key_shift,
+                                      input.key_alt, input.key_super);
+
+        ctx_->ProcessMouseMove(static_cast<int>(mx), static_cast<int>(my), mods);
 
         if (input.mouse_clicked[0])
-            ctx_->ProcessMouseButtonDown(0, 0);
+            ctx_->ProcessMouseButtonDown(0, mods);
         if (input.mouse_released[0])
-            ctx_->ProcessMouseButtonUp(0, 0);
+            ctx_->ProcessMouseButtonUp(0, mods);
 
         if (input.mouse_clicked[1]) {
             hide();
@@ -188,7 +196,6 @@ namespace lfs::vis::gui {
         focus.want_capture_mouse = true;
         focus.want_capture_keyboard = true;
 
-        const int mods = sdlModsToRml(input.key_ctrl, input.key_shift, input.key_alt, input.key_super);
         for (const int sc : input.keys_pressed) {
             if (sc == SDL_SCANCODE_ESCAPE) {
                 hide();
@@ -225,8 +232,9 @@ namespace lfs::vis::gui {
             if (el_ctx_menu_ && el_backdrop_) {
                 items_ = pending_items_;
                 menu_model_.DirtyVariable("items");
-                el_ctx_menu_->SetProperty("left", std::format("{:.0f}dp", pending_x_ - screen_x));
-                el_ctx_menu_->SetProperty("top", std::format("{:.0f}dp", pending_y_ - screen_y));
+                const float dp = std::max(mgr_ ? mgr_->getDpRatio() : 1.0f, 1.0f);
+                el_ctx_menu_->SetProperty("left", std::format("{:.0f}dp", (pending_x_ - screen_x) / dp));
+                el_ctx_menu_->SetProperty("top", std::format("{:.0f}dp", (pending_y_ - screen_y) / dp));
                 el_ctx_menu_->SetClass("visible", true);
                 el_backdrop_->SetProperty("display", "block");
                 open_ = true;
@@ -303,8 +311,13 @@ namespace lfs::vis::gui {
 
         const auto action = target->GetAttribute<Rml::String>("data-ctx-action", "");
         if (!action.empty()) {
-            owner->result_ = action;
+            auto callback = owner->callback_;
             owner->hide();
+            if (callback) {
+                callback(action);
+            } else {
+                owner->result_ = action;
+            }
         }
     }
 

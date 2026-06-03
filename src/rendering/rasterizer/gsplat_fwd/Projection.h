@@ -31,10 +31,12 @@ namespace gsplat_fwd {
         CameraModelType camera_model,
         const UnscentedTransformParameters& ut_params,
         ShutterType rs_type,
-        const float* radial_coeffs,       // optional
-        const float* tangential_coeffs,   // optional
-        const float* thin_prism_coeffs,   // optional
-        const int* transform_indices,     // [N_total] optional
+        const float* radial_coeffs,     // optional
+        const float* tangential_coeffs, // optional
+        const float* thin_prism_coeffs, // optional
+        const float* model_transforms,  // [num_transforms, 4, 4] row-major optional
+        const int* transform_indices,   // [N_total] optional
+        int num_transforms,
         const bool* node_visibility_mask, // optional
         int num_visibility_nodes,
         const int* visible_indices, // [M] maps output idx → global gaussian idx (nullptr = all)

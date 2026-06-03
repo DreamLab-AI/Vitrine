@@ -8,6 +8,7 @@
 #include "core/point_cloud.hpp"
 #include "core/tensor.hpp"
 #include "io/error.hpp"
+#include "io/loader.hpp"
 #include <filesystem>
 #include <memory>
 #include <vector>
@@ -58,14 +59,16 @@ namespace lfs::io {
     Result<std::tuple<std::vector<std::shared_ptr<Camera>>, Tensor>>
     read_colmap_cameras_and_images(
         const std::filesystem::path& base,
-        const std::string& images_folder = "images");
+        const std::string& images_folder = "images",
+        const LoadOptions& options = {});
 
     /**
      * @brief Read COLMAP point cloud (binary format)
      * @param filepath Base directory containing points3D.bin
      * @return PointCloud
      */
-    PointCloud read_colmap_point_cloud(const std::filesystem::path& filepath);
+    PointCloud read_colmap_point_cloud(const std::filesystem::path& filepath,
+                                       const LoadOptions& options = {});
 
     /**
      * @brief Read COLMAP cameras and images from text files
@@ -76,14 +79,32 @@ namespace lfs::io {
     Result<std::tuple<std::vector<std::shared_ptr<Camera>>, Tensor>>
     read_colmap_cameras_and_images_text(
         const std::filesystem::path& base,
-        const std::string& images_folder = "images");
+        const std::string& images_folder = "images",
+        const LoadOptions& options = {});
+
+    /**
+     * @brief Validate COLMAP dataset image and mask layout against metadata
+     * @param base Base directory containing COLMAP data
+     * @param images_folder Folder containing images (default: "images")
+     * @return Success if the dataset layout matches the COLMAP metadata contract
+     *
+     * For nested image folders, COLMAP metadata must preserve the relative path
+     * under the images root. Duplicate basenames across subdirectories are valid
+     * only when images.bin/images.txt stores entries like "cam_a/frame.png"
+     * instead of just "frame.png". Masks follow the same relative-path contract.
+     */
+    Result<void> validate_colmap_dataset_layout(
+        const std::filesystem::path& base,
+        const std::string& images_folder = "images",
+        const LoadOptions& options = {});
 
     /**
      * @brief Read COLMAP point cloud from text file
      * @param filepath Base directory containing points3D.txt
      * @return PointCloud
      */
-    PointCloud read_colmap_point_cloud_text(const std::filesystem::path& filepath);
+    PointCloud read_colmap_point_cloud_text(const std::filesystem::path& filepath,
+                                            const LoadOptions& options = {});
 
     /**
      * @brief Read COLMAP cameras only (no image file validation required)

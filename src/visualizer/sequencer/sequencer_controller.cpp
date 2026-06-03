@@ -9,6 +9,7 @@ namespace lfs::vis {
 
     namespace {
         constexpr float LOOP_KEYFRAME_OFFSET = 1.0f;
+        constexpr float KEYFRAME_SEEK_EPS = 1e-4f;
     } // namespace
 
     void SequencerController::play() {
@@ -47,6 +48,57 @@ namespace lfs::vis {
             if (state_ == PlaybackState::PLAYING) {
                 state_ = PlaybackState::PAUSED;
             }
+        }
+    }
+
+    void SequencerController::seekToPreviousKeyframe() {
+        if (timeline_.empty())
+            return;
+
+        float target_time = timeline_.startTime();
+        bool found_previous = false;
+        for (const auto& keyframe : timeline_.keyframes()) {
+            if (keyframe.is_loop_point)
+                continue;
+            if (keyframe.time < playhead_ - KEYFRAME_SEEK_EPS) {
+                target_time = keyframe.time;
+                found_previous = true;
+            }
+        }
+
+        if (!found_previous && timeline_.realKeyframeCount() > 0) {
+            target_time = timeline_.startTime();
+        }
+
+        playhead_ = target_time;
+        if (state_ == PlaybackState::PLAYING) {
+            state_ = PlaybackState::PAUSED;
+        }
+    }
+
+    void SequencerController::seekToNextKeyframe() {
+        if (timeline_.empty())
+            return;
+
+        float target_time = timeline_.endTime();
+        bool found_next = false;
+        for (const auto& keyframe : timeline_.keyframes()) {
+            if (keyframe.is_loop_point)
+                continue;
+            if (keyframe.time > playhead_ + KEYFRAME_SEEK_EPS) {
+                target_time = keyframe.time;
+                found_next = true;
+                break;
+            }
+        }
+
+        if (!found_next && timeline_.realKeyframeCount() > 0) {
+            target_time = timeline_.realEndTime();
+        }
+
+        playhead_ = target_time;
+        if (state_ == PlaybackState::PLAYING) {
+            state_ = PlaybackState::PAUSED;
         }
     }
 

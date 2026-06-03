@@ -7,16 +7,23 @@
 #include "core/camera.hpp"
 #include "core/image_io.hpp"
 #include "core/logger.hpp"
+#include "io/loader.hpp"
 #include <algorithm>
 #include <memory>
 #include <vector>
 
 namespace lfs::io {
 
-    inline bool detect_camera_alpha(const std::vector<std::shared_ptr<lfs::core::Camera>>& cameras) {
+    inline bool detect_camera_alpha(const std::vector<std::shared_ptr<lfs::core::Camera>>& cameras,
+                                    const CancelCallback& cancel_requested = nullptr) {
         bool images_have_alpha = false;
         size_t alpha_count = 0;
-        for (const auto& cam : cameras) {
+        for (size_t i = 0; i < cameras.size(); ++i) {
+            if (cancel_requested && (i % 64) == 0 && cancel_requested()) {
+                throw LoadCancelledError("Image alpha probe cancelled");
+            }
+
+            const auto& cam = cameras[i];
             auto ext = cam->image_path().extension().string();
             std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
             if (ext == ".jpg" || ext == ".jpeg")

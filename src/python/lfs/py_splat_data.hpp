@@ -6,6 +6,7 @@
 
 #include "core/splat_data.hpp"
 #include "py_tensor.hpp"
+#include <memory>
 #include <nanobind/nanobind.h>
 #include <optional>
 
@@ -16,6 +17,10 @@ namespace lfs::python {
     class PySplatData {
     public:
         explicit PySplatData(core::SplatData* data) : data_(data) {
+            assert(data_ != nullptr);
+        }
+
+        explicit PySplatData(std::shared_ptr<core::SplatData> owner) : owner_(std::move(owner)), data_(owner_.get()) {
             assert(data_ != nullptr);
         }
 
@@ -66,6 +71,7 @@ namespace lfs::python {
         const core::SplatData* data() const { return data_; }
 
     private:
+        std::shared_ptr<core::SplatData> owner_;
         core::SplatData* data_;
     };
 

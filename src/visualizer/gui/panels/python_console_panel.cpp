@@ -19,7 +19,7 @@
 #include <thread>
 #include <imgui.h>
 
-#include <Python.h>
+#include "python/python_compat.hpp"
 #include <filesystem>
 #include <mutex>
 
@@ -35,6 +35,7 @@
 namespace {
     std::once_flag g_console_init_once;
     std::once_flag g_syspath_init_once;
+    lfs::vis::gui::panels::PythonConsoleState* g_python_console_state = nullptr;
 
     bool should_block_editor_input(const lfs::vis::editor::PythonEditor* editor,
                                    lfs::vis::gui::panels::PythonConsoleState& state) {
@@ -270,6 +271,7 @@ namespace lfs::vis::gui::panels {
         : terminal_(std::make_unique<terminal::TerminalWidget>(80, 24)),
           output_terminal_(std::make_unique<terminal::TerminalWidget>(80, 24)),
           editor_(std::make_unique<editor::PythonEditor>()) {
+        g_python_console_state = this;
     }
 
     PythonConsoleState::~PythonConsoleState() {
@@ -277,11 +279,16 @@ namespace lfs::vis::gui::panels {
         if (script_thread_.joinable()) {
             script_thread_.join();
         }
+        g_python_console_state = nullptr;
     }
 
     PythonConsoleState& PythonConsoleState::getInstance() {
         static PythonConsoleState instance;
         return instance;
+    }
+
+    PythonConsoleState* PythonConsoleState::tryGetInstance() {
+        return g_python_console_state;
     }
 
     void PythonConsoleState::addOutput(const std::string& text, uint32_t /*color*/) {
@@ -827,7 +834,7 @@ namespace lfs::vis::gui::panels {
 
                     ImGui::SameLine();
                     ImGui::SetNextItemWidth(PKG_SEARCH_WIDTH);
-                    ImGui::InputTextWithHint("##search", "Search...", search_filter, sizeof(search_filter));
+                    lfs::vis::gui::widgets::InputTextWithHint("##search", "Search...", search_filter, sizeof(search_filter));
 
                     ImGui::SameLine();
                     if (loading) {
@@ -979,6 +986,15 @@ namespace lfs::vis::gui::panels {
         }
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Save script (Ctrl+S)");
+
+        ImGui::SameLine();
+
+        // Save As button
+        if (ImGui::Button("Save As")) {
+            save_script_dialog(state);
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Save script as...");
 
         ImGui::SameLine();
 
@@ -1209,7 +1225,8 @@ namespace lfs::vis::gui::panels {
 
                     ImGui::SameLine();
                     ImGui::SetNextItemWidth(PKG_SEARCH_WIDTH);
-                    ImGui::InputTextWithHint("##search_docked", "Search...", search_filter, sizeof(search_filter));
+                    lfs::vis::gui::widgets::InputTextWithHint("##search_docked", "Search...", search_filter,
+                                                              sizeof(search_filter));
 
                     ImGui::SameLine();
                     if (loading) {

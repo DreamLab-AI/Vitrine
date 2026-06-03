@@ -17,6 +17,9 @@
 
 namespace {
 
+    constexpr float kInvalidScreenPositionSentinel = -10000.0f;
+    constexpr float kInvalidScreenPositionThreshold = -1000.0f;
+
     struct PrimitiveFailureOffender {
         uint primitive_idx = 0;
         uint global_idx = 0;
@@ -179,7 +182,7 @@ namespace lfs::rendering::config {
 __global__ void init_mean2d_kernel(float2* data, int n) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < n) {
-        data[idx] = make_float2(-10000.0f, -10000.0f);
+        data[idx] = make_float2(kInvalidScreenPositionSentinel, kInvalidScreenPositionSentinel);
     }
 }
 
@@ -192,7 +195,7 @@ __global__ void invalidate_outside_crop_kernel(
     if (idx >= n)
         return;
     if (outside_crop[idx]) {
-        screen_positions[idx] = make_float2(-10000.0f, -10000.0f);
+        screen_positions[idx] = make_float2(kInvalidScreenPositionSentinel, kInvalidScreenPositionSentinel);
     }
 }
 
@@ -209,9 +212,9 @@ __global__ void copy_screen_positions_kernel(
         return;
 
     float2 pos = mean2d[idx];
-    // Flip Y: window_y = height - rasterizer_y
+    // Convert OpenGL-style rasterizer Y to window-space Y.
     // Keep invalid markers as-is (they have large negative values)
-    if (pos.y > -1000.0f) {
+    if (pos.y > kInvalidScreenPositionThreshold) {
         pos.y = height - pos.y;
     }
     screen_positions_out[idx] = pos;
@@ -233,7 +236,7 @@ __global__ void brush_select_kernel(
     float2 pos = screen_positions[idx];
 
     // Skip invalid/off-screen positions (marked with large negative values)
-    if (pos.x < -1000.0f || pos.y < -1000.0f)
+    if (pos.x < kInvalidScreenPositionThreshold || pos.y < kInvalidScreenPositionThreshold)
         return;
 
     float dx = pos.x - mouse_x;
@@ -296,7 +299,7 @@ __global__ void polygon_select_kernel(
         return;
 
     const float2 pos = positions[idx];
-    if (pos.x < -1000.0f)
+    if (pos.x < kInvalidScreenPositionThreshold)
         return; // Invalid position marker
 
     if (point_in_polygon(pos.x, pos.y, polygon, num_verts))
@@ -315,7 +318,7 @@ __global__ void polygon_select_mode_kernel(
         return;
 
     const float2 pos = positions[idx];
-    if (pos.x < -1000.0f)
+    if (pos.x < kInvalidScreenPositionThreshold)
         return;
 
     if (point_in_polygon(pos.x, pos.y, polygon, num_verts))
@@ -332,7 +335,7 @@ __global__ void rect_select_kernel(
         return;
 
     const float2 pos = positions[idx];
-    if (pos.x < -1000.0f)
+    if (pos.x < kInvalidScreenPositionThreshold)
         return;
 
     if (pos.x >= x0 && pos.x <= x1 && pos.y >= y0 && pos.y <= y1)
@@ -350,7 +353,7 @@ __global__ void rect_select_mode_kernel(
         return;
 
     const float2 pos = positions[idx];
-    if (pos.x < -1000.0f)
+    if (pos.x < kInvalidScreenPositionThreshold)
         return;
 
     if (pos.x >= x0 && pos.x <= x1 && pos.y >= y0 && pos.y <= y1)
@@ -519,6 +522,9 @@ void lfs::rendering::forward(
         init_mean2d_kernel<<<init_grid, init_block, 0, stream>>>(per_primitive_buffers.mean2d, buffer_n_primitives);
     }
 
+    const bool include_low_opacity_selection_queries =
+        (screen_positions_out != nullptr) || (hovered_depth_id != nullptr);
+
     kernels::forward::preprocess_cu<<<div_round_up(buffer_n_primitives, config::block_size_preprocess), config::block_size_preprocess, 0, stream>>>(
         means,
         scales_raw,
@@ -561,7 +567,7 @@ void lfs::rendering::forward(
         selection_mask,
         cursor_active,
         cursor_x,
-        cursor_y,
+        cursor_active ? (static_cast<float>(height) - cursor_y) : cursor_y,
         cursor_radius * cursor_radius, // Pass squared radius for efficient comparison
         preview_selection_add_mode,
         preview_selection_out,
@@ -585,6 +591,7 @@ void lfs::rendering::forward(
         deleted_mask,
         focused_gaussian_id,
         hovered_depth_id,
+        include_low_opacity_selection_queries,
         emphasized_node_mask,
         num_selected_nodes,
         dim_non_emphasized,
@@ -595,19 +602,20 @@ void lfs::rendering::forward(
         mip_filter);
     CHECK_CUDA(config::debug, "preprocess")
 
-    // Copy screen positions if requested (for interactive overlay queries)
-    // Note: When visibility filtering is active, screen positions are written directly
-    // in the kernel using global_idx, so this copy is only needed without filtering
+    // Export screen positions in window coordinates (top-left origin) for GUI tools.
     if (screen_positions_out != nullptr && visible_indices == nullptr) {
-        cudaMemcpyAsync(screen_positions_out, per_primitive_buffers.mean2d,
-                        sizeof(float2) * n_primitives, cudaMemcpyDeviceToDevice, stream);
+        constexpr int BLOCK = 256;
+        const int grid_size = (n_primitives + BLOCK - 1) / BLOCK;
+        copy_screen_positions_kernel<<<grid_size, BLOCK, 0, stream>>>(
+            per_primitive_buffers.mean2d,
+            screen_positions_out,
+            static_cast<float>(height),
+            n_primitives);
 
         // In desaturate mode, invalidate screen positions for outside gaussians
         // Check crop box desaturate, ellipsoid desaturate, and depth filter
         const bool has_view_volume = (view_volume_transform != nullptr);
         if (crop_desaturate || ellipsoid_desaturate || has_view_volume) {
-            constexpr int BLOCK = 256;
-            const int grid_size = (n_primitives + BLOCK - 1) / BLOCK;
             invalidate_outside_crop_kernel<<<grid_size, BLOCK, 0, stream>>>(
                 screen_positions_out, per_primitive_buffers.outside_crop, n_primitives);
         }

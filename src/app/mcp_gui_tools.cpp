@@ -26,6 +26,7 @@
 #include "mcp/shared_scene_tools.hpp"
 #include "python/python_runtime.hpp"
 #include "python/runner.hpp"
+#include "rendering/coordinate_conventions.hpp"
 #include "rendering/gs_rasterizer_tensor.hpp"
 #include "sequencer/keyframe.hpp"
 #include "visualizer/gui/html_viewer_export.hpp"
@@ -37,6 +38,7 @@
 #include "visualizer/operator/operator_properties.hpp"
 #include "visualizer/rendering/rendering_manager.hpp"
 #include "visualizer/scene/scene_manager.hpp"
+#include "visualizer/scene_coordinate_utils.hpp"
 #include "visualizer/visualizer.hpp"
 #include "visualizer/visualizer_impl.hpp"
 
@@ -135,6 +137,110 @@ namespace lfs::app {
             }
         }
 
+        template <typename F>
+        auto post_render_and_wait(vis::VisualizerImpl* viewer_impl, F&& fn) {
+            using R = std::invoke_result_t<F>;
+
+            if (viewer_impl->isOnViewerThread()) {
+                if (!viewer_impl->acceptsPostedWork())
+                    return make_post_failure<R>("Viewer is shutting down");
+                if (!viewer_impl->isProcessingRenderWork())
+                    return make_post_failure<R>(
+                        "Composited capture must be requested from a non-viewer thread unless already running in render work");
+                return std::invoke(std::forward<F>(fn));
+            }
+
+            return detail::post_and_wait_impl(
+                [viewer_impl](vis::Visualizer::WorkItem work) {
+                    return viewer_impl->postRenderWork(std::move(work));
+                },
+                std::forward<F>(fn));
+        }
+
+        template <typename F>
+        auto capture_after_gui_render(vis::Visualizer* viewer, F&& fn) {
+            using R = std::invoke_result_t<F>;
+
+            auto* const viewer_impl = dynamic_cast<vis::VisualizerImpl*>(viewer);
+            if (!viewer_impl)
+                return make_post_failure<R>("Composited capture requires a GUI visualizer");
+
+            return post_render_and_wait(viewer_impl, std::forward<F>(fn));
+        }
+
+        std::expected<std::string, std::string> capture_default_framebuffer_region_to_base64(
+            int framebuffer_width,
+            int framebuffer_height,
+            int capture_x,
+            int capture_y_top,
+            int capture_width,
+            int capture_height,
+            int width = 0,
+            int height = 0,
+            std::string_view capture_target = "capture",
+            const GLenum read_buffer = GL_FRONT) {
+            if (framebuffer_width <= 0 || framebuffer_height <= 0)
+                return std::unexpected("Window framebuffer size is unavailable");
+            if (capture_x < 0 || capture_y_top < 0)
+                return std::unexpected(std::string(capture_target) + " bounds are invalid");
+            if (capture_width <= 0 || capture_height <= 0)
+                return std::unexpected(std::string(capture_target) + " size is empty");
+            if (capture_x + capture_width > framebuffer_width ||
+                capture_y_top + capture_height > framebuffer_height) {
+                return std::unexpected(std::string(capture_target) + " bounds exceed the framebuffer");
+            }
+
+            const int capture_y_bottom = framebuffer_height - capture_y_top - capture_height;
+            if (capture_y_bottom < 0)
+                return std::unexpected(std::string(capture_target) + " bounds are invalid");
+
+            std::vector<uint8_t> pixels(static_cast<size_t>(capture_width) * capture_height * 4u);
+
+            GLint previous_read_fbo = 0;
+            GLint previous_read_buffer = GL_BACK;
+            GLint previous_pack_alignment = 4;
+            glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &previous_read_fbo);
+            glGetIntegerv(GL_READ_BUFFER, &previous_read_buffer);
+            glGetIntegerv(GL_PACK_ALIGNMENT, &previous_pack_alignment);
+
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+            glReadBuffer(read_buffer);
+            glPixelStorei(GL_PACK_ALIGNMENT, 1);
+            glFinish();
+            glReadPixels(
+                capture_x,
+                capture_y_bottom,
+                capture_width,
+                capture_height,
+                GL_RGBA,
+                GL_UNSIGNED_BYTE,
+                pixels.data());
+            const GLenum read_error = glGetError();
+
+            glPixelStorei(GL_PACK_ALIGNMENT, previous_pack_alignment);
+            glReadBuffer(static_cast<GLenum>(previous_read_buffer));
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(previous_read_fbo));
+
+            if (read_error != GL_NO_ERROR)
+                return std::unexpected("glReadPixels failed while capturing " + std::string(capture_target));
+
+            const size_t row_bytes = static_cast<size_t>(capture_width) * 4u;
+            std::vector<uint8_t> flipped(pixels.size());
+            for (int row = 0; row < capture_height; ++row) {
+                const size_t src_offset = static_cast<size_t>(capture_height - 1 - row) * row_bytes;
+                const size_t dst_offset = static_cast<size_t>(row) * row_bytes;
+                std::copy_n(pixels.data() + src_offset, row_bytes, flipped.data() + dst_offset);
+            }
+
+            return mcp::encode_pixels_to_base64(
+                flipped.data(),
+                capture_width,
+                capture_height,
+                4,
+                width,
+                height);
+        }
+
         std::expected<std::string, std::string> capture_live_viewport_to_base64(
             vis::Visualizer* viewer,
             int width = 0,
@@ -168,58 +274,42 @@ namespace lfs::app {
             const int capture_height = std::min(
                 framebuffer_size.y - capture_y_top,
                 std::max(1, static_cast<int>(viewport_size.y * scale_y)));
-            if (capture_width <= 0 || capture_height <= 0)
-                return std::unexpected("Viewport capture size is empty");
-
-            const int capture_y_bottom = framebuffer_size.y - capture_y_top - capture_height;
-            if (capture_y_bottom < 0)
-                return std::unexpected("Viewport capture bounds are invalid");
-
-            std::vector<uint8_t> pixels(static_cast<size_t>(capture_width) * capture_height * 4u);
-
-            GLint previous_read_fbo = 0;
-            GLint previous_read_buffer = GL_BACK;
-            GLint previous_pack_alignment = 4;
-            glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &previous_read_fbo);
-            glGetIntegerv(GL_READ_BUFFER, &previous_read_buffer);
-            glGetIntegerv(GL_PACK_ALIGNMENT, &previous_pack_alignment);
-
-            glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-            glReadBuffer(GL_FRONT);
-            glPixelStorei(GL_PACK_ALIGNMENT, 1);
-            glFinish();
-            glReadPixels(
+            return capture_default_framebuffer_region_to_base64(
+                framebuffer_size.x,
+                framebuffer_size.y,
                 capture_x,
-                capture_y_bottom,
+                capture_y_top,
                 capture_width,
                 capture_height,
-                GL_RGBA,
-                GL_UNSIGNED_BYTE,
-                pixels.data());
-            const GLenum read_error = glGetError();
-
-            glPixelStorei(GL_PACK_ALIGNMENT, previous_pack_alignment);
-            glReadBuffer(static_cast<GLenum>(previous_read_buffer));
-            glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(previous_read_fbo));
-
-            if (read_error != GL_NO_ERROR)
-                return std::unexpected("glReadPixels failed while capturing the live viewport");
-
-            const size_t row_bytes = static_cast<size_t>(capture_width) * 4u;
-            std::vector<uint8_t> flipped(pixels.size());
-            for (int row = 0; row < capture_height; ++row) {
-                const size_t src_offset = static_cast<size_t>(capture_height - 1 - row) * row_bytes;
-                const size_t dst_offset = static_cast<size_t>(row) * row_bytes;
-                std::copy_n(pixels.data() + src_offset, row_bytes, flipped.data() + dst_offset);
-            }
-
-            return mcp::encode_pixels_to_base64(
-                flipped.data(),
-                capture_width,
-                capture_height,
-                4,
                 width,
-                height);
+                height,
+                "the live viewport");
+        }
+
+        std::expected<std::string, std::string> capture_full_window_to_base64(
+            vis::Visualizer* viewer,
+            int width = 0,
+            int height = 0) {
+            auto* const viewer_impl = dynamic_cast<vis::VisualizerImpl*>(viewer);
+            if (!viewer_impl)
+                return std::unexpected("Full-window capture requires a GUI visualizer");
+
+            auto* const window_manager = viewer_impl->getWindowManager();
+            if (!window_manager)
+                return std::unexpected("Window capture is not initialized");
+
+            const glm::ivec2 framebuffer_size = window_manager->getFramebufferSize();
+            return capture_default_framebuffer_region_to_base64(
+                framebuffer_size.x,
+                framebuffer_size.y,
+                0,
+                0,
+                framebuffer_size.x,
+                framebuffer_size.y,
+                width,
+                height,
+                "the full window",
+                GL_BACK);
         }
 
         json selection_state_json(core::Scene& scene, const int max_indices = 100000) {
@@ -330,7 +420,7 @@ namespace lfs::app {
 
         json transform_info_json(const core::Scene& scene, const core::SceneNode& node) {
             const glm::mat4 local = scene.getNodeTransform(node.name);
-            const glm::mat4 world = scene.getWorldTransform(node.id);
+            const glm::mat4 world = vis::scene_coords::nodeVisualizerWorldTransform(scene, node.id);
             const auto local_components = decompose_transform(local);
             const auto world_components = decompose_transform(world);
 
@@ -519,7 +609,7 @@ namespace lfs::app {
                 {"rotation", vec3_to_json(components.rotation)},
                 {"scale", vec3_to_json(components.scale)},
                 {"local_matrix", mat4_to_json(scene.getNodeTransform(node->name))},
-                {"world_matrix", mat4_to_json(scene.getWorldTransform(cropbox_id))},
+                {"world_matrix", mat4_to_json(vis::scene_coords::nodeVisualizerWorldTransform(scene, cropbox_id))},
             };
 
             if (node->parent_id != core::NULL_NODE) {
@@ -565,6 +655,11 @@ namespace lfs::app {
                 json::array({info.rotation[3], info.rotation[4], info.rotation[5]}),
                 json::array({info.rotation[6], info.rotation[7], info.rotation[8]}),
             });
+            const glm::mat3 rotation_matrix(
+                glm::vec3(info.rotation[0], info.rotation[3], info.rotation[6]),
+                glm::vec3(info.rotation[1], info.rotation[4], info.rotation[7]),
+                glm::vec3(info.rotation[2], info.rotation[5], info.rotation[8]));
+            const glm::vec3 forward = rendering::cameraForward(rotation_matrix);
 
             return json{
                 {"success", true},
@@ -573,7 +668,7 @@ namespace lfs::app {
                                {"target", json::array({info.pivot[0], info.pivot[1], info.pivot[2]})},
                                {"pivot", json::array({info.pivot[0], info.pivot[1], info.pivot[2]})},
                                {"up", json::array({info.rotation[1], info.rotation[4], info.rotation[7]})},
-                               {"forward", json::array({info.rotation[2], info.rotation[5], info.rotation[8]})},
+                               {"forward", json::array({forward.x, forward.y, forward.z})},
                                {"rotation_matrix", rotation},
                                {"width", info.width},
                                {"height", info.height},
@@ -622,6 +717,10 @@ namespace lfs::app {
                                                {"crf_shoulder", settings.ppisp.crf_shoulder},
                                            }},
                                  {"background_color", json::array({settings.background_color[0], settings.background_color[1], settings.background_color[2]})},
+                                 {"environment_mode", settings.environment_mode},
+                                 {"environment_map_path", settings.environment_map_path},
+                                 {"environment_exposure", settings.environment_exposure},
+                                 {"environment_rotation_degrees", settings.environment_rotation_degrees},
                                  {"show_coord_axes", settings.show_coord_axes},
                                  {"axes_size", settings.axes_size},
                                  {"axes_visibility", json::array({settings.axes_visibility[0], settings.axes_visibility[1], settings.axes_visibility[2]})},
@@ -689,6 +788,13 @@ namespace lfs::app {
                 }
             };
 
+            const auto set_string = [&args, &touched](const char* key, std::string& field) {
+                if (args.contains(key)) {
+                    field = args[key].get<std::string>();
+                    touched = true;
+                }
+            };
+
             const auto set_vec3 = [&args, &touched](const char* key,
                                                     std::array<float, 3>& field) -> std::expected<void, std::string> {
                 if (!args.contains(key))
@@ -731,6 +837,10 @@ namespace lfs::app {
             set_bool("crop_filter_for_selection", settings.crop_filter_for_selection);
             set_bool("apply_appearance_correction", settings.apply_appearance_correction);
             set_int("ppisp_mode", settings.ppisp_mode);
+            set_int("environment_mode", settings.environment_mode);
+            set_string("environment_map_path", settings.environment_map_path);
+            set_float("environment_exposure", settings.environment_exposure);
+            set_float("environment_rotation_degrees", settings.environment_rotation_degrees);
             set_bool("show_coord_axes", settings.show_coord_axes);
             set_float("axes_size", settings.axes_size);
             set_bool("show_grid", settings.show_grid);
@@ -1254,7 +1364,7 @@ namespace lfs::app {
                 {"rotation", vec3_to_json(components.rotation)},
                 {"scale", vec3_to_json(components.scale)},
                 {"local_matrix", mat4_to_json(scene.getNodeTransform(node->name))},
-                {"world_matrix", mat4_to_json(scene.getWorldTransform(ellipsoid_id))},
+                {"world_matrix", mat4_to_json(vis::scene_coords::nodeVisualizerWorldTransform(scene, ellipsoid_id))},
             };
 
             if (node->parent_id != core::NULL_NODE) {
@@ -1403,7 +1513,7 @@ namespace lfs::app {
             for (const auto& name : node_names) {
                 const auto* const node = scene.getNode(name);
                 if (node && node->type == core::NodeType::SPLAT && node->model) {
-                    splats.emplace_back(node->model.get(), scene.getWorldTransform(node->id));
+                    splats.emplace_back(node->model.get(), vis::scene_coords::nodeDataWorldTransform(scene, node->id));
                 }
             }
 
@@ -1418,7 +1528,9 @@ namespace lfs::app {
 
             switch (format) {
             case core::ExportFormat::PLY: {
-                if (auto result = io::save_ply(*merged, io::PlySaveOptions{.output_path = path, .binary = true}); !result)
+                if (auto result = io::save_ply(
+                        *merged, io::PlySaveOptions{.output_path = path, .binary = true, .async = false, .extra_attributes = {}});
+                    !result)
                     return std::unexpected(result.error().message);
                 break;
             }
@@ -1439,6 +1551,11 @@ namespace lfs::app {
             }
             case core::ExportFormat::USD: {
                 if (auto result = io::save_usd(*merged, io::UsdSaveOptions{.output_path = path}); !result)
+                    return std::unexpected(result.error().message);
+                break;
+            }
+            case core::ExportFormat::NUREC_USDZ: {
+                if (auto result = io::save_nurec_usdz(*merged, io::NurecUsdzSaveOptions{.output_path = path}); !result)
                     return std::unexpected(result.error().message);
                 break;
             }
@@ -1775,6 +1892,39 @@ namespace lfs::app {
 
         registry.register_tool(
             McpTool{
+                .name = "render.capture_window",
+                .description = "Capture the current composited app window. Unlike render.capture without camera_index, this includes the full window, including panels, toolbars, and GUI overlays.",
+                .input_schema = {
+                    .type = "object",
+                    .properties = json{
+                        {"width", json{{"type", "integer"}, {"description", "Optional output width; preserves aspect ratio when height is omitted"}}},
+                        {"height", json{{"type", "integer"}, {"description", "Optional output height; preserves aspect ratio when width is omitted"}}}},
+                    .required = {}},
+                .metadata = mcp::McpToolMetadata{
+                    .category = "render",
+                    .kind = "query",
+                    .runtime = "gui",
+                    .thread_affinity = "gui_thread",
+                }},
+            [viewer](const json& args) -> json {
+                const int width = args.value("width", 0);
+                const int height = args.value("height", 0);
+
+                auto result = capture_after_gui_render(viewer, [viewer, width, height]() {
+                    return capture_full_window_to_base64(viewer, width, height);
+                });
+                if (!result)
+                    return json{{"error", result.error()}};
+
+                return json{
+                    {"success", true},
+                    {"mime_type", "image/png"},
+                    {"data", *result},
+                };
+            });
+
+        registry.register_tool(
+            McpTool{
                 .name = "camera.get",
                 .description = "Get the current interactive viewport camera state",
                 .input_schema = {.type = "object", .properties = json::object(), .required = {}}},
@@ -2103,6 +2253,10 @@ namespace lfs::app {
                         {"focal_length_mm", json{{"type", "number"}}},
                         {"render_scale", json{{"type", "number"}}},
                         {"background_color", json{{"type", "array"}, {"items", json{{"type", "number"}}}}},
+                        {"environment_mode", json{{"type", "integer"}}},
+                        {"environment_map_path", json{{"type", "string"}}},
+                        {"environment_exposure", json{{"type", "number"}}},
+                        {"environment_rotation_degrees", json{{"type", "number"}}},
                         {"antialiasing", json{{"type", "boolean"}}},
                         {"show_grid", json{{"type", "boolean"}}},
                         {"show_camera_frustums", json{{"type", "boolean"}}},
@@ -2552,6 +2706,45 @@ namespace lfs::app {
 
         registry.register_tool(
             McpTool{
+                .name = "scene.export_usdz_nurec",
+                .description = "Export one or more scene nodes to NuRec USDZ compatible with PLY_to_USD / Omniverse",
+                .input_schema = {
+                    .type = "object",
+                    .properties = json{
+                        {"path", json{{"type", "string"}, {"description", "Destination .usdz file path"}}},
+                        {"node", json{{"type", "string"}, {"description", "Optional node name"}}},
+                        {"nodes", json{{"type", "array"}, {"items", json{{"type", "string"}}}, {"description", "Optional list of node names"}}},
+                        {"sh_degree", json{{"type", "integer"}, {"description", "Optional SH degree to keep in the export"}}}},
+                    .required = {"path"}}},
+            [viewer_impl](const json& args) -> json {
+                const std::filesystem::path path = args["path"].get<std::string>();
+                const int sh_degree = args.value("sh_degree", 3);
+
+                return post_and_wait(viewer_impl, [viewer_impl, args, path, sh_degree]() -> json {
+                    auto* const scene_manager = viewer_impl->getSceneManager();
+                    if (!scene_manager)
+                        return json{{"error", "Scene manager not initialized"}};
+
+                    auto node_names = resolve_export_nodes(*scene_manager, args);
+                    if (!node_names)
+                        return json{{"error", node_names.error()}};
+
+                    if (auto result = export_scene_nodes(*scene_manager, *node_names, core::ExportFormat::NUREC_USDZ, path, sh_degree); !result)
+                        return json{{"error", result.error()}};
+
+                    return json{
+                        {"success", true},
+                        {"started", false},
+                        {"completed", true},
+                        {"format", "usdz_nurec"},
+                        {"path", core::path_to_utf8(path)},
+                        {"nodes", *node_names},
+                    };
+                });
+            });
+
+        registry.register_tool(
+            McpTool{
                 .name = "scene.export_html",
                 .description = "Start an asynchronous export of one or more scene nodes to the standalone HTML viewer",
                 .input_schema = {
@@ -2984,7 +3177,7 @@ namespace lfs::app {
                 .tool_name = "transform.set",
                 .operator_id = vis::op::BuiltinOp::TransformSet,
                 .category = "transform",
-                .description = "Set absolute local transform components for a node or the current shared node selection",
+                .description = "Set absolute visualizer-world transform components for a node or the current shared node selection",
                 .prepare = prepare_transform_set_operator,
                 .on_success = transform_operator_result,
             });
@@ -2995,7 +3188,7 @@ namespace lfs::app {
                 .tool_name = "transform.translate",
                 .operator_id = vis::op::BuiltinOp::TransformTranslate,
                 .category = "transform",
-                .description = "Translate a node or the current shared node selection",
+                .description = "Translate a node or the current shared node selection in visualizer-world coordinates",
                 .required = {"value"},
                 .prepare = prepare_transform_operator,
                 .on_success = transform_operator_result,
@@ -3007,7 +3200,7 @@ namespace lfs::app {
                 .tool_name = "transform.rotate",
                 .operator_id = vis::op::BuiltinOp::TransformRotate,
                 .category = "transform",
-                .description = "Rotate a node or the current shared node selection by XYZ Euler deltas in radians",
+                .description = "Rotate a node or the current shared node selection by visualizer-world XYZ Euler deltas in radians",
                 .required = {"value"},
                 .prepare = prepare_transform_operator,
                 .on_success = transform_operator_result,
@@ -3019,7 +3212,7 @@ namespace lfs::app {
                 .tool_name = "transform.scale",
                 .operator_id = vis::op::BuiltinOp::TransformScale,
                 .category = "transform",
-                .description = "Scale a node or the current shared node selection by XYZ factors",
+                .description = "Scale a node or the current shared node selection by visualizer-world XYZ factors",
                 .required = {"value"},
                 .prepare = prepare_transform_operator,
                 .on_success = transform_operator_result,
@@ -4215,7 +4408,7 @@ namespace lfs::app {
             McpResource{
                 .uri = "lichtfeld://render/current",
                 .name = "Current Render",
-                .description = "Base64-encoded PNG capture of the current GUI viewport",
+                .description = "Base64-encoded PNG capture of the live viewport region only; excludes panels, toolbars, and other window UI",
                 .mime_type = "image/png"},
             [viewer](const std::string& uri) -> std::expected<std::vector<McpResourceContent>, std::string> {
                 auto result = post_and_wait(viewer, [viewer]() {
@@ -4227,15 +4420,35 @@ namespace lfs::app {
                 return single_blob_resource(uri, "image/png", *result);
             });
 
+        registry.register_resource(
+            McpResource{
+                .uri = "lichtfeld://render/window",
+                .name = "Current Window",
+                .description = "Base64-encoded PNG capture of the full composited app window, including the live viewport, panels, toolbars, and GUI overlays",
+                .mime_type = "image/png"},
+            [viewer](const std::string& uri) -> std::expected<std::vector<McpResourceContent>, std::string> {
+                auto result = capture_after_gui_render(viewer, [viewer]() {
+                    return capture_full_window_to_base64(viewer);
+                });
+                if (!result)
+                    return std::unexpected(result.error());
+
+                return single_blob_resource(uri, "image/png", *result);
+            });
+
         registry.register_resource_prefix(
             "lichtfeld://render/",
             [viewer](const std::string& uri) -> std::expected<std::vector<McpResourceContent>, std::string> {
-                if (uri != "lichtfeld://render/current")
-                    return std::unexpected("Unknown resource URI: " + uri);
-
-                auto result = post_and_wait(viewer, [viewer]() {
-                    return capture_live_viewport_to_base64(viewer);
-                });
+                std::expected<std::string, std::string> result = std::unexpected("Unknown resource URI: " + uri);
+                if (uri == "lichtfeld://render/current") {
+                    result = post_and_wait(viewer, [viewer]() {
+                        return capture_live_viewport_to_base64(viewer);
+                    });
+                } else if (uri == "lichtfeld://render/window") {
+                    result = capture_after_gui_render(viewer, [viewer]() {
+                        return capture_full_window_to_base64(viewer);
+                    });
+                }
                 if (!result)
                     return std::unexpected(result.error());
 

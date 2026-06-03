@@ -5,10 +5,12 @@
 #pragma once
 
 #include "core/path_utils.hpp"
+#include "io/loader.hpp"
 
 #include <algorithm>
 #include <array>
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <system_error>
 #include <unordered_map>
@@ -20,6 +22,7 @@ namespace lfs::io {
     namespace fs = std::filesystem;
 
     namespace detail {
+        inline constexpr size_t CANCEL_POLL_INTERVAL = 64;
 
         inline void ascii_lower_inplace(std::string& value) {
             for (char& ch : value) {
@@ -38,6 +41,13 @@ namespace lfs::io {
 
         inline std::string normalize_lookup_key(const fs::path& value) {
             return normalize_lookup_key(lfs::core::path_to_utf8(value.lexically_normal()));
+        }
+
+        inline void throw_if_scan_cancel_requested(const CancelCallback& cancel_requested,
+                                                   const std::string_view message) {
+            if (cancel_requested && cancel_requested()) {
+                throw LoadCancelledError(std::string(message));
+            }
         }
 
     } // namespace detail
@@ -75,14 +85,14 @@ namespace lfs::io {
         std::string target_lower = detail::normalize_lookup_key(target);
 
         std::error_code ec;
-        for (const auto& entry : fs::directory_iterator(dir, ec)) {
-            if (ec)
-                break;
-            if (entry.is_regular_file()) {
-                std::string name = detail::normalize_lookup_key(entry.path().filename());
-                if (name == target_lower) {
-                    return entry.path();
-                }
+        for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+            std::error_code file_ec;
+            if (!it->is_regular_file(file_ec) || file_ec)
+                continue;
+
+            std::string name = detail::normalize_lookup_key(it->path().filename());
+            if (name == target_lower) {
+                return it->path();
             }
         }
         return {};
@@ -99,15 +109,36 @@ namespace lfs::io {
         return {};
     }
 
+    enum class LookupStatus {
+        NotFound,
+        Found,
+        Ambiguous,
+    };
+
+    struct FileLookupResult {
+        LookupStatus status = LookupStatus::NotFound;
+        fs::path path;
+
+        [[nodiscard]] bool found() const {
+            return status == LookupStatus::Found && !path.empty();
+        }
+
+        [[nodiscard]] bool ambiguous() const {
+            return status == LookupStatus::Ambiguous;
+        }
+    };
+
     // Recursive file index with exact relative-path matching and a basename
     // fallback when that basename is unique under the indexed root.
     class RecursiveFileCache {
     public:
-        explicit RecursiveFileCache(const fs::path& root_path) {
+        explicit RecursiveFileCache(const fs::path& root_path,
+                                    const CancelCallback& cancel_requested = nullptr) {
             if (!safe_is_directory(root_path))
                 return;
 
             std::error_code ec;
+            size_t scanned_entries = 0;
             for (fs::recursive_directory_iterator it(
                      root_path,
                      fs::directory_options::skip_permission_denied,
@@ -115,6 +146,12 @@ namespace lfs::io {
                  end;
                  !ec && it != end;
                  it.increment(ec)) {
+                if ((scanned_entries % detail::CANCEL_POLL_INTERVAL) == 0) {
+                    detail::throw_if_scan_cancel_requested(cancel_requested,
+                                                           "Filesystem scan cancelled");
+                }
+                ++scanned_entries;
+
                 const auto& entry = *it;
                 std::error_code file_ec;
                 if (!entry.is_regular_file(file_ec) || file_ec)
@@ -137,7 +174,7 @@ namespace lfs::io {
             }
         }
 
-        fs::path find(const fs::path& relative_or_name) const {
+        [[nodiscard]] FileLookupResult lookup(const fs::path& relative_or_name) const {
             if (relative_or_name.empty())
                 return {};
 
@@ -145,19 +182,26 @@ namespace lfs::io {
                 detail::normalize_lookup_key(relative_or_name);
             if (auto it = exact_entries_.find(exact_key);
                 it != exact_entries_.end()) {
-                return it->second;
+                return FileLookupResult{LookupStatus::Found, it->second};
             }
 
             const std::string basename_key =
                 detail::normalize_lookup_key(relative_or_name.filename());
             if (ambiguous_basenames_.contains(basename_key))
-                return {};
+                return FileLookupResult{LookupStatus::Ambiguous, {}};
 
             if (auto it = basename_entries_.find(basename_key);
                 it != basename_entries_.end()) {
-                return it->second;
+                return FileLookupResult{LookupStatus::Found, it->second};
             }
 
+            return {};
+        }
+
+        [[nodiscard]] fs::path find(const fs::path& relative_or_name) const {
+            if (auto result = lookup(relative_or_name); result.found()) {
+                return result.path;
+            }
             return {};
         }
 
@@ -199,80 +243,139 @@ namespace lfs::io {
     // Avoids repeated directory scans for every image.
     class MaskDirCache {
     public:
-        explicit MaskDirCache(const fs::path& base_path) {
+        explicit MaskDirCache(const fs::path& base_path,
+                              const CancelCallback& cancel_requested = nullptr) {
             for (const auto* folder : MASK_SEARCH_FOLDERS) {
+                detail::throw_if_scan_cancel_requested(cancel_requested,
+                                                       "Mask directory scan cancelled");
                 const fs::path mask_dir = base_path / folder;
                 if (!safe_is_directory(mask_dir))
                     continue;
 
-                DirectoryIndex dir_index;
-                std::error_code ec;
-                for (fs::recursive_directory_iterator it(
-                         mask_dir,
-                         fs::directory_options::skip_permission_denied,
-                         ec),
-                     end;
-                     !ec && it != end;
-                     it.increment(ec)) {
-                    const auto& entry = *it;
-                    std::error_code file_ec;
-                    if (!entry.is_regular_file(file_ec) || file_ec)
-                        continue;
-                    fs::path rel = entry.path().lexically_relative(mask_dir);
-                    if (rel.empty())
-                        continue;
-                    dir_index.entries.emplace(detail::normalize_lookup_key(rel), entry.path());
-                }
-                dir_indices_.push_back(std::move(dir_index));
+                dir_indices_.emplace_back(mask_dir, cancel_requested);
             }
         }
 
-        fs::path find(const std::string& image_name) const {
+        [[nodiscard]] FileLookupResult lookup(const std::string& image_name) const {
             if (dir_indices_.empty())
                 return {};
 
-            const std::vector<std::string> lookup_keys = build_lookup_keys(image_name);
+            const std::vector<fs::path> lookup_keys = build_lookup_keys(image_name);
+            bool saw_ambiguous_match = false;
 
             for (const auto& dir_index : dir_indices_) {
                 for (const auto& key : lookup_keys) {
-                    if (auto it = dir_index.entries.find(key); it != dir_index.entries.end()) {
-                        return it->second;
+                    if (auto result = dir_index.lookup(key); result.found()) {
+                        return result;
+                    } else if (result.ambiguous()) {
+                        saw_ambiguous_match = true;
                     }
                 }
+            }
+
+            if (saw_ambiguous_match) {
+                return FileLookupResult{LookupStatus::Ambiguous, {}};
+            }
+
+            return {};
+        }
+
+        [[nodiscard]] fs::path find(const std::string& image_name) const {
+            if (auto result = lookup(image_name); result.found()) {
+                return result.path;
             }
             return {};
         }
 
     private:
-        struct DirectoryIndex {
-            std::unordered_map<std::string, fs::path> entries;
-        };
-
-        static std::vector<std::string> build_lookup_keys(const std::string& image_name) {
+        static std::vector<fs::path> build_lookup_keys(const std::string& image_name) {
             const fs::path img_path = lfs::core::utf8_to_path(image_name);
             const fs::path stem_path = img_path.parent_path() / img_path.stem();
 
-            std::vector<std::string> keys;
+            std::vector<fs::path> keys;
+            std::unordered_set<std::string> seen_keys;
             keys.reserve(1 + 2 * MASK_SEARCH_EXTENSIONS.size());
-            keys.push_back(detail::normalize_lookup_key(img_path));
+
+            auto append_key = [&](const fs::path& key) {
+                const std::string normalized_key = detail::normalize_lookup_key(key);
+                if (seen_keys.insert(normalized_key).second) {
+                    keys.push_back(key);
+                }
+            };
+
+            append_key(img_path);
 
             for (const auto* ext : MASK_SEARCH_EXTENSIONS) {
                 fs::path target = stem_path;
                 target += ext;
-                keys.push_back(detail::normalize_lookup_key(target));
+                append_key(target);
             }
 
             for (const auto* ext : MASK_SEARCH_EXTENSIONS) {
                 fs::path target = img_path;
                 target += ext;
-                keys.push_back(detail::normalize_lookup_key(target));
+                append_key(target);
             }
 
             return keys;
         }
 
-        std::vector<DirectoryIndex> dir_indices_;
+        std::vector<RecursiveFileCache> dir_indices_;
     };
+
+    inline bool paths_equivalent_or_lexically_equal(const fs::path& lhs, const fs::path& rhs) {
+        if (lhs.empty() || rhs.empty()) {
+            return false;
+        }
+
+        std::error_code ec;
+        if (fs::equivalent(lhs, rhs, ec)) {
+            return true;
+        }
+        if (ec) {
+            return lhs.lexically_normal() == rhs.lexically_normal();
+        }
+
+        return false;
+    }
+
+    inline int count_image_files(const fs::path& root_path, const bool recursive) {
+        if (!safe_is_directory(root_path)) {
+            return 0;
+        }
+
+        int count = 0;
+        std::error_code ec;
+
+        if (recursive) {
+            for (fs::recursive_directory_iterator it(
+                     root_path,
+                     fs::directory_options::skip_permission_denied,
+                     ec),
+                 end;
+                 !ec && it != end;
+                 it.increment(ec)) {
+                std::error_code file_ec;
+                if (!it->is_regular_file(file_ec) || file_ec)
+                    continue;
+                if (is_image_file(it->path())) {
+                    ++count;
+                }
+            }
+            return count;
+        }
+
+        for (fs::directory_iterator it(root_path, ec), end; !ec && it != end; it.increment(ec)) {
+            std::error_code file_ec;
+            if (!it->is_regular_file(file_ec) || file_ec)
+                continue;
+            if (is_image_file(it->path())) {
+                ++count;
+            }
+        }
+
+        return count;
+    }
 
     struct DatasetInfo {
         fs::path base_path;
@@ -299,14 +402,8 @@ namespace lfs::io {
         if (info.images_path.empty()) {
             bool has_colmap_in_root = !find_file_ci(base_path, "cameras.bin").empty() ||
                                       !find_file_ci(base_path, "cameras.txt").empty();
-            if (has_colmap_in_root) {
-                std::error_code ec;
-                for (const auto& entry : fs::directory_iterator(base_path, ec)) {
-                    if (!ec && entry.is_regular_file() && is_image_file(entry.path())) {
-                        info.images_path = base_path;
-                        break;
-                    }
-                }
+            if (has_colmap_in_root && count_image_files(base_path, false) > 0) {
+                info.images_path = base_path;
             }
             if (info.images_path.empty()) {
                 info.images_path = base_path / "images";
@@ -314,12 +411,9 @@ namespace lfs::io {
         }
 
         if (safe_is_directory(info.images_path)) {
-            std::error_code ec;
-            for (const auto& entry : fs::directory_iterator(info.images_path, ec)) {
-                if (!ec && entry.is_regular_file() && is_image_file(entry.path())) {
-                    ++info.image_count;
-                }
-            }
+            const bool recursive_image_scan =
+                !paths_equivalent_or_lexically_equal(info.images_path, base_path);
+            info.image_count = count_image_files(info.images_path, recursive_image_scan);
         }
 
         for (const auto& sp : get_colmap_search_paths(base_path)) {
@@ -336,21 +430,7 @@ namespace lfs::io {
             if (safe_is_directory(base_path / name)) {
                 info.masks_path = base_path / name;
                 info.has_masks = true;
-                std::error_code ec;
-                for (fs::recursive_directory_iterator it(
-                         info.masks_path,
-                         fs::directory_options::skip_permission_denied,
-                         ec),
-                     end;
-                     !ec && it != end;
-                     it.increment(ec)) {
-                    std::error_code file_ec;
-                    if (!it->is_regular_file(file_ec) || file_ec)
-                        continue;
-                    if (is_image_file(it->path())) {
-                        ++info.mask_count;
-                    }
-                }
+                info.mask_count = count_image_files(info.masks_path, true);
                 break;
             }
         }

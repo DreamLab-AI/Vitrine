@@ -16,6 +16,8 @@
 #include <glm/glm.hpp>
 #include <memory>
 #include <optional>
+#include <string>
+#include <vector>
 
 struct SDL_Window;
 struct SDL_Cursor;
@@ -36,6 +38,12 @@ namespace lfs::vis {
 
     class LFS_VIS_API InputController {
     public:
+        enum class CameraNavigationMode {
+            Orbit,
+            Trackball,
+            FPV
+        };
+
         InputController(SDL_Window* window, Viewport& viewport);
         ~InputController();
 
@@ -70,6 +78,11 @@ namespace lfs::vis {
             focusSplitPanel(panel);
         }
 
+        void toggleIndependentSplitView() {
+            lfs::core::events::cmd::ToggleIndependentSplitView{.viewport = &viewport_}.emit();
+            focusSplitPanel(SplitViewPanelId::Left);
+        }
+
         // Set special input modes
         void setPointCloudMode(bool enabled) {
             point_cloud_mode_ = enabled;
@@ -79,6 +92,11 @@ namespace lfs::vis {
         input::InputBindings& getBindings() { return bindings_; }
         const input::InputBindings& getBindings() const { return bindings_; }
         void loadInputProfile(const std::string& name) { bindings_.loadProfile(name); }
+        [[nodiscard]] CameraNavigationMode cameraNavigationMode() const { return camera_navigation_mode_; }
+        void setCameraNavigationMode(CameraNavigationMode mode);
+        [[nodiscard]] bool cameraViewSnapEnabled() const { return camera_view_snap_enabled_; }
+        void setCameraViewSnapEnabled(bool enabled) { camera_view_snap_enabled_ = enabled; }
+        [[nodiscard]] static InputController* instance() { return instance_; }
 
         // Update function for continuous input (WASD movement and inertia)
         void update(float delta_time);
@@ -123,7 +141,7 @@ namespace lfs::vis {
         };
 
         void handleGoToCamView(const lfs::core::events::cmd::GoToCamView& event);
-        void handleFocusSelection(Viewport& target_viewport);
+        bool handleFocusSelection(Viewport& target_viewport);
 
         // WASD processing with proper frame timing
         void processWASDMovement();
@@ -151,6 +169,12 @@ namespace lfs::vis {
         std::pair<glm::vec3, glm::vec3> computePickRay(double x, double y) const;
         input::ToolMode getCurrentToolMode() const;
         void clearViewportDragState();
+        void clearSelectedCameraContextMenuGesture();
+        void beginPanDrag(const PanelInteractionState& interaction, int button, double x, double y);
+        [[nodiscard]] bool canOpenSelectedCameraContextMenu(int hovered_camera_uid) const;
+        void openSelectedCameraContextMenu(int hovered_camera_uid, float screen_x, float screen_y);
+        void applyCameraTrainingStateToSelection(const std::vector<std::string>& selected_names, bool enabled);
+        bool snapViewportToNearestAxis(Viewport& target_viewport, SplitViewPanelId panel);
 
         // Training pause/resume helpers
         void onCameraMovementStart();
@@ -186,6 +210,8 @@ namespace lfs::vis {
             Brush
         };
         DragMode drag_mode_ = DragMode::None;
+        CameraNavigationMode camera_navigation_mode_ = CameraNavigationMode::Orbit;
+        bool camera_view_snap_enabled_ = false;
         int drag_button_ = -1;
         glm::dvec2 last_mouse_pos_{0, 0};
         float splitter_start_pos_ = 0.5f;
@@ -193,12 +219,18 @@ namespace lfs::vis {
         Viewport* drag_viewport_ = nullptr;
         SplitViewPanelId drag_split_panel_ = SplitViewPanelId::Left;
         SplitViewPanelId node_rect_panel_ = SplitViewPanelId::Left;
+        struct PendingCameraContextMenuGesture {
+            bool active = false;
+            int camera_uid = -1;
+            glm::dvec2 press_pos{0.0, 0.0};
+            PanelInteractionState interaction{};
+        } pending_camera_context_menu_;
 
         // Key states
         bool key_r_pressed_ = false;
         bool key_ctrl_pressed_ = false;
         bool key_alt_pressed_ = false;
-        bool keys_movement_[6] = {false, false, false, false, false, false}; // fwd, left, back, right, down, up
+        bool keys_movement_[6] = {false, false, false, false, false, false}; // fwd, left, back, right, up, down
 
         // Cached movement key bindings (refreshed when bindings change)
         struct MovementKeys {
@@ -240,6 +272,7 @@ namespace lfs::vis {
         int last_camview_ = -1;
         int hovered_camera_id_ = -1;
         int last_clicked_camera_id_ = -1;
+        bool press_selected_camera_frustum_ = false;
         std::chrono::steady_clock::time_point last_click_time_;
         glm::dvec2 last_click_pos_{0, 0};
 

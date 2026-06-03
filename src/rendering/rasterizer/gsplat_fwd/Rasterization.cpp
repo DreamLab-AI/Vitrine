@@ -27,6 +27,9 @@ namespace gsplat_fwd {
         const float* backgrounds,
         const bool* masks,
         const float* depths,
+        const float* model_transforms,
+        const int* transform_indices,
+        int num_transforms,
         uint32_t C,
         uint32_t N,
         uint32_t n_isects,
@@ -64,7 +67,9 @@ namespace gsplat_fwd {
     case CDIM:                                                       \
         launch_rasterize_to_pixels_from_world_3dgs_fwd_kernel<CDIM>( \
             means, quats, scales, colors, opacities,                 \
-            backgrounds, masks, depths, C, N, n_isects,              \
+            backgrounds, masks, depths,                              \
+            model_transforms, transform_indices, num_transforms,     \
+            C, N, n_isects,                                          \
             image_width, image_height, tile_size,                    \
             viewmats0, viewmats1, Ks, camera_model,                  \
             ut_params, rs_type,                                      \
@@ -174,7 +179,8 @@ namespace gsplat_fwd {
             calc_compensations, camera_model,
             ut_params, rs_type,
             radial_coeffs, tangential_coeffs, thin_prism_coeffs,
-            transform_indices, node_visibility_mask, num_visibility_nodes,
+            model_transforms, transform_indices, num_transforms,
+            node_visibility_mask, num_visibility_nodes,
             visible_indices,
             result.radii, result.means2d, result.depths, result.conics,
             result.compensations, stream);
@@ -218,6 +224,7 @@ namespace gsplat_fwd {
         rasterize_to_pixels_from_world_3dgs_fwd(
             means, quats, scaled_scales, result.colors, opacities,
             backgrounds, masks, result.depths,
+            model_transforms, transform_indices, num_transforms,
             C, M, result.n_isects, channels,
             image_width, image_height, tile_size,
             viewmats0, viewmats1, Ks, camera_model,

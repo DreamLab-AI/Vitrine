@@ -4,6 +4,7 @@
 
 #include "strategy_utils.hpp"
 #include "core/logger.hpp"
+#include "kernels/pruning_kernels.hpp"
 
 namespace lfs::training {
 
@@ -165,6 +166,47 @@ namespace lfs::training {
                 splat_data.opacity_raw() = new_params[i];
             }
         }
+    }
+
+    lfs::core::Tensor compute_dead_mask_from_opacity_and_rotation(
+        const lfs::core::Tensor& opacities,
+        const lfs::core::Tensor& rotations,
+        const float min_opacity) {
+        using namespace lfs::core;
+
+        Tensor flat_opacities = opacities;
+        if (flat_opacities.ndim() == 2 && flat_opacities.shape()[1] == 1) {
+            flat_opacities = flat_opacities.squeeze(-1);
+        }
+
+        const size_t n = flat_opacities.numel();
+        assert(flat_opacities.ndim() == 1);
+        assert(rotations.ndim() == 2 && rotations.shape()[1] == 4);
+        assert(rotations.shape()[0] == n);
+
+        auto dead_mask = Tensor::empty({n}, Device::CUDA, DataType::Bool);
+        pruning::launch_compute_dead_mask(
+            flat_opacities.ptr<float>(),
+            rotations.ptr<float>(),
+            dead_mask.ptr<uint8_t>(),
+            n,
+            min_opacity);
+        return dead_mask;
+    }
+
+    lfs::core::Tensor compute_near_zero_rotation_mask(
+        const lfs::core::Tensor& rotations) {
+        using namespace lfs::core;
+
+        const size_t n = rotations.shape()[0];
+        assert(rotations.ndim() == 2 && rotations.shape()[1] == 4);
+
+        auto near_zero_mask = Tensor::empty({n}, Device::CUDA, DataType::Bool);
+        pruning::launch_compute_near_zero_rotation_mask(
+            rotations.ptr<float>(),
+            near_zero_mask.ptr<uint8_t>(),
+            n);
+        return near_zero_mask;
     }
 
 } // namespace lfs::training

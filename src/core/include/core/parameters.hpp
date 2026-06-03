@@ -6,7 +6,9 @@
 
 #include "core/export.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cctype>
 #include <expected>
 #include <filesystem>
 #include <string>
@@ -38,6 +40,19 @@ namespace lfs::core {
         inline constexpr std::string_view kStrategyMNRFLegacy = "mnrf";
         inline constexpr std::string_view kStrategyLFSLegacy = "lfs";
         inline constexpr std::string_view kStrategyIGSPlus = "igs+";
+
+        [[nodiscard]] inline std::filesystem::path default_dataset_output_path(
+            const std::filesystem::path& dataset_path) {
+            auto base_path = dataset_path;
+            auto ext = dataset_path.extension().string();
+            std::transform(ext.begin(), ext.end(), ext.begin(), [](const unsigned char c) {
+                return static_cast<char>(std::tolower(c));
+            });
+            if (ext == ".json") {
+                base_path = dataset_path.parent_path();
+            }
+            return base_path / "output";
+        }
 
         [[nodiscard]] inline constexpr std::string_view canonical_strategy_name(const std::string_view strategy) noexcept {
             if (strategy == kStrategyMCMC)
@@ -135,7 +150,7 @@ namespace lfs::core {
             std::filesystem::path ppisp_sidecar_path = {};
             bool ppisp_use_controller = false;
             bool ppisp_freeze_gaussians_on_distill = true;
-            int ppisp_controller_activation_step = -1; // Negative values use the default tail schedule
+            int ppisp_controller_activation_step = -1; // Negative values use the last-5000-steps default schedule
             float ppisp_controller_lr = 2e-3f;
 
             // Shared densification thresholds and reset controls
@@ -181,7 +196,8 @@ namespace lfs::core {
             void scale_steps(float ratio);
             void apply_step_scaling();
             void remove_step_scaling();
-            [[nodiscard]] int resolved_ppisp_controller_activation_step() const;
+            [[nodiscard]] int resolved_total_iterations() const;
+            [[nodiscard]] int resolved_ppisp_controller_activation_step(int total_iterations) const;
 
             nlohmann::json to_json() const;
             static OptimizationParameters from_json(const nlohmann::json& j);
@@ -209,6 +225,7 @@ namespace lfs::core {
         struct LFS_CORE_API DatasetConfig {
             std::filesystem::path data_path = "";
             std::filesystem::path output_path = "";
+            std::string output_name = "";
             std::string images = "images";
             int resize_factor = -1;
             int test_every = 8;

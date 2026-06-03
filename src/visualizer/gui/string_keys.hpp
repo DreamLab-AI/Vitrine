@@ -48,13 +48,11 @@ namespace lichtfeld::Strings {
 
         namespace Help {
             inline constexpr const char* MENU = "menu.help";
-            inline constexpr const char* GETTING_STARTED = "menu.help.getting_started";
             inline constexpr const char* ABOUT = "menu.help.about";
         } // namespace Help
     } // namespace Menu
 
     namespace Window {
-        inline constexpr const char* GETTING_STARTED = "window.getting_started";
         inline constexpr const char* ABOUT = "window.about";
         inline constexpr const char* INPUT_SETTINGS = "window.input_settings";
         inline constexpr const char* DEBUG_INFO = "window.debug_info";
@@ -64,19 +62,6 @@ namespace lichtfeld::Strings {
         inline constexpr const char* TRAINING = "window.training";
         inline constexpr const char* PREFERENCES = "window.preferences";
     } // namespace Window
-
-    namespace GettingStarted {
-        inline constexpr const char* TITLE = "getting_started.title";
-        inline constexpr const char* DESCRIPTION = "getting_started.description";
-        inline constexpr const char* WIKI_SECTION = "getting_started.wiki_section";
-        inline constexpr const char* VIDEO_INTRO = "getting_started.video_intro";
-        inline constexpr const char* VIDEO_LATEST = "getting_started.video_latest";
-        inline constexpr const char* VIDEO_REALITY_SCAN = "getting_started.video_reality_scan";
-        inline constexpr const char* VIDEO_COLMAP = "getting_started.video_colmap";
-        inline constexpr const char* VIDEO_LICHTFELD = "getting_started.video_lichtfeld";
-        inline constexpr const char* VIDEO_MASKS = "getting_started.video_masks";
-        inline constexpr const char* LOADING = "getting_started.loading";
-    } // namespace GettingStarted
 
     namespace About {
         inline constexpr const char* TITLE = "about.title";
@@ -311,6 +296,9 @@ namespace lichtfeld::Strings {
         inline constexpr const char* RENAME = "scene.rename";
         inline constexpr const char* DUPLICATE_ITEM = "scene.duplicate";
         inline constexpr const char* GO_TO_CAMERA_VIEW = "scene.go_to_camera_view";
+        inline constexpr const char* GO_TO_IMAGE = "scene.go_to_image";
+        inline constexpr const char* OPEN_IN_GT_COMPARE = "scene.open_in_gt_compare";
+        inline constexpr const char* SHOW_IN_FILE_MANAGER = "scene.show_in_file_manager";
         inline constexpr const char* GO_TO_CAM_VIEW = "scene.go_to_cam_view";
         inline constexpr const char* FIT_TO_SCENE = "scene.fit_to_scene";
         inline constexpr const char* FIT_TO_SCENE_TRIMMED = "scene.fit_to_scene_trimmed";
@@ -404,6 +392,8 @@ namespace lichtfeld::Strings {
         inline constexpr const char* STEP = "status.step";
         inline constexpr const char* LOSS = "status.loss";
         inline constexpr const char* ETA = "status.eta";
+        inline constexpr const char* PSNR = "status.psnr";
+        inline constexpr const char* SSIM = "status.ssim";
         inline constexpr const char* UNKNOWN = "status.unknown";
         inline constexpr const char* DATASET_NO_TRAINER = "status.dataset_no_trainer";
         inline constexpr const char* DATASET_READY = "status.dataset_ready";

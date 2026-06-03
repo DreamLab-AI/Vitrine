@@ -328,6 +328,10 @@ namespace lfs::vis::gui {
                                {".png", ".jpg", ".jpeg", ".bmp", ".tga", ".hdr", ".exr"})};
         }
 
+        [[nodiscard]] std::vector<DialogFilter> environmentMapFilters() {
+            return {makeFilter("Environment Maps", {".hdr", ".exr"})};
+        }
+
         [[nodiscard]] std::vector<DialogFilter> pointCloudFilters() {
             return {makeFilter("Point Cloud Files", {".ply", ".sog", ".spz", ".usd", ".usda", ".usdc", ".usdz"})};
         }
@@ -368,6 +372,12 @@ namespace lfs::vis::gui {
     std::filesystem::path OpenImageFileDialog(const std::filesystem::path& defaultPath) {
         std::filesystem::path result;
         runDialog(makeOpenFileRequest(imageFilters(), defaultPath), result);
+        return result;
+    }
+
+    std::filesystem::path OpenEnvironmentMapFileDialog(const std::filesystem::path& defaultPath) {
+        std::filesystem::path result;
+        runDialog(makeOpenFileRequest(environmentMapFilters(), defaultPath), result);
         return result;
     }
 
@@ -441,6 +451,17 @@ namespace lfs::vis::gui {
         return result;
     }
 
+    std::filesystem::path SaveTextFileDialog(const std::string& defaultName,
+                                             const std::filesystem::path& defaultPath) {
+        std::filesystem::path result;
+        runDialog(makeSaveFileRequest(singleExtensionFilter("Text Files", ".txt"),
+                                      defaultPath,
+                                      defaultName,
+                                      ".txt"),
+                  result);
+        return result;
+    }
+
     std::filesystem::path SaveSogFileDialog(const std::string& defaultName,
                                             const std::filesystem::path& defaultPath) {
         std::filesystem::path result;
@@ -470,6 +491,17 @@ namespace lfs::vis::gui {
                                       defaultPath,
                                       defaultName,
                                       ".usd"),
+                  result);
+        return result;
+    }
+
+    std::filesystem::path SaveUsdzFileDialog(const std::string& defaultName,
+                                             const std::filesystem::path& defaultPath) {
+        std::filesystem::path result;
+        runDialog(makeSaveFileRequest(singleExtensionFilter("USDZ Files", ".usdz"),
+                                      defaultPath,
+                                      defaultName,
+                                      ".usdz"),
                   result);
         return result;
     }

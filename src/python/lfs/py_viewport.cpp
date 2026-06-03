@@ -312,6 +312,7 @@ namespace lfs::python {
     }
 
     void PyViewportDrawRegistry::invoke_handlers(DrawHandlerTiming timing, PyViewportDrawContext& ctx) {
+        nb::gil_scoped_acquire gil;
         std::vector<nb::object> callbacks;
         {
             std::lock_guard lock(mutex_);
@@ -325,7 +326,6 @@ namespace lfs::python {
         if (callbacks.empty())
             return;
 
-        nb::gil_scoped_acquire gil;
         nb::object py_ctx = nb::cast(ctx, nb::rv_policy::reference);
         for (const auto& cb : callbacks) {
             try {
