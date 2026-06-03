@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "core/export.hpp"
 #include "vulkan_image_barrier_tracker.hpp"
 
 #include <array>
@@ -155,7 +156,7 @@ namespace lfs::vis {
 
         [[nodiscard]] bool beginFrame(const VkClearValue& clear_value, Frame& frame);
         [[nodiscard]] bool endFrame();
-        [[nodiscard]] std::expected<WindowCapture, std::string> captureActiveFrameRgba();
+        [[nodiscard]] LFS_VIS_API std::expected<WindowCapture, std::string> captureActiveFrameRgba();
         [[nodiscard]] bool waitForCurrentFrameSlot();
         [[nodiscard]] bool waitForSubmittedFrames();
         [[nodiscard]] bool deviceWaitIdle();
