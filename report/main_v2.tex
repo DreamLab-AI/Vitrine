@@ -1,0 +1,489 @@
+% main_v2.tex — Master document (Technical Report, v2.0)
+% Video-to-Gaussian: An Agentic Pipeline for Volumetric Cultural
+% Heritage Preservation with Hierarchical Scene Reconstruction
+%
+% Dr John O'Hare, DreamLab AI Consulting Ltd
+% For: Roger McKinley, University of Salford
+% June 2026
+%
+% Supersedes v1.0. Technically-focused. Not confidential.
+
+\documentclass[a4paper,11pt,twoside,openright]{report}
+
+% ────────────────────────────────────────────────────────────
+% Language and encoding
+% ────────────────────────────────────────────────────────────
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[british]{babel}
+\usepackage{microtype}
+
+% ────────────────────────────────────────────────────────────
+% Page geometry
+% ────────────────────────────────────────────────────────────
+\usepackage[
+  a4paper,
+  top=30mm,
+  bottom=30mm,
+  inner=30mm,
+  outer=25mm,
+  headheight=14pt
+]{geometry}
+
+% ────────────────────────────────────────────────────────────
+% Fonts
+% ────────────────────────────────────────────────────────────
+\usepackage{lmodern}
+\usepackage{inconsolata}
+
+% ────────────────────────────────────────────────────────────
+% Colours
+% ────────────────────────────────────────────────────────────
+\usepackage[dvipsnames,svgnames,x11names]{xcolor}
+
+\definecolor{UoSRed}{HTML}{B71234}
+\definecolor{DreamLabAccent}{HTML}{6366F1}
+\definecolor{DarkBg}{HTML}{0F172A}
+\definecolor{MidGrey}{HTML}{64748B}
+\definecolor{LightGrey}{HTML}{F1F5F9}
+\definecolor{CodeBg}{HTML}{1E293B}
+\definecolor{SuccessGreen}{HTML}{22C55E}
+\definecolor{WarningAmber}{HTML}{F59E0B}
+
+% ────────────────────────────────────────────────────────────
+% Graphics and figures
+% ────────────────────────────────────────────────────────────
+\usepackage{graphicx}
+\graphicspath{{figures/}{diagrams/}}
+\usepackage{subcaption}
+\usepackage{float}
+\usepackage{wrapfig}
+
+% ────────────────────────────────────────────────────────────
+% TikZ and pgfplots
+% ────────────────────────────────────────────────────────────
+\usepackage{tikz}
+\usetikzlibrary{
+  calc,
+  positioning,
+  arrows.meta,
+  shapes.geometric,
+  decorations.markings,
+  backgrounds,
+  fit,
+  patterns,
+  shadows,
+  fadings
+}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+
+% ────────────────────────────────────────────────────────────
+% Tables
+% ────────────────────────────────────────────────────────────
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{longtable}
+\usepackage{multirow}
+\usepackage{array}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\newcolumntype{C}[1]{>{\centering\arraybackslash}p{#1}}
+\newcolumntype{R}[1]{>{\raggedleft\arraybackslash}p{#1}}
+
+% ────────────────────────────────────────────────────────────
+% Bibliography
+% ────────────────────────────────────────────────────────────
+\usepackage[
+  backend=biber,
+  style=authoryear-comp,
+  natbib=true,
+  sorting=nyt,
+  maxbibnames=99,
+  maxcitenames=2,
+  giveninits=true,
+  uniquename=init,
+  url=true,
+  doi=true,
+  isbn=false,
+  eprint=false
+]{biblatex}
+\addbibresource{references.bib}
+
+% ────────────────────────────────────────────────────────────
+% Hyperlinks
+% ────────────────────────────────────────────────────────────
+\usepackage[
+  colorlinks=true,
+  linkcolor=UoSRed,
+  citecolor=DreamLabAccent,
+  urlcolor=DreamLabAccent,
+  bookmarks=true,
+  bookmarksnumbered=true,
+  pdfauthor={Dr John O'Hare},
+  pdftitle={Video-to-Gaussian: An Agentic Pipeline for Volumetric Cultural Heritage Preservation},
+  pdfsubject={3D Gaussian Splatting, Hierarchical Scene Reconstruction, Cultural Heritage},
+  pdfkeywords={Gaussian Splatting, Scene Graph, SAM2, Generative Reconstruction, USD, Cultural Heritage}
+]{hyperref}
+\usepackage{bookmark}
+
+% ────────────────────────────────────────────────────────────
+% Headers and footers
+% ────────────────────────────────────────────────────────────
+\usepackage{fancyhdr}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[LE]{\small\textcolor{MidGrey}{\leftmark}}
+\fancyhead[RO]{\small\textcolor{MidGrey}{\rightmark}}
+\fancyfoot[LE,RO]{\small\textcolor{MidGrey}{\thepage}}
+\fancyfoot[CE,CO]{\small\textcolor{MidGrey}{DreamLab AI Consulting Ltd}}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0.2pt}
+\renewcommand{\headrule}{\hbox to\headwidth{\color{UoSRed}\leaders\hrule height \headrulewidth\hfill}}
+\renewcommand{\footrule}{\hbox to\headwidth{\color{LightGrey}\leaders\hrule height \footrulewidth\hfill}}
+
+\fancypagestyle{plain}{%
+  \fancyhf{}
+  \fancyfoot[LE,RO]{\small\textcolor{MidGrey}{\thepage}}
+  \renewcommand{\headrulewidth}{0pt}
+  \renewcommand{\footrulewidth}{0.2pt}
+}
+
+% ────────────────────────────────────────────────────────────
+% Code listings
+% ────────────────────────────────────────────────────────────
+\usepackage{listings}
+\lstset{
+  basicstyle=\ttfamily\small,
+  backgroundcolor=\color{LightGrey},
+  frame=single,
+  rulecolor=\color{MidGrey},
+  breaklines=true,
+  breakatwhitespace=true,
+  showstringspaces=false,
+  tabsize=2,
+  captionpos=b,
+  numbers=left,
+  numberstyle=\tiny\color{MidGrey},
+  keywordstyle=\color{DreamLabAccent}\bfseries,
+  commentstyle=\color{MidGrey}\itshape,
+  stringstyle=\color{SuccessGreen}
+}
+
+% ────────────────────────────────────────────────────────────
+% Coloured boxes (tcolorbox)
+% ────────────────────────────────────────────────────────────
+\usepackage[most]{tcolorbox}
+
+% Key Finding box
+\newtcolorbox{keyfinding}[1][]{%
+  enhanced,
+  colback=UoSRed!5,
+  colframe=UoSRed,
+  fonttitle=\bfseries,
+  title={Key Finding},
+  left=6mm,
+  sharp corners=south,
+  boxrule=0.8pt,
+  toptitle=2mm,
+  bottomtitle=2mm,
+  attach boxed title to top left={xshift=10mm, yshift=-\tcboxedtitleheight/2},
+  boxed title style={
+    colback=UoSRed,
+    colframe=UoSRed,
+    sharp corners,
+    size=small
+  },
+  #1
+}
+
+% Recommendation box
+\newtcolorbox{recommendation}[1][]{%
+  enhanced,
+  colback=DreamLabAccent!5,
+  colframe=DreamLabAccent,
+  fonttitle=\bfseries,
+  title={Recommendation},
+  left=6mm,
+  sharp corners=south,
+  boxrule=0.8pt,
+  toptitle=2mm,
+  bottomtitle=2mm,
+  attach boxed title to top left={xshift=10mm, yshift=-\tcboxedtitleheight/2},
+  boxed title style={
+    colback=DreamLabAccent,
+    colframe=DreamLabAccent,
+    sharp corners,
+    size=small
+  },
+  #1
+}
+
+% Technical Note box
+\newtcolorbox{technote}[1][]{%
+  enhanced,
+  colback=CodeBg!5,
+  colframe=MidGrey,
+  fonttitle=\bfseries\color{white},
+  title={Technical Note},
+  left=6mm,
+  boxrule=0.6pt,
+  toptitle=2mm,
+  bottomtitle=2mm,
+  attach boxed title to top left={xshift=10mm, yshift=-\tcboxedtitleheight/2},
+  boxed title style={
+    colback=MidGrey,
+    colframe=MidGrey,
+    sharp corners,
+    size=small
+  },
+  #1
+}
+
+% ────────────────────────────────────────────────────────────
+% Glossaries and index
+% ────────────────────────────────────────────────────────────
+\usepackage[acronym,toc,nonumberlist]{glossaries}
+\makeglossaries
+
+\newacronym{3dgs}{3DGS}{3D Gaussian Splatting}
+\newacronym{sfm}{SfM}{Structure from Motion}
+\newacronym{mvs}{MVS}{Multi-View Stereo}
+\newacronym{tsdf}{TSDF}{Truncated Signed Distance Function}
+\newacronym{ich}{ICH}{Intangible Cultural Heritage}
+\newacronym{uos}{UoS}{University of Salford}
+\newacronym{sam}{SAM}{Segment Anything Model}
+\newacronym{nerf}{NeRF}{Neural Radiance Fields}
+\newacronym{mrnf}{MRNF}{Mini-Splatting with Relocation and Normal Filtering}
+\newacronym{mcmc}{MCMC}{Markov Chain Monte Carlo}
+\newacronym{usd}{USD}{Universal Scene Description}
+\newacronym{webgl}{WebGL}{Web Graphics Library}
+\newacronym{webgpu}{WebGPU}{Web Graphics Processing Unit API}
+\newacronym{colmap}{COLMAP}{COLlaborative MAPping}
+\newacronym{ke}{KE}{Knowledge Exchange}
+\newacronym{cop}{CoP}{Community of Practice}
+\newacronym{gpu}{GPU}{Graphics Processing Unit}
+\newacronym{mcp}{MCP}{Model Context Protocol}
+\newacronym{psnr}{PSNR}{Peak Signal-to-Noise Ratio}
+\newacronym{ssim}{SSIM}{Structural Similarity Index Measure}
+\newacronym{lpips}{LPIPS}{Learned Perceptual Image Patch Similarity}
+\newacronym{come}{CoMe}{Confidence-based Meshing}
+\newacronym{gw}{GW}{Gaussian Wrapping}
+\newacronym{milo}{MILo}{Mesh-In-the-Loop Gaussian Splatting}
+\newacronym{pbr}{PBR}{Physically-Based Rendering}
+\newacronym{abi}{ABI}{Application Binary Interface}
+\newacronym{cpu}{CPU}{Central Processing Unit}
+\newacronym{llm}{LLM}{Large Language Model}
+\newacronym{ui}{UI}{User Interface}
+\newacronym{vr}{VR}{Virtual Reality}
+\newacronym{vram}{VRAM}{Video Random-Access Memory}
+\newacronym{adr}{ADR}{Architecture Decision Record}
+\newacronym{ddd}{DDD}{Domain-Driven Design}
+\newacronym{gsg}{GSG}{Gaussian Scene Graph}
+\newacronym{ksplat}{KSPLAT}{Compressed Gaussian Splat container}
+
+\usepackage{makeidx}
+\makeindex
+
+% ────────────────────────────────────────────────────────────
+% Miscellaneous
+% ────────────────────────────────────────────────────────────
+\usepackage{enumitem}
+\setlist{nosep,leftmargin=*}
+\usepackage{pdfpages}
+\usepackage{csquotes}
+\usepackage{siunitx}
+\usepackage{amsmath,amssymb}
+\usepackage{etoolbox}
+
+% Chapter title formatting
+\usepackage{titlesec}
+\titleformat{\chapter}[display]
+  {\normalfont\huge\bfseries\color{DarkBg}}
+  {\textcolor{UoSRed}{\chaptertitlename\ \thechapter}}{10pt}{\Huge}
+\titlespacing*{\chapter}{0pt}{-20pt}{30pt}
+
+\titleformat{\section}
+  {\normalfont\Large\bfseries\color{DarkBg}}
+  {\textcolor{UoSRed}{\thesection}}{1em}{}
+
+\titleformat{\subsection}
+  {\normalfont\large\bfseries\color{DarkBg}}
+  {\textcolor{DreamLabAccent}{\thesubsection}}{1em}{}
+
+\titleformat{\part}[display]
+  {\centering\normalfont\Huge\bfseries\color{DarkBg}}
+  {\textcolor{UoSRed}{\partname\ \thepart}}{10pt}{\huge}
+\titlespacing*{\part}{0pt}{50pt}{40pt}
+
+% ────────────────────────────────────────────────────────────
+% Document metadata
+% ────────────────────────────────────────────────────────────
+\title{Video-to-Gaussian: An Agentic Pipeline for Volumetric Cultural Heritage Preservation}
+\author{Dr John O'Hare \\ DreamLab AI Consulting Ltd}
+\date{June 2026}
+
+% ════════════════════════════════════════════════════════════
+\begin{document}
+
+% ────────────────────────────────────────────────────────────
+% Title page
+% ────────────────────────────────────────────────────────────
+\begin{titlepage}
+\begin{tikzpicture}[remember picture, overlay]
+  % Full-bleed dark background
+  \fill[DarkBg] (current page.south west) rectangle (current page.north east);
+
+  % Geometric accent — radial dots
+  \foreach \i in {1,...,60} {
+    \pgfmathsetmacro{\xr}{rand*10}
+    \pgfmathsetmacro{\yr}{rand*14}
+    \pgfmathsetmacro{\op}{0.03 + rand*0.08}
+    \fill[white, opacity=\op]
+      ($(current page.south west) + (\xr,\yr)$) circle (1pt);
+  }
+
+  % Top-left geometric pattern — overlapping circles
+  \foreach \r in {2,3.2,4.4,5.6} {
+    \draw[UoSRed, opacity=0.15, line width=0.6pt]
+      ($(current page.north west) + (2.5,-3)$) circle (\r);
+  }
+
+  % Bottom-right geometric pattern — diagonal lines
+  \foreach \i in {0,0.8,...,6.4} {
+    \draw[DreamLabAccent, opacity=0.10, line width=0.5pt]
+      ($(current page.south east) + (-\i-1, 0.5)$) --
+      ($(current page.south east) + (-0.5, \i+1)$);
+  }
+
+  % Horizontal accent bar
+  \fill[UoSRed] ($(current page.west) + (0,2)$) rectangle ($(current page.east) + (0,2.08)$);
+  \fill[DreamLabAccent] ($(current page.west) + (0,1.9)$) rectangle ($(current page.east) + (0,1.94)$);
+
+  % Report type label
+  \node[anchor=north west, text=UoSRed, font=\footnotesize\sffamily\bfseries, text width=13cm]
+    at ($(current page.north west) + (3,-2)$)
+    {TECHNICAL REPORT \textcolor{MidGrey}{|} AI \& KNOWLEDGE EXCHANGE \textcolor{MidGrey}{|} SYSTEM ARCHITECTURE \& RESULTS};
+
+  % Main title
+  \node[anchor=west, text=white, font=\fontsize{30}{34}\selectfont\bfseries\sffamily, text width=15cm]
+    at ($(current page.west) + (3,5.5)$)
+    {Video-to-Gaussian\\[6pt]};
+
+  % Subtitle / tagline
+  \node[anchor=west, text=white, font=\fontsize{16}{20}\selectfont\sffamily, text width=14cm]
+    at ($(current page.west) + (3,2.6)$)
+    {An Agentic Pipeline for Volumetric\\
+     Cultural Heritage Preservation with\\
+     Hierarchical Scene Reconstruction};
+
+  % Technical descriptor
+  \node[anchor=west, text=MidGrey, font=\normalsize\sffamily, text width=13cm]
+    at ($(current page.west) + (3,-0.3)$)
+    {3D Gaussian Splatting \textbullet\ SAM2 Segmentation \textbullet\ Generative\\
+     Per-Object Reconstruction \textbullet\ USD Scene Graphs \textbullet\ Browser Delivery};
+
+  % Author block
+  \node[anchor=west, text=white, font=\sffamily, text width=10cm]
+    at ($(current page.west) + (3,-2.6)$)
+    {\textbf{Dr John O'Hare}\\[2pt]
+     DreamLab AI Consulting Ltd\\[8pt]
+     \textcolor{MidGrey}{Prepared for}\\[2pt]
+     \textbf{Roger McKinley}\\[2pt]
+     Creative Technology and Content Manager\\
+     University of Salford};
+
+  % Date
+  \node[anchor=west, text=DreamLabAccent, font=\sffamily\bfseries]
+    at ($(current page.west) + (3,-5.3)$)
+    {June 2026};
+
+  % Logo placeholders
+  \node[anchor=south west, opacity=0.9]
+    at ($(current page.south west) + (3,2)$)
+    {\textcolor{white}{\sffamily\small [DreamLab AI Logo]}};
+
+  \node[anchor=south east, opacity=0.9]
+    at ($(current page.south east) + (-3,2)$)
+    {\textcolor{white}{\sffamily\small [University of Salford Logo]}};
+
+  % Version indicator
+  \node[anchor=south east, text=MidGrey, font=\tiny\sffamily]
+    at ($(current page.south east) + (-3,1)$)
+    {v2.0 \textcolor{MidGrey}{|} TECHNICAL REPORT \textcolor{MidGrey}{|} SUPERSEDES v1.0};
+
+\end{tikzpicture}
+\end{titlepage}
+
+% ────────────────────────────────────────────────────────────
+% Front matter
+% ────────────────────────────────────────────────────────────
+\pagenumbering{roman}
+
+% Executive summary
+\chapter*{Executive Summary}
+\addcontentsline{toc}{chapter}{Executive Summary}
+\markboth{Executive Summary}{Executive Summary}
+
+This report documents the architecture, implementation, and validated results of the \texttt{gaussian-toolkit}: an end-to-end, AI-orchestrated pipeline that transforms a single hand-held video walkthrough into a hierarchically-structured, editable, volumetric reconstruction of a cultural heritage space. It supersedes the v1.0 pilot report, reflecting a substantial uplift in the system's capability following its re-platforming onto LichtFeld~Studio~v0.5.2 and the completion of the scene-decomposition and generative-reconstruction subsystems.
+
+Where the v1.0 pilot established that 3D Gaussian Splatting (\acrshort{3dgs}) was a \emph{viable} preservation medium, this report demonstrates a complete realisation of the project's original design goals. From a single 4K video capture, the pipeline now produces: (i)~a photorealistic Gaussian splat scene; (ii)~a watertight polygonal mesh of the environment via four pluggable extraction backends; (iii)~automatic, 3D-consistent decomposition of the scene into individually-addressable objects using \acrshort{sam}2; (iv)~independent, generatively-completed, textured polygonal meshes for each salient object, reconstructed in full 360\textdegree\ via a multi-view diffusion engine driven through ComfyUI; and (v)~a single hierarchical Universal Scene Description (\acrshort{usd}) scene graph in which every reconstructed object is emplaced at its surveyed position within the meshed environment.
+
+The architectural centrepiece of the v2.0 system is the \textbf{splat-and-mesh dual representation governed by a single scene graph}. Rather than treating mesh extraction as a lossy terminal step, the pipeline maintains the Gaussian splat and the polygonal mesh as co-registered \acrshort{usd} variants of the same prims. A curator may view the scene as a photoreal splat in a browser, or as a game-engine-ready mesh hierarchy in Unreal Engine, with object-level selection, metadata association, and re-composition available in both. This resolves the central tension identified in the v1.0 report---that splat fidelity and mesh editability were mutually exclusive---by delivering both from one capture, bound together by surveyed geometry.
+
+This report details the three-container compute architecture, the eight-stage processing pipeline, the integration of LichtFeld~Studio's native scene-graph harmonisation and \acrshort{mcp} control surface, the four mesh-extraction backends and their measured trade-offs, the per-object generative reconstruction subsystem, and the browser- and engine-based delivery mechanisms. It closes with a deployment roadmap for the University of Salford.
+
+\tableofcontents
+\listoffigures
+\listoftables
+
+% Print glossary in front matter
+\printglossary[type=\acronymtype, title={Acronyms and Abbreviations}]
+
+% ────────────────────────────────────────────────────────────
+% Main matter
+% ────────────────────────────────────────────────────────────
+\cleardoublepage
+\pagenumbering{arabic}
+
+% ════════════════════════════════════════════════════════════
+% Part I: System Architecture
+% ════════════════════════════════════════════════════════════
+\part{System Architecture}
+\label{part:architecture}
+
+\include{chapters/v2_ch1_introduction}
+\include{chapters/v2_ch2_foundations}
+\include{chapters/v2_ch3_pipeline}
+\include{chapters/v2_ch4_lichtfeld}
+
+% ════════════════════════════════════════════════════════════
+% Part II: Reconstruction Results
+% ════════════════════════════════════════════════════════════
+\cleardoublepage
+\part{Reconstruction Results}
+\label{part:results}
+
+\include{chapters/v2_ch5_reconstruction}
+\include{chapters/v2_ch6_scenegraph}
+\include{chapters/v2_ch7_meshing}
+
+% ════════════════════════════════════════════════════════════
+% Part III: Delivery and Roadmap
+% ════════════════════════════════════════════════════════════
+\cleardoublepage
+\part{Delivery and Roadmap}
+\label{part:delivery}
+
+\include{chapters/v2_ch8_delivery}
+\include{chapters/v2_ch9_roadmap}
+
+% ────────────────────────────────────────────────────────────
+% Back matter
+% ────────────────────────────────────────────────────────────
+\cleardoublepage
+\printbibliography[heading=bibintoc, title={References}]
+
+\printindex
+
+\end{document}

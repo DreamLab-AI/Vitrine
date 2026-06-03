@@ -1,0 +1,438 @@
+% v2_ch3_pipeline.tex — Chapter 3: Pipeline Architecture
+% Video-to-Gaussian: An Agentic Pipeline for Volumetric Cultural Heritage Preservation
+% Dr John O'Hare, DreamLab AI Consulting Ltd — June 2026
+
+\chapter{Pipeline Architecture}\label{ch:pipeline}
+
+The \texttt{gaussian-toolkit} is not a shell script that glues together pre-existing tools;
+it is a purposefully architected system in which an \acrshort{llm} orchestrator reasons
+about state, selects tool calls, handles retries, and passes structured artefacts between
+bounded contexts. This chapter documents the design principles that shaped that architecture,
+the eight processing stages executed for every acquisition, the three-container compute
+fabric that hosts them, the hardware platform, and the control surfaces through which
+operators interact with the running system.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Design Principles}\label{sec:design-principles}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\subsection{Domain-Driven Design and Bounded Contexts}
+
+The architecture follows \acrfull{ddd}, partitioning responsibility into seven
+bounded contexts whose interfaces are explicit and whose internal implementations
+may evolve independently:
+
+\begin{description}[leftmargin=2.4cm, labelwidth=2.2cm]
+  \item[Capture]        Ingestion of raw video, temporal decimation, and candidate-frame storage.
+  \item[Reconstruction] Keyframe selection, \acrshort{colmap} \acrshort{sfm}, and
+                        \acrshort{3dgs} model training — the photogrammetric core.
+  \item[Segmentation]   Object-level decomposition of the Gaussian field via \acrshort{sam}~2
+                        and cluster validation.
+  \item[Generative-Reconstruction] Per-object orbit rendering, Hunyuan3D~2.0 mesh generation,
+                        and \acrshort{pbr} texturing via FLUX inpainting.
+  \item[Meshing]        Whole-scene surface reconstruction using one of four configurable backends.
+  \item[Assembly]       Construction of the hierarchical \acrshort{usd} scene graph and
+                        emplacement of reconstructed objects at \acrshort{colmap}-derived centroids.
+  \item[Delivery]       Export to \texttt{.ksplat} for browser streaming, plus optional
+                        \acrshort{webgl}/\acrshort{webgpu} viewer deployment.
+\end{description}
+
+Bounded contexts communicate through well-typed data contracts: frame manifests (JSON),
+camera parameter files (\texttt{transforms.json}), Gaussian \texttt{.ply} archives, mask
+HDF5 files, and \acrshort{usd} stage references. No context reads another's internal state directly.
+
+\subsection{Architecture Decision Records}
+
+All non-trivial design choices are captured as \acrfull{adr}s, versioned alongside the
+source code. Two records are directly relevant to the compute fabric described in
+Section~\ref{sec:containers}:
+
+\begin{itemize}
+  \item \textbf{ADR-001} (\emph{Container isolation per CUDA ABI}) — mandates one Docker
+        image per incompatible CUDA/\-PyTorch combination, communicating via a shared NVMe
+        volume and a lightweight REST job-handoff protocol, rather than attempting
+        multi-environment conda workarounds inside a single container.
+  \item \textbf{ADR-002} (\emph{GPU affinity assignment}) — binds the primary reconstruction
+        workload exclusively to GPU~0 and delegates all sidecar meshing to GPU~1, preventing
+        VRAM contention during the densification-intensive \acrshort{3dgs} training phase.
+\end{itemize}
+
+\subsection{Agentic Orchestration}
+
+Conventional multi-stage photogrammetry pipelines are driven by shell scripts that invoke
+tools in a fixed order and abort on the first non-zero exit code. \texttt{gaussian-toolkit}
+replaces this with an \acrshort{llm} orchestrator connected to \acrshort{mcp} server
+running on port 45677, which exposes over 70 tools covering every stage. The orchestrator
+reasons about intermediate quality metrics — checking reprojection error before proceeding
+to training, validating cluster coverage before initiating generative reconstruction — and
+can reroute execution, adjust hyperparameters, or surface diagnostic messages to the
+operator without human intervention. This makes the system resilient to the variability
+inherent in real gallery footage: inconsistent lighting, partial occlusion, and
+camera shake that would cause a brittle script to fail silently.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{The Eight-Stage Pipeline}\label{sec:pipeline-stages}
+% ─────────────────────────────────────────────────────────────────────────────
+
+Figure~\ref{fig:pipeline-flow} illustrates the eight stages executed for a single
+acquisition. Stages 1–4 constitute the photogrammetric core and are described in
+detail below. Stages 5–8 are documented in the dedicated chapters that follow
+(Chapter~\ref{ch:scenegraph} covers segmentation and \acrshort{usd} assembly;
+Chapter~\ref{ch:meshing} covers environment meshing); a brief description of each
+is included here for completeness.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  node distance = 0.55cm and 0.0cm,
+  stage/.style  = {draw, rounded corners=4pt, minimum width=2.9cm,
+                   minimum height=1.0cm, align=center, font=\small\bfseries,
+                   fill=LightGrey, draw=MidGrey, text=DarkBg},
+  arrow/.style  = {-Stealth, thick, color=MidGrey},
+  label/.style  = {font=\scriptsize, text=MidGrey, align=center}
+]
+  % Row 1: stages 1-4
+  \node[stage, fill=DreamLabAccent!15, draw=DreamLabAccent] (s1) {Stage 1\\Frame Extraction};
+  \node[stage, fill=DreamLabAccent!15, draw=DreamLabAccent, right=of s1] (s2) {Stage 2\\Keyframe Selection};
+  \node[stage, fill=DreamLabAccent!15, draw=DreamLabAccent, right=of s2] (s3) {Stage 3\\SfM (COLMAP)};
+  \node[stage, fill=DreamLabAccent!15, draw=DreamLabAccent, right=of s3] (s4) {Stage 4\\3DGS Training};
+
+  % Row 2: stages 5-8 (below, right-to-left for visual return)
+  \node[stage, fill=UoSRed!10, draw=UoSRed, below=1.4cm of s4] (s5) {Stage 5\\SAM2 Segmentation};
+  \node[stage, fill=UoSRed!10, draw=UoSRed, left=of s5] (s6) {Stage 6\\Gen.\ Reconstruction};
+  \node[stage, fill=UoSRed!10, draw=UoSRed, left=of s6] (s7) {Stage 7\\Env.\ Meshing};
+  \node[stage, fill=SuccessGreen!15, draw=SuccessGreen, left=of s7] (s8) {Stage 8\\USD Assembly};
+
+  % Row 1 arrows
+  \draw[arrow] (s1) -- (s2);
+  \draw[arrow] (s2) -- (s3);
+  \draw[arrow] (s3) -- (s4);
+
+  % Turn arrow s4 -> s5
+  \draw[arrow] (s4) -- (s5);
+
+  % Row 2 arrows (right to left)
+  \draw[arrow] (s5) -- (s6);
+  \draw[arrow] (s6) -- (s7);
+  \draw[arrow] (s7) -- (s8);
+
+  % Annotations below row 1
+  \node[label, below=0.12cm of s1] {2 fps $\to$ 600\\candidate frames};
+  \node[label, below=0.12cm of s2] {Fibonacci scoring\\$\to$ 240 keyframes};
+  \node[label, below=0.12cm of s3] {232/240 registered\\0.64\,px error};
+  \node[label, below=0.12cm of s4] {1.18M Gaussians\\29.6\,dB PSNR};
+
+  % Annotations above row 2
+  \node[label, above=0.12cm of s5] {98.3\% coverage\\37 clusters};
+  \node[label, above=0.12cm of s6] {64 orbit views\\Hunyuan3D 2.0};
+  \node[label, above=0.12cm of s7] {4 backends\\TSDF/MILo/CoMe/GW};
+  \node[label, above=0.12cm of s8] {31 object prims\\variant sets};
+
+\end{tikzpicture}
+\caption{The eight-stage \texttt{gaussian-toolkit} pipeline. Stages 1–4 (blue) form the
+  photogrammetric core; stages 5–7 (red) perform semantic decomposition, generative
+  reconstruction, and surface meshing; stage 8 (green) assembles the hierarchical
+  \acrshort{usd} scene graph.}
+\label{fig:pipeline-flow}
+\end{figure}
+
+\subsection{Stage 1 — Frame Extraction}
+
+Raw 4K gallery footage is ingested via \texttt{ffmpeg} with a temporal decimation rate
+of 2 frames per second. For a typical 5-minute acquisition walk this yields approximately
+600 candidate frames, stored as lossless PNG at full sensor resolution. The module
+\texttt{frame\_extractor.py} writes a JSON manifest alongside each batch recording
+source timecode, frame index, and a SHA-256 hash of the pixel buffer. The manifest
+serves as a checkpoint: if the pipeline is interrupted and resumed, frames already
+extracted are skipped without re-decoding.
+
+\subsection{Stage 2 — Keyframe Selection}
+
+Six hundred candidate frames are far too many for efficient \acrshort{sfm} registration
+and introduce redundant viewpoints that inflate the subsequent Gaussian count without
+improving quality. The module \texttt{fibonacci\_sampler.py} implements a Fibonacci-sphere
+viewpoint scoring heuristic in which each candidate is assigned a composite score
+
+\[
+  s_i = 0.6\,\sigma_i + 0.4\,\kappa_i
+\]
+
+\noindent where $\sigma_i$ is a normalised sharpness score (Laplacian variance, max-pooled
+over $32\times32$ tiles) and $\kappa_i$ is a coverage score measuring angular distance from
+the nearest already-selected keyframe on the Fibonacci sphere approximation of the view
+hemisphere. The top 240 frames by composite score are retained, reducing the set by 60\%
+while preserving broad angular coverage. In practice this selection consistently improves
+\acrshort{sfm} registration rate compared to uniform temporal subsampling, because blurry
+or redundant frames that degrade feature matching are preferentially excluded.
+
+\subsection{Stage 3 — Structure-from-Motion}
+
+The 240 selected keyframes are passed to \acrshort{colmap}~\citep{Schoenberger2016sfm,
+Schoenberger2016mvs} running in sequential-mapper mode with SIFT~\citep{Lowe2004} features.
+For the reference gallery acquisition, 232 of 240 frames registered successfully
+(96.7\,\%), yielding a sparse point cloud of approximately 210,000 points with a
+mean reprojection error of 0.64\,px — comfortably within the $<1$\,px threshold that
+reliably produces well-conditioned Gaussian initialisation. The eight unregistered frames
+were all affected by severe motion blur during camera panning at the gallery perimeter;
+the Fibonacci scoring step eliminated most such frames, but eight passed the sharpness
+threshold because blur was localised to a small tile.
+
+Camera intrinsics and extrinsics are exported to \texttt{transforms.json} in the
+NeRFStudio/\allowbreak{}LichtFeld-Studio format. A secondary \texttt{cameras.bin} export
+is retained for downstream TSDF meshing, which requires COLMAP-native binary format.
+
+\subsection{Stage 4 — 3DGS Training}
+
+Gaussian splatting training is performed by \texttt{LichtFeld Studio}~\citep{LichtFeldStudio2026},
+the Inria-licensed viewer and training harness that forms the upstream of the
+\texttt{gaussian-toolkit} fork. Training runs for 30,000 iterations with the
+\acrfull{mrnf} densification strategy, which applies a surface-normal consistency
+filter during the adaptive density control loop to suppress needle-like floater Gaussians
+in low-texture regions such as painted wall surfaces.
+
+On the reference hardware (GPU~0, RTX~6000 Ada, 48\,GB VRAM) training completes in
+24 minutes, converging to 1.18 million Gaussians. Hold-out evaluation on 12 reserved
+frames yields:
+
+\begin{itemize}
+  \item \acrshort{psnr}: $29.6$\,dB
+  \item \acrshort{ssim}: $0.921$
+  \item \acrshort{lpips}: $0.108$
+\end{itemize}
+
+The trained splat renders at 160 frames per second at 1080p on the same GPU, meeting the
+real-time interactive threshold with comfortable headroom for simultaneous web streaming.
+The model is exported both as a raw \texttt{.ply} (for downstream segmentation and meshing)
+and as a compressed \texttt{.ksplat} (for browser delivery via \acrshort{webgl}).
+
+\subsection{Stages 5–8 — Overview}
+
+\textbf{Stage~5 (Segmentation)} applies \acrshort{sam}~2~\citep{Ravi2024SAM2} across all
+240 registered views to produce per-Gaussian cluster assignments. The full segmentation
+workflow, cluster validation criteria, and the mask projection module
+\texttt{mask\_projector.py} are described in Chapter~\ref{ch:scenegraph}.
+
+\textbf{Stage~6 (Generative reconstruction)} renders 64 orbit views per retained cluster
+and passes them to Hunyuan3D~2.0~\citep{Zhao2025Hunyuan} via ComfyUI (port 8188) to
+generate a watertight \acrshort{pbr}-textured mesh for each object. FLUX~\citep{FLUX2024}
+inpainting resolves seam artefacts. This stage is also documented in
+Chapter~\ref{ch:scenegraph}.
+
+\textbf{Stage~7 (Environment meshing)} reconstructs the room envelope and large static
+surfaces using one of four selectable backends (\acrshort{tsdf}~\citep{Curless1996},
+\acrshort{milo}~\citep{Guedon2025MILo}, \acrshort{come}~\citep{Radl2025CoMe}, or
+Gaussian Wrapping). Backend selection and quality trade-offs are analysed in
+Chapter~\ref{ch:meshing}.
+
+\textbf{Stage~8 (USD assembly)} constructs a hierarchical \acrshort{usd} scene
+graph~\citep{Pixar2019} with 31 object prims emplaced at \acrshort{colmap}-derived
+centroids. Each prim carries a variant set offering both a Gaussian splat representation
+and a mesh representation, enabling downstream consumers to select the appropriate fidelity
+tier. Assembly is also covered in Chapter~\ref{ch:scenegraph}.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Three-Container Compute Fabric}\label{sec:containers}
+% ─────────────────────────────────────────────────────────────────────────────
+
+The three meshing backends — \acrshort{milo}, \acrshort{come}, and Gaussian Wrapping —
+each require PyTorch extension modules compiled against specific CUDA toolkit versions
+that are mutually incompatible: \acrshort{milo} requires CUDA~11.8 and PyTorch~2.0,
+\acrshort{come} requires CUDA~12.1 and PyTorch~2.3, and the primary
+\texttt{gaussian-toolkit} container targets CUDA~12.8 and PyTorch~2.7 for
+access to the latest Hopper/Ada optimisations in the Gaussian rasteriser.
+Installing all three in a single environment via conda is not feasible without
+breaking at least one set of compiled extensions.
+
+ADR-001 resolves this by mandating one Docker image per CUDA ABI. The three containers
+communicate through two mechanisms: a shared NVMe Docker volume
+(\texttt{gaussian-shared-vol}) that carries large binary artefacts (Gaussian \texttt{.ply}
+files, depth maps, mesh outputs), and a lightweight REST job-handoff protocol in which
+\texttt{gaussian-toolkit} POSTs a job descriptor to each sidecar container's local
+Flask server and polls for completion. This keeps container interfaces narrow and avoids
+the complexity of a full message broker for what is, in practice, a sequential handoff
+with at most two concurrent sidecar jobs.
+
+Table~\ref{tab:containers} summarises the three containers and their responsibilities.
+
+\begin{table}[htbp]
+\centering
+\caption{Three-container compute fabric: CUDA environments and responsibilities.}
+\label{tab:containers}
+\begin{tabular}{@{}L{3.2cm} C{1.5cm} C{1.5cm} C{1.4cm} L{6.0cm}@{}}
+\toprule
+\textbf{Container} & \textbf{CUDA} & \textbf{Python} & \textbf{GPU} & \textbf{Responsibilities} \\
+\midrule
+\texttt{gaussian-toolkit} & 12.8 & 3.12 & GPU~0 &
+  Orchestration, frame extraction, \acrshort{colmap} \acrshort{sfm},
+  \acrshort{3dgs} training (\acrshort{mrnf} densification),
+  \acrshort{tsdf} meshing, \acrshort{sam}~2 segmentation,
+  mask projection, \acrshort{usd} assembly,
+  \texttt{.ksplat} export, web UI and ttyd terminal. \\[4pt]
+\texttt{milo} & 11.8 & 3.10 & GPU~1 &
+  \acrfull{milo} mesh-in-the-loop optimisation;
+  Gaussian Wrapping backend. \\[4pt]
+\texttt{come} & 12.1 & 3.10 & GPU~1 &
+  \acrfull{come} confidence-based surface extraction. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  node distance  = 1.0cm and 1.2cm,
+  container/.style = {draw, rounded corners=6pt, minimum width=3.6cm,
+                      minimum height=2.4cm, align=center, font=\small\bfseries,
+                      text=DarkBg},
+  gpu/.style       = {draw, rounded corners=3pt, minimum width=3.0cm,
+                      minimum height=0.9cm, align=center, font=\footnotesize,
+                      fill=DarkBg!12, draw=DarkBg},
+  vol/.style       = {draw, rounded corners=3pt, minimum width=3.2cm,
+                      minimum height=1.0cm, align=center, font=\small,
+                      fill=WarningAmber!20, draw=WarningAmber},
+  arrow/.style     = {-Stealth, thick, color=MidGrey},
+  restarrow/.style = {Stealth-Stealth, thick, color=DreamLabAccent, dashed}
+]
+
+  % Primary container
+  \node[container, fill=DreamLabAccent!15, draw=DreamLabAccent] (gt) {
+    \texttt{gaussian-toolkit}\\[2pt]
+    CUDA 12.8 / Py 3.12\\
+    \footnotesize Orchestration, SfM,\\
+    \footnotesize 3DGS, TSDF, SAM2,\\
+    \footnotesize USD, web
+  };
+
+  % Sidecar containers
+  \node[container, fill=UoSRed!10, draw=UoSRed, right=2.2cm of gt] (milo) {
+    \texttt{milo}\\[2pt]
+    CUDA 11.8 / Py 3.10\\
+    \footnotesize MILo +\\
+    \footnotesize GaussianWrapping
+  };
+
+  \node[container, fill=UoSRed!10, draw=UoSRed, below=1.4cm of milo] (come) {
+    \texttt{come}\\[2pt]
+    CUDA 12.1 / Py 3.10\\
+    \footnotesize CoMe meshing
+  };
+
+  % Shared volume
+  \node[vol, below=1.8cm of gt] (vol) {
+    \texttt{gaussian-shared-vol}\\
+    \footnotesize NVMe shared volume\\
+    \footnotesize (.ply, depth maps, meshes)
+  };
+
+  % GPU nodes
+  \node[gpu, below=3.6cm of gt] (gpu0) {GPU 0 — RTX 6000 Ada\\48\,GB VRAM};
+  \node[gpu, right=1.4cm of gpu0] (gpu1) {GPU 1 — RTX 6000 Ada\\48\,GB VRAM};
+
+  % Arrows: REST job handoff
+  \draw[restarrow] (gt.east) -- node[above,font=\scriptsize,text=DreamLabAccent]{REST} (milo.west);
+  \draw[restarrow] (gt.east) -- ++(0.9,0) |- node[right,font=\scriptsize,text=DreamLabAccent]{REST} (come.west);
+
+  % Arrows: shared volume
+  \draw[arrow] (gt.south) -- (vol.north);
+  \draw[arrow] (vol.east) -- ++(0.4,0) |- (milo.south);
+  \draw[arrow] (vol.east) -- ++(0.4,0) |- (come.south);
+
+  % GPU assignments
+  \draw[arrow, color=DreamLabAccent] (gt.south) -- ++(0,-0.15) -- (gpu0.north);
+  \draw[arrow, color=UoSRed] (milo.south) -- ++(0,-0.2) -- (gpu1.north);
+  \draw[arrow, color=UoSRed] (come.south) -- ++(0,-0.1) -- (gpu1.north);
+
+\end{tikzpicture}
+\caption{Three-container compute fabric. The primary \texttt{gaussian-toolkit} container
+  (blue) orchestrates sidecar containers \texttt{milo} and \texttt{come} (red) via REST
+  job descriptors and a shared NVMe volume. GPU affinity follows ADR-002: GPU~0 for
+  reconstruction, GPU~1 for sidecar meshing.}
+\label{fig:containers}
+\end{figure}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Hardware Platform}\label{sec:hardware}
+% ─────────────────────────────────────────────────────────────────────────────
+
+All experiments reported in this document were conducted on a single workstation
+configured as follows:
+
+\begin{itemize}
+  \item \textbf{GPUs}: dual NVIDIA RTX~6000 Ada Generation, 48\,GB GDDR6 ECC each
+        (96\,GB total \acrshort{vram}). GPU~0 handles the complete reconstruction
+        pipeline; GPU~1 is reserved exclusively for sidecar meshing workloads,
+        preventing the memory pressure that would otherwise arise from running
+        \acrshort{milo} or \acrshort{come} concurrently with a live \acrshort{3dgs}
+        model in GPU~0 VRAM.
+  \item \textbf{CPU}: AMD Threadripper PRO, 48 physical cores. The high core count
+        benefits the \acrshort{colmap} feature-matching and bundle-adjustment phases,
+        which parallelise efficiently across CPU threads before the GPU rasteriser
+        dominates in later stages.
+  \item \textbf{System RAM}: 251\,GB DDR5 ECC. Large system RAM allows the full
+        candidate frame set (600 frames at 4K PNG, approximately 28\,GB) to reside
+        in RAM throughout the pipeline, eliminating NVMe I/O latency during repeated
+        reads by the SIFT extractor.
+  \item \textbf{Storage}: NVMe SSD array hosting the shared Docker volume; sequential
+        read bandwidth in excess of 12\,GB/s sustains the depth-map streaming rates
+        required by \acrshort{tsdf} fusion without introducing pipeline stalls.
+\end{itemize}
+
+The 96\,GB combined \acrshort{vram} budget is not exhausted by the reference acquisition:
+\acrshort{3dgs} training with 1.18\,M Gaussians peaks at approximately 18\,GB on GPU~0,
+leaving substantial headroom for larger scenes or higher Gaussian counts in future
+acquisitions. GPU~1 headroom (typically 6–12\,GB utilised by sidecar meshing) permits
+the concurrent execution of multiple meshing backend comparisons without swapping.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Agentic Control Surface}\label{sec:control-surface}
+% ─────────────────────────────────────────────────────────────────────────────
+
+The operator's primary interface to the running pipeline is the \acrshort{mcp} server
+embedded in \texttt{gaussian-toolkit}, which listens on port~45677 and exposes
+over 70 typed tool calls. These tools span every bounded context: from
+\texttt{ingest\_video} and \texttt{run\_colmap} at the front of the pipeline,
+through \texttt{train\_3dgs}, \texttt{run\_sam2}, and \texttt{dispatch\_hunyuan},
+to \texttt{assemble\_usd} and \texttt{export\_ksplat} at the delivery end.
+
+The \acrshort{llm} orchestrator connects to this \acrshort{mcp} server and drives
+the pipeline by issuing tool calls, inspecting return values (which include structured
+quality metrics and error codes), and deciding whether to proceed, adjust a
+hyperparameter, or surface an alert. This architecture cleanly separates the
+\emph{reasoning layer} (the orchestrator, which can be swapped for any
+\acrshort{mcp}-compatible client) from the \emph{execution layer} (the toolkit,
+which exposes a stable tool API). Operators can also invoke tools directly from any
+\acrshort{mcp} client, enabling ad-hoc inspection and intervention without modifying
+the pipeline code.
+
+Two secondary control surfaces are provided for human operators who prefer a graphical
+or terminal interface. The web \acrshort{ui} (Figure~\ref{fig:webui}) presents a
+dashboard summarising pipeline state, live training metrics (loss, PSNR, iteration
+count), and GPU utilisation. The ttyd terminal (Figure~\ref{fig:ttyd}) exposes a full
+shell inside the \texttt{gaussian-toolkit} container through a browser tab, enabling
+direct inspection of intermediate artefacts, log files, and the \acrshort{colmap}
+workspace without requiring SSH access.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.8\textwidth]{v2/webui.png}
+  \caption{The \texttt{gaussian-toolkit} web control interface, showing pipeline stage
+    status, live \acrshort{3dgs} training metrics, and \acrshort{gpu} telemetry.}
+  \label{fig:webui}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.8\textwidth]{v2/ttyd.png}
+  \caption{The ttyd browser terminal embedded in the \texttt{gaussian-toolkit} web
+    interface, providing in-browser shell access to the container for direct artefact
+    inspection and ad-hoc tool invocation.}
+  \label{fig:ttyd}
+\end{figure}
+
+\begin{keyfinding}
+  The combination of \acrshort{mcp}-mediated agentic orchestration with direct web and
+  terminal control surfaces allows \texttt{gaussian-toolkit} to be operated both
+  fully autonomously (the orchestrator drives all 8 stages without human input) and
+  interactively (an operator inspects intermediate artefacts and overrides decisions at
+  any stage boundary). Neither mode requires modifying pipeline code.
+\end{keyfinding}

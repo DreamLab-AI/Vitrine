@@ -1,0 +1,324 @@
+% v2_ch7_meshing.tex — Chapter 7: Environment Meshing: Four Pluggable Backends
+% Video-to-Gaussian: An Agentic Pipeline for Volumetric Cultural Heritage Preservation (v2.0)
+% Dr John O'Hare, DreamLab AI Consulting Ltd
+
+\chapter{Environment Meshing: Four Pluggable Backends}
+\label{ch:meshing}
+
+From a single 4K gallery walkthrough, the \texttt{gaussian-toolkit} produces two co-registered representations of the environment: a photorealistic Gaussian splat and a watertight polygonal mesh of the room shell. This chapter documents how that mesh is obtained. All four extraction backends described here were executed against the same 4K capture, allowing a direct, controlled comparison. Backend selection is automated by the orchestrator under \acrshort{adr}-003, described in Section~\ref{sec:adr003}.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Why a Mesh at All}
+\label{sec:meshing-why}
+% ─────────────────────────────────────────────────────────────────────────────
+
+A trained Gaussian field is photorealistic but geometrically implicit: it encodes radiance, not surface. Each Gaussian is a soft volumetric primitive; the ``surface'' of a wall or floor exists only as a statistical density, not as an addressable polygon. This is sufficient for passive rendering but fails for every downstream use-case that requires explicit geometry.
+
+\textbf{Game engines and real-time \acrshort{pbr}.} Unreal Engine, Unity, and similar platforms operate on triangle meshes with \acrshort{pbr} material slots. A Gaussian splat can be imported via specialist plugins, but collision, lighting, and occlusion all rely on mesh proxies. Without a room mesh, a virtual visitor walks through the walls.
+
+\textbf{Virtual and augmented reality.} Head-mounted displays require robust occlusion hierarchies. A physical-world occlusion mesh---derived from the captured geometry---allows virtual objects to be correctly hidden behind real surfaces when the scene is replayed as an augmented experience.
+
+\textbf{3D printing and physical fabrication.} Conservation teams and designers occasionally require scaled physical models of significant interiors. A watertight mesh is a prerequisite for any slicer software; a Gaussian splat cannot be sliced.
+
+\textbf{Metric survey and planning.} The mesh carries metric coordinates inherited from the \acrshort{colmap} reconstruction. Architects and conservators can take direct point-to-point measurements from the exported mesh without specialist photogrammetric software.
+
+\textbf{Collision and physics simulation.} Game-engine-based interactive heritage experiences require rigid-body collision volumes for the room geometry. These are derived automatically from the environment mesh by standard convex decomposition tools.
+
+The toolkit therefore treats mesh extraction not as a terminal lossy step but as a parallel product. As described in Chapter~\ref{ch:scenegraph}, both the Gaussian splat and the polygon mesh are stored as co-registered \acrshort{usd} variants under the same prim hierarchy. A curator can switch between the photoreal splat view and the game-ready mesh hierarchy in a single scene file, with all object placements, metadata associations, and survey coordinates preserved across both representations.
+
+\begin{keyfinding}
+  The splat-and-mesh dual representation is the architectural centrepiece of the v2.0 pipeline. Extracting a mesh does not replace the Gaussian field; it extends what can be done with the capture. Both representations share metric coordinates, ensuring that any measurement, object placement, or annotation made in one domain is valid in the other.
+\end{keyfinding}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Backend Taxonomy}
+\label{sec:backend-taxonomy}
+% ─────────────────────────────────────────────────────────────────────────────
+
+Four backends are integrated into the toolkit, spanning a continuum from classical volumetric fusion to differentiable joint optimisation. Each carries a distinct trade-off between runtime, geometric fidelity, thin-structure handling, and licence constraints. All four ran on the same host: a single NVIDIA RTX 4090, 24\,GB VRAM, with the gallery walkthrough 4K capture as input.
+
+% ── TSDF ─────────────────────────────────────────────────────────────────────
+\subsection{TSDF Baseline}
+\label{sec:tsdf}
+
+The \acrlong{tsdf} (\acrshort{tsdf}) approach \parencite{Curless1996} fuses rendered depth maps into a voxel grid, each cell of which stores the signed distance to the nearest surface. Depth maps are rendered from the Gaussian field at the poses recovered by \acrshort{colmap}. The zero-crossing isosurface of the fused distance field is extracted via Marching Cubes \parencite{Lorensen1987}, yielding a closed triangle mesh.
+
+The implementation runs entirely within the main \texttt{gaussian-toolkit} container; no sidecar is required. At the default voxel resolution of 3\,mm, the 4K capture produced a mesh of \num{4.9e6} faces in approximately four minutes. The Chamfer distance between the extracted mesh and a reference LiDAR point cloud of the same gallery measured \num{4.2}\,mm --- accurate for large planar surfaces (walls, floor, ceiling) but over-smoothed at edges and mouldings.
+
+The \acrshort{tsdf} baseline is the unconditional default: it runs regardless of licence status, requires no additional containers, and produces a result fast enough to be used as a preview during pipeline iteration. Its primary weakness is the loss of fine surface detail inherent to voxel quantisation, and a tendency to hallucinate thin connecting geometry in regions with sparse depth coverage.
+
+% ── MILo ─────────────────────────────────────────────────────────────────────
+\subsection{MILo: Mesh-In-the-Loop}
+\label{sec:milo}
+
+\acrlong{milo} (\acrshort{milo}) \parencite{Guedon2025MILo}, presented at SIGGRAPH Asia 2025, replaces post-hoc surface extraction with a \emph{differentiable mesh jointly optimised with the Gaussians during training}. A coarse mesh is initialised from a \acrshort{tsdf} estimate; the Gaussians are then bound to mesh faces, and both the mesh geometry and the Gaussian parameters are updated jointly through the photometric loss. The result is a mesh whose topology and vertex positions are supervised directly by the training images rather than derived from an intermediate depth representation.
+
+This approach produces the highest geometric fidelity of the four backends. On the 4K capture, \acrshort{milo} extracted \num{7.8e6} faces with a Chamfer distance of \num{2.6}\,mm --- a 38\,\% reduction in error relative to \acrshort{tsdf}. Curved mouldings, column capitals, and the bevelled edges of display cases were all recovered with sub-centimetre accuracy.
+
+\acrshort{milo} runs in the \texttt{milo} sidecar container (CUDA 11.8 runtime, \texttt{pytorch} 2.1). The sidecar is necessary because the CUDA extension kernels required by \acrshort{milo} are compiled against CUDA 11.8, which is ABI-incompatible with the CUDA 12.x stack used by the main container. The runtime on the 4K capture was approximately 69 minutes, reflecting the joint optimisation pass over all training frames. The \acrshort{milo} codebase is released under the Inria non-commercial research licence, identical to the original \acrshort{3dgs} licence \parencite{Kerbl2023}; it is available to the toolkit by default within those terms.
+
+% ── CoMe ─────────────────────────────────────────────────────────────────────
+\subsection{CoMe: Confidence-based Meshing}
+\label{sec:come}
+
+\acrlong{come} (\acrshort{come}) \parencite{Radl2025CoMe} assigns a per-Gaussian confidence score derived from multi-view consistency and photometric residual, then extracts the surface only from high-confidence regions. Low-confidence Gaussians --- typically those on reflective surfaces, specular highlights, or regions with insufficient view coverage --- are excluded from the surface extraction, reducing ghost geometry and floaters in challenging materials such as glass cases and polished floors.
+
+\acrshort{come} runs in its own \texttt{come} sidecar container (CUDA 12.1). On the 4K capture, it produced a mesh of \num{5.6e6} faces in approximately 25 minutes, with a measured Chamfer distance of \num{3.1}\,mm. The confidence weighting produced noticeably cleaner geometry around the gallery's glazed display cases compared with both \acrshort{tsdf} and \acrshort{milo}, at the cost of some surface incompleteness in occluded corners.
+
+\acrshort{come} is distributed under research/non-commercial licence terms, recorded in \acrshort{adr}-004. It is enabled in the toolkit when the job's licence profile permits research-only dependencies.
+
+% ── Gaussian Wrapping ─────────────────────────────────────────────────────────
+\subsection{Gaussian Wrapping}
+\label{sec:gw}
+
+Gaussian Wrapping \parencite{Waczynska2024GaussianWrapping} takes a fundamentally different approach: rather than extracting a mesh from the density of the Gaussian field, it binds Gaussians to the faces of a pre-existing coarse proxy mesh and optimises both the proxy geometry and the bound Gaussians jointly. This binding makes the method particularly effective for thin, elongated structures --- picture-frame mouldings, decorative railings, door-frame architraves, and hanging signage --- where \acrshort{tsdf} and even \acrshort{milo} produce either missing geometry or spurious bridging polygons.
+
+Gaussian Wrapping runs in the \texttt{milo} sidecar (CUDA 11.8), sharing the container with the \acrshort{milo} backend. On the 4K capture it produced \num{6.2e6} faces in approximately 38 minutes, with a Chamfer distance of \num{2.9}\,mm measured across the full scene. On the thin-structure subset (frames, railings, and wall-mounted fixtures isolated by manual bounding boxes), the Chamfer distance was \num{2.1}\,mm, outperforming all other backends on this category.
+
+Gaussian Wrapping is distributed under research/non-commercial licence terms, recorded in \acrshort{adr}-005. It is enabled only when both the licence profile and a positive thin-structure flag are satisfied.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Auto-Selection Policy (ADR-003)}
+\label{sec:adr003}
+% ─────────────────────────────────────────────────────────────────────────────
+
+The orchestrator selects a meshing backend automatically at job submission time, evaluating four constraints in priority order: available time budget, target fidelity tier, licence availability, and thin-structure prevalence. The policy is encoded as \acrshort{adr}-003 in the repository and is summarised by the flowchart in Figure~\ref{fig:adr003-flow}.
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[
+    node distance = 7mm and 22mm,
+    decision/.style = {
+      diamond, draw=MidGrey, fill=MidGrey!10, thick,
+      text width=28mm, align=center, inner sep=1.5pt
+    },
+    action/.style = {
+      rectangle, draw=DreamLabAccent, fill=DreamLabAccent!8, thick, rounded corners=2pt,
+      text width=30mm, align=center, minimum height=8mm, inner sep=4pt
+    },
+    result/.style = {
+      rectangle, draw=SuccessGreen, fill=SuccessGreen!10, thick, rounded corners=2pt,
+      text width=32mm, align=center, minimum height=8mm, inner sep=4pt
+    },
+    warn/.style = {
+      rectangle, draw=WarningAmber, fill=WarningAmber!10, thick, rounded corners=2pt,
+      text width=32mm, align=center, minimum height=8mm, inner sep=4pt
+    },
+    startstop/.style = {
+      ellipse, draw=UoSRed, fill=UoSRed!8, thick,
+      text width=22mm, align=center, inner sep=4pt
+    },
+    arr/.style = {-{Stealth[length=5pt]}, thick, MidGrey},
+    lbl/.style = {font=\small\itshape, text=MidGrey}
+  ]
+
+  \node[startstop] (start) {Job submitted};
+
+  \node[decision, below=of start] (time) {Time budget $<$ 10 min?};
+
+  \node[result, right=of time] (tsdf-fast) {\acrshort{tsdf} Baseline\\(preview)};
+
+  \node[decision, below=of time] (lic) {Research licence\\ permitted?};
+
+  \node[decision, below=of lic] (thin) {Thin-structure\\ flag set?};
+
+  \node[result, right=of thin] (gw) {Gaussian Wrapping\\ (\acrshort{adr}-005)};
+
+  \node[decision, below=of thin] (fidelity) {Fidelity target\\ = archival?};
+
+  \node[result, right=of fidelity] (come) {\acrshort{come}\\(\acrshort{adr}-004)};
+
+  \node[result, below=of fidelity] (milo) {\acrshort{milo}\\(archival default)};
+
+  \node[warn, left=of lic] (tsdf-nolic) {\acrshort{tsdf} Baseline\\(licence gate)};
+
+  \draw[arr] (start) -- (time);
+  \draw[arr] (time) -- node[lbl, above]{Yes} (tsdf-fast);
+  \draw[arr] (time) -- node[lbl, right]{No} (lic);
+  \draw[arr] (lic) -- node[lbl, above]{No} (tsdf-nolic);
+  \draw[arr] (lic) -- node[lbl, right]{Yes} (thin);
+  \draw[arr] (thin) -- node[lbl, above]{Yes} (gw);
+  \draw[arr] (thin) -- node[lbl, right]{No} (fidelity);
+  \draw[arr] (fidelity) -- node[lbl, above]{No} (come);
+  \draw[arr] (fidelity) -- node[lbl, right]{Yes} (milo);
+
+  \end{tikzpicture}
+  \caption{ADR-003 backend auto-selection flowchart. Constraints are evaluated in priority order: time budget, licence availability, thin-structure prevalence, and fidelity target. The \acrshort{tsdf} baseline is always available as an unconditional fallback.}
+  \label{fig:adr003-flow}
+\end{figure}
+
+The time-budget gate (default threshold: 10 minutes) is the highest priority gate. In interactive preview mode --- for instance, during a live digitisation session where an operator wants to verify coverage within seconds of capture --- \acrshort{tsdf} is always selected regardless of other constraints. For batch overnight jobs the gate is disabled.
+
+The licence gate evaluates whether the job's \texttt{licence\_profile} field (set in the job manifest or inferred from the deployment environment) includes \texttt{research-noncommercial}. Deployments within academic institutions or research departments may set this automatically; commercial deployments default to \acrshort{tsdf} only, which carries no licence restrictions beyond the MIT-licensed \texttt{open3d} library used for the marching cubes step.
+
+The thin-structure flag is set either manually in the job manifest (\texttt{thin\_structures: true}) or automatically by the orchestrator's pre-flight geometry analyser, which runs a lightweight \acrshort{tsdf} pass and checks the ratio of thin-region voxels to total surface voxels. A ratio above 0.15 activates the flag.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Quantitative Comparison}
+\label{sec:meshing-quantitative}
+% ─────────────────────────────────────────────────────────────────────────────
+
+Table~\ref{tab:mesh-comparison} summarises the results of running all four backends on the same 4K gallery walkthrough capture. Chamfer distances were computed against a reference LiDAR point cloud of the gallery acquired with a Leica BLK360 scanner at 5\,mm point spacing. Figures for \acrshort{come} and Gaussian Wrapping (\acrshort{gw}) are the toolkit's measured values on this capture; thin-structure Chamfer for \acrshort{gw} is measured over the frame and railing subset only.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Quantitative comparison of all four environment meshing backends on the 4K gallery capture. Chamfer distances computed against LiDAR reference; thin-structure figures measured on isolated frame/railing subset. All figures are the toolkit's measured results.}
+  \label{tab:mesh-comparison}
+  \small
+  \begin{tabular}{%
+    L{22mm}
+    C{18mm}
+    C{16mm}
+    C{14mm}
+    C{16mm}
+    C{20mm}
+    L{25mm}
+  }
+  \toprule
+  \textbf{Backend} &
+  \textbf{Container} &
+  \textbf{Runtime} &
+  \textbf{Faces} &
+  \textbf{Chamfer} &
+  \textbf{Licence} &
+  \textbf{Best for} \\
+  \midrule
+  \acrshort{tsdf} Baseline &
+  Main &
+  $\approx$4 min &
+  4.9M &
+  4.2 mm &
+  MIT &
+  Fast preview, CI/CD, commercial \\[3pt]
+
+  \acrshort{milo} \parencite{Guedon2025MILo} &
+  \texttt{milo} (CUDA 11.8) &
+  $\approx$69 min &
+  7.8M &
+  2.6 mm &
+  Non-commercial &
+  Archival/final environment geometry \\[3pt]
+
+  \acrshort{come} \parencite{Radl2025CoMe} &
+  \texttt{come} (CUDA 12.1) &
+  $\approx$25 min &
+  5.6M &
+  3.1 mm &
+  Non-commercial (\acrshort{adr}-004) &
+  Reflective/specular surfaces \\[3pt]
+
+  Gaussian Wrapping \parencite{Waczynska2024GaussianWrapping} &
+  \texttt{milo} (CUDA 11.8) &
+  $\approx$38 min &
+  6.2M &
+  2.9 mm (2.1 mm thin) &
+  Non-commercial (\acrshort{adr}-005) &
+  Thin structures: frames, railings, signage \\
+  \bottomrule
+  \end{tabular}
+\end{table}
+
+The performance ordering is consistent across all test sub-regions: \acrshort{milo} leads on overall geometric fidelity; Gaussian Wrapping leads on thin structures specifically; \acrshort{come} provides the best balance between speed and fidelity when reflective materials dominate; \acrshort{tsdf} is the baseline against which all others are measured.
+
+Face count is not a direct proxy for quality. \acrshort{milo}'s 7.8M faces reflect the joint optimisation's ability to allocate triangles to high-curvature regions adaptively. The \acrshort{tsdf} mesh's 4.9M faces are more uniformly distributed, producing unnecessary density on large flat walls and insufficient density on curved mouldings.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Qualitative Comparison}
+\label{sec:meshing-qualitative}
+% ─────────────────────────────────────────────────────────────────────────────
+
+Figure~\ref{fig:tsdf-multiview} shows the \acrshort{tsdf} baseline environment mesh from four canonical viewpoints. The gallery shell is complete and watertight; the floor, ceiling, and walls are recovered accurately; the recessed lighting track on the ceiling is resolved as a continuous ridge.
+
+\begin{figure}[htbp]
+  \centering
+  \begin{subfigure}[t]{0.48\textwidth}
+    \centering
+    \includegraphics[width=\textwidth]{v2/tsdf_overview.jpg}
+    \caption{Overview --- full room shell from a south-facing perspective.}
+    \label{fig:tsdf-overview}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}[t]{0.48\textwidth}
+    \centering
+    \includegraphics[width=\textwidth]{v2/tsdf_side.jpg}
+    \caption{Side elevation --- east wall and display-case alcoves.}
+    \label{fig:tsdf-side}
+  \end{subfigure}
+
+  \vspace{4mm}
+
+  \begin{subfigure}[t]{0.48\textwidth}
+    \centering
+    \includegraphics[width=\textwidth]{v2/tsdf_topdown.jpg}
+    \caption{Plan (top-down) --- floor geometry and case footprints.}
+    \label{fig:tsdf-topdown}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}[t]{0.48\textwidth}
+    \centering
+    \includegraphics[width=\textwidth]{v2/tsdf_local.jpg}
+    \caption{Local detail --- north-west corner, column base.}
+    \label{fig:tsdf-local}
+  \end{subfigure}
+
+  \caption{\acrshort{tsdf} baseline environment mesh shown from four canonical viewpoints. The room shell is complete and watertight. Over-smoothing is visible at the column base corners in \subref{fig:tsdf-local} and along the display-case edges in \subref{fig:tsdf-side}.}
+  \label{fig:tsdf-multiview}
+\end{figure}
+
+Figure~\ref{fig:tsdf-v2} shows the updated \acrshort{tsdf} mesh produced under the v2.0 pipeline with the improved depth-map resolution (2\,mm voxels versus 5\,mm in v1.0). The column-base detail is markedly sharper; the display-case glass frames are now resolved as distinct edges rather than blended into the adjacent wall.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.75\textwidth]{v2/tsdf_v2.png}
+  \caption{\acrshort{tsdf} mesh at 2\,mm voxel resolution (v2.0 pipeline). Column details and display-case edges are substantially sharper than the v1.0 5\,mm baseline.}
+  \label{fig:tsdf-v2}
+\end{figure}
+
+Figure~\ref{fig:mesh-quality} shows a mesh-quality detail crop at the junction of the east wall and the display-case surround, comparing \acrshort{tsdf} (left) with \acrshort{milo} (right). The \acrshort{milo} result preserves the 3\,mm rebate between the case surround and the wall plaster; the \acrshort{tsdf} result blends both surfaces into a single sloped polygon.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.85\textwidth]{v2/mesh_quality.png}
+  \caption{Mesh quality detail at the display-case/wall junction. \acrshort{tsdf} (left) blends the 3\,mm rebate into a sloped surface; \acrshort{milo} (right) resolves it as a distinct step edge. This difference is consequential for fabrication and metric survey use-cases.}
+  \label{fig:mesh-quality}
+\end{figure}
+
+Figure~\ref{fig:museum-mesh} shows the final textured environment mesh exported from the pipeline with vertex-baked colour from the Gaussian radiance field. At this scale the surface quality difference between backends is imperceptible; the photometric texture dominates the visual impression regardless of mesh source.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.85\textwidth]{v2/museum_mesh.jpg}
+  \caption{Textured environment mesh (\acrshort{milo} backend) with vertex colour baked from the Gaussian radiance field. At display resolution the photometric texture dominates; geometric differences between backends become significant only at closer inspection or in fabrication/survey export.}
+  \label{fig:museum-mesh}
+\end{figure}
+
+\subsection*{Per-Material Observations}
+
+\textbf{Large flat walls and floors.} All four backends perform acceptably. \acrshort{tsdf} and \acrshort{come} produce slightly smoother results; \acrshort{milo} and \acrshort{gw} introduce minor triangle-level noise from the joint optimisation, which is imperceptible after texture baking.
+
+\textbf{Glazed display cases.} The glass surfaces create multi-path radiance in the Gaussian field, causing \acrshort{tsdf} and \acrshort{milo} to produce ghost inner surfaces behind the glass face. \acrshort{come}'s confidence weighting correctly identifies these low-consistency regions and suppresses the ghost surfaces, producing clean single-layer glass geometry. This is the primary use-case driver for the \acrshort{come} backend.
+
+\textbf{Picture frames and thin fixtures.} Gaussian Wrapping is the clear winner. The mesh proxy binding allows the optimisation to allocate Gaussian density to the frame face without diffusing it into the adjacent wall, recovering 4--8\,mm moulding profiles that are entirely absent from the \acrshort{tsdf} result and only partially resolved by \acrshort{milo}.
+
+\textbf{Ceiling lighting track.} The recessed aluminium extrusion (approximately 15\,mm wide) was recovered by all backends but at varying accuracy. \acrshort{milo} resolved the channel profile to within 2\,mm; \acrshort{tsdf} produced a flat ridge; \acrshort{come} and \acrshort{gw} performed comparably to \acrshort{milo}.
+
+\begin{technote}
+  The heavy backends (\acrshort{milo} and Gaussian Wrapping in the \texttt{milo} sidecar; \acrshort{come} in the \texttt{come} sidecar) are isolated in separate Docker containers for a concrete technical reason: CUDA \acrshort{abi} incompatibility. The \texttt{gaussian-toolkit} main container builds against CUDA 12.4 with \texttt{torch} 2.3; \acrshort{milo} and Gaussian Wrapping require CUDA 11.8 with \texttt{torch} 2.1 due to custom CUDA extension kernels that have not yet been ported to the CUDA 12 compiler. \acrshort{come} targets CUDA 12.1 with a different minor-version \texttt{cublas} linkage that conflicts with the main container's 12.4 build. Attempting to consolidate all backends into a single container would require either forking and recompiling all upstream extension kernels (a significant maintenance burden) or pinning the entire stack to the lowest common denominator. The three-container architecture is the pragmatic resolution: each container is hermetic, pulled from a pinned image digest, and communicates with the orchestrator via a Unix socket and a shared \texttt{/scratch} volume.
+\end{technote}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Recommendation}
+\label{sec:meshing-recommendation}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\begin{recommendation}
+  \textbf{Use \acrshort{tsdf}} for rapid preview and iterative pipeline development. It runs in the main container, requires no licence agreement beyond MIT, and completes in under five minutes. All \acrshort{adr}-003 time-gated jobs fall back to \acrshort{tsdf} automatically.
+
+  \textbf{Use \acrshort{milo}} for archival and final deliverable geometry when the deployment environment permits the Inria non-commercial licence. At \num{2.6}\,mm Chamfer distance it produces the highest overall fidelity and is the default archival backend for institutional heritage projects.
+
+  \textbf{Use \acrshort{come}} when the captured scene contains significant reflective or specular surfaces (glazed cases, polished floors, metallic fixtures) and the licence profile permits. Its confidence-weighted extraction cleanly suppresses the ghost surfaces that afflict all depth-fusion methods at glass boundaries.
+
+  \textbf{Use Gaussian Wrapping} when thin structures (frames, railings, decorative metalwork, wall-mounted signage) are a primary preservation target and the licence profile permits. Its mesh-proxy binding strategy is architecturally distinct from the other three backends and uniquely suited to sub-centimetre thin geometry.
+
+  For a typical gallery digitisation under institutional research terms: run \acrshort{tsdf} immediately after capture for operator preview, then queue \acrshort{milo} as the archival extraction pass. If the scene has significant glazing, substitute \acrshort{come} for \acrshort{milo} in the archival pass. Gaussian Wrapping is additive --- it can be run selectively over regions of interest identified in the \acrshort{tsdf} preview without reprocessing the entire scene.
+\end{recommendation}
