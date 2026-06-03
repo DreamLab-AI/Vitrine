@@ -1,0 +1,305 @@
+% A0 portrait conference poster — Video-to-Gaussian
+% University of Salford funded programme · DreamLab AI Consulting Ltd
+% Build: pdflatex poster_a0.tex   (run from report/poster/)
+\documentclass[25pt, a0paper, portrait, margin=12mm, innermargin=14mm,
+               blockverticalspace=11mm, colspace=14mm, subcolspace=8mm]{tikzposter}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{helvet}                 % Arial-like fallback for Replica Pro
+\renewcommand{\familydefault}{\sfdefault}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, shapes.geometric, calc, fit, backgrounds}
+
+\graphicspath{{../figures/v2/}{./assets/}}
+
+% ---------------------------------------------------------------------------
+% University of Salford brand palette (2025 visual identity)
+% ---------------------------------------------------------------------------
+\definecolor{salfordred}{HTML}{D20A11}  % primary
+\definecolor{salfordnavy}{HTML}{00313D} % dark navy core
+\definecolor{salfordblack}{HTML}{1D1D1B}
+\definecolor{salfordgrey}{HTML}{D8D2C4} % warm grey
+\definecolor{salfordteal}{HTML}{6FB6BA} % secondary
+\definecolor{salfordcoral}{HTML}{EB5E54}% secondary
+\definecolor{panelgrey}{HTML}{F5F3EE}
+\definecolor{dreamlabnavy}{HTML}{1A1A2E}
+
+\usetheme{Default}
+\usecolorstyle{Germany}
+% Override theme colours with Salford palette
+\colorlet{backgroundcolor}{white}
+\colorlet{framecolor}{salfordred}
+\colorlet{titlefgcolor}{salfordred}
+\colorlet{titlebgcolor}{white}
+\colorlet{blocktitlebgcolor}{salfordred}
+\colorlet{blocktitlefgcolor}{white}
+\colorlet{blockbodybgcolor}{white}
+\colorlet{blockbodyfgcolor}{salfordblack}
+\colorlet{innerblocktitlebgcolor}{salfordnavy}
+\colorlet{innerblocktitlefgcolor}{white}
+\colorlet{notebgcolor}{panelgrey}
+\colorlet{notefrcolor}{salfordred}
+
+\useblockstyle[titlewidthscale=1.0, bodywidthscale=1.0]{Default}
+\usetitlestyle{Empty}
+
+\setlength{\parindent}{0pt}
+\newcommand{\stat}[2]{{\color{salfordred}\bfseries #1}\,#2}
+
+% ---------------------------------------------------------------------------
+% Custom branded title band (prominent Salford logo + title)
+% ---------------------------------------------------------------------------
+\settitle{
+\begin{minipage}[c]{0.20\linewidth}
+  \includegraphics[width=0.95\linewidth]{salford_logo.png}
+\end{minipage}%
+\hfill
+\begin{minipage}[c]{0.66\linewidth}
+  \centering
+  {\color{salfordred}\bfseries\fontsize{86}{96}\selectfont Video-to-Gaussian}\\[6mm]
+  {\color{salfordnavy}\fontsize{40}{48}\selectfont An Agentic Pipeline for Volumetric Cultural-Heritage Preservation}\\[8mm]
+  {\color{salfordblack}\fontsize{28}{34}\selectfont Hierarchical scene reconstruction with per-object 360\textdegree{} generative emplacement}\\[6mm]
+  {\color{salfordnavy}\bfseries\fontsize{26}{32}\selectfont University of Salford funded research programme \;$\bullet$\; delivered by DreamLab AI Consulting Ltd}
+\end{minipage}%
+\hfill
+\begin{minipage}[c]{0.12\linewidth}
+  \centering
+  \colorbox{dreamlabnavy}{\makebox[0.95\linewidth][c]{\includegraphics[width=0.78\linewidth]{dreamlab_logo.png}}}
+\end{minipage}
+}
+
+\begin{document}
+\maketitle[width=0.97\linewidth]
+
+\begin{columns}
+
+% ===================== COLUMN 1 =====================
+\column{0.34}
+
+\block{The Challenge}{
+\textbf{Cultural heritage is fragile, immovable, and under-documented.} Galleries,
+museums and historic interiors are typically captured as flat photography or
+sparse photogrammetry that loses material appearance, view-dependent lighting and
+the spatial relationships between objects.
+
+This programme trials a production pipeline that turns a \textbf{single hand-held
+4K video walkthrough} into an explorable, photoreal \emph{and} structured 3D scene
+— a volumetric record suitable for archival, remote study and immersive display.
+\vspace{4mm}
+
+\begin{tikzfigure}[Source capture: a single 4K walkthrough of a gallery interior.]
+\includegraphics[width=0.96\linewidth]{src_frame.jpg}
+\end{tikzfigure}
+}
+
+\block{Eight-Stage Agentic Pipeline}{
+A swarm of specialist agents orchestrates the full path from pixels to a delivered
+scene graph. Each stage is independently checkpointed and recoverable.
+\vspace{4mm}
+
+\centering
+\begin{tikzpicture}[
+  font=\small,
+  node distance=5mm,
+  stg/.style={rectangle, rounded corners=3pt, draw=salfordred, very thick,
+              fill=panelgrey, text width=46mm, align=center, minimum height=16mm,
+              inner sep=2mm},
+  ar/.style={-{Stealth[length=4mm]}, very thick, salfordred}]
+\node[stg] (a) {\textbf{1. Capture}\\4K\,/\,30\,fps video};
+\node[stg, right=of a] (b) {\textbf{2. Frames}\\600\,$\rightarrow$\,240 keyframes};
+\node[stg, below=of a] (c) {\textbf{3. COLMAP SfM}\\210k pts, 0.64\,px};
+\node[stg, right=of c] (d) {\textbf{4. 3DGS Train}\\1.18M gaussians};
+\node[stg, below=of c] (e) {\textbf{5. SAM2 Decompose}\\37\,$\rightarrow$\,31 objects};
+\node[stg, right=of e] (f) {\textbf{6. 360\textdegree{} Objects}\\Hunyuan3D + FLUX};
+\node[stg, below=of e] (g) {\textbf{7. Mesh Backends}\\TSDF\,/\,MILo\,/\,CoMe\,/\,GW};
+\node[stg, right=of g] (h) {\textbf{8. USD Scene Graph}\\variant: Gaussian\,$|$\,Mesh};
+\draw[ar] (a) -- (b);
+\draw[ar] (b.south) to[out=-90,in=90] (d.north);
+\draw[ar] (a) -- (c);
+\draw[ar] (c) -- (d);
+\draw[ar] (d.south) to[out=-90,in=90] (f.north);
+\draw[ar] (c) -- (e);
+\draw[ar] (e) -- (f);
+\draw[ar] (e) -- (g);
+\draw[ar] (g) -- (h);
+\draw[ar] (f.south) to[out=-90,in=90] (h.north);
+\end{tikzpicture}
+}
+
+\block{Photoreal Radiance Field}{
+Stage 4 optimises a 3D Gaussian Splatting field for 30k iterations, reaching
+real-time novel-view synthesis at the captured resolution.
+\vspace{3mm}
+
+\begin{tikzfigure}[Rendered novel views with per-pixel depth and confidence.]
+\includegraphics[width=0.98\linewidth]{splat_render.png}
+\end{tikzfigure}
+\vspace{3mm}
+
+\begin{center}\large
+\stat{29.6}{dB PSNR}\;$\bullet$\;
+\stat{0.921}{SSIM}\;$\bullet$\;
+\stat{0.108}{LPIPS}\\[3mm]
+\stat{1.18\,M}{gaussians}\;$\bullet$\;
+\stat{160}{FPS}\;$\bullet$\;
+\stat{24}{min train}
+\end{center}
+}
+
+% ===================== COLUMN 2 =====================
+\column{0.34}
+
+\block{Hierarchical Scene Graph}{
+The pipeline's central contribution is moving from a \emph{monolithic} radiance
+field to a \textbf{structured, editable scene}. SAM2 promptable segmentation
+decomposes the capture; masks are projected from 2D into the Gaussian field with
+\textbf{98.3\,\% coverage}, resolving \textbf{37 detections into 31 clean object
+prims}.
+\vspace{4mm}
+
+\centering
+\begin{tikzpicture}[font=\small,
+  rt/.style={rectangle, rounded corners=2pt, draw=salfordnavy, very thick,
+             fill=salfordred, text=white, align=center, minimum width=40mm, minimum height=11mm},
+  pr/.style={rectangle, rounded corners=2pt, draw=salfordteal, thick, fill=panelgrey,
+             align=center, text width=34mm, minimum height=10mm},
+  vs/.style={rectangle, rounded corners=2pt, draw=salfordcoral, thick, fill=white,
+             align=center, text width=28mm, font=\footnotesize},
+  ed/.style={-{Stealth[length=3mm]}, thick, salfordnavy}]
+\node[rt] (w) {/World};
+\node[pr, below left=10mm and -8mm of w] (env) {Environment\\(Gaussian field)};
+\node[pr, below right=10mm and -8mm of w] (obj) {Objects (31 prims)};
+\draw[ed] (w) -- (env);
+\draw[ed] (w) -- (obj);
+\node[vs, below left=8mm and -22mm of obj] (v1) {Painting\_07\\\textbf{variant:} Gaussian $|$ Mesh};
+\node[vs, below right=8mm and -22mm of obj] (v2) {Sculpture\_03\\\textbf{variant:} Gaussian $|$ Mesh};
+\draw[ed] (obj) -- (v1);
+\draw[ed] (obj) -- (v2);
+\end{tikzpicture}
+\vspace{3mm}
+
+Every object prim carries a \textbf{USD variant set} \{Gaussian\,$|$\,Mesh\},
+so a viewer can swap any object between its splat appearance and a watertight
+polygonal twin without re-authoring the scene.
+}
+
+\block{Per-Object 360\textdegree{} Reconstruction}{
+Objects seen from only one side in the walkthrough are completed by a generative
+sub-pipeline, then re-emplaced at their surveyed positions.
+\vspace{3mm}
+
+\begin{center}
+\begin{tikzpicture}[font=\small, node distance=4mm,
+  s/.style={rectangle, rounded corners=2pt, draw=salfordteal, very thick, fill=panelgrey,
+            text width=30mm, align=center, minimum height=14mm},
+  a/.style={-{Stealth[length=3.5mm]}, very thick, salfordnavy}]
+\node[s] (o1) {64 orbit\\views};
+\node[s, right=of o1] (o2) {FLUX.1\\background\\inpainting};
+\node[s, right=of o2] (o3) {Hunyuan3D 2.0\\(ComfyUI)};
+\node[s, right=of o3] (o4) {Watertight\\PBR mesh};
+\draw[a] (o1)--(o2); \draw[a] (o2)--(o3); \draw[a] (o3)--(o4);
+\end{tikzpicture}
+\end{center}
+\vspace{3mm}
+
+Each reconstructed object is a \textbf{textured, watertight PBR mesh} that is
+emplaced back into the polygonal reconstruction of the Gaussian capture at its
+surveyed pose — separate inference-reconstructed objects living inside the scene.
+\vspace{3mm}
+
+\begin{tikzfigure}[Watertight object mesh generated from orbit inference.]
+\includegraphics[width=0.86\linewidth]{museum_mesh.jpg}
+\end{tikzfigure}
+}
+
+\block{Quantitative Outcome}{
+\renewcommand{\arraystretch}{1.25}
+\begin{tabularx}{0.98\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Coverage (SAM2$\rightarrow$field)} & 98.3\,\% of gaussians assigned \\
+\textbf{Objects emplaced} & 31 prims at surveyed pose \\
+\textbf{Registration} & sub-cm against survey control \\
+\textbf{Deliverable} & 18\,MB \texttt{.ksplat} + USD scene graph \\
+\bottomrule
+\end{tabularx}
+}
+
+% ===================== COLUMN 3 =====================
+\column{0.32}
+
+\block{Four Pluggable Mesh Backends}{
+A single object or the whole scene can be meshed by any of four interchangeable
+backends, trading speed for fidelity.
+\vspace{3mm}
+
+\centering
+\renewcommand{\arraystretch}{1.2}
+\footnotesize
+\begin{tabularx}{0.99\linewidth}{@{}lXr@{}}
+\toprule
+\textbf{Backend} & \textbf{Strength} & \textbf{Time} \\
+\midrule
+\textbf{TSDF}   & fast, 4.9M faces        & 4\,min  \\
+\textbf{MILo}   & Chamfer 2.6\,mm, 7.8M   & 69\,min \\
+\textbf{CoMe}   & compact, manifold       & 25\,min \\
+\textbf{GaussWrap} & thin structures      & 38\,min \\
+\bottomrule
+\end{tabularx}
+\vspace{4mm}
+
+\begin{tikzfigure}[Polygonal mesh reconstruction of the captured interior.]
+\includegraphics[width=0.99\linewidth]{tsdf_overview.jpg}
+\end{tikzfigure}
+}
+
+\block{System Architecture}{
+\textbf{Three coordinated GPU containers} run the heterogeneous toolchain:
+\vspace{2mm}
+
+\begin{itemize}\setlength{\itemsep}{2mm}
+\item \textbf{gaussian-toolkit} — CUDA 12.8, capture$\rightarrow$splat$\rightarrow$TSDF
+\item \textbf{milo} — CUDA 11.8, MILo \& GaussianWrapping meshing
+\item \textbf{come} — CUDA 12.1, CoMe manifold meshing
+\end{itemize}
+\vspace{2mm}
+
+Built on \textbf{LichtFeld Studio v0.5.2} with a native USD I/O path and an
+\textbf{MCP control server} (70+ tools) for agent orchestration. Hardware: dual
+\textbf{RTX 6000 Ada} (96\,GB VRAM), Threadripper PRO, 251\,GB RAM.
+\vspace{3mm}
+
+\begin{tikzfigure}[Per-frame depth estimation across the walkthrough.]
+\includegraphics[width=0.99\linewidth]{depth_montage.png}
+\end{tikzfigure}
+}
+
+\block{Deployment \& Roadmap}{
+\textbf{University of Salford rollout:}
+\begin{enumerate}\setlength{\itemsep}{1.5mm}
+\item \textbf{Pilot} — gallery capture \& validation (this report)
+\item \textbf{Scale} — multi-room collections, survey integration
+\item \textbf{Access} — WebGPU viewer for remote study \& VR
+\end{enumerate}
+\vspace{3mm}
+The trial demonstrates an end-to-end route from a consumer 4K video to an
+archival-grade, object-structured volumetric scene — ready for deployment across
+the University's heritage and teaching collections.
+}
+
+\note[targetoffsetx=0cm, targetoffsety=0cm, width=0.30\linewidth, rotate=0,
+      connection=false, radius=0cm]{
+\textbf{Programme:} University of Salford funded trial \\
+\textbf{Delivery partner:} DreamLab AI Consulting Ltd \;$\bullet$\; dreamlab-ai.com \\
+\textbf{Stack:} LichtFeld Studio v0.5.2 $\bullet$ 3DGS $\bullet$ SAM2 $\bullet$ USD
+}
+
+\end{columns}
+
+\end{document}
