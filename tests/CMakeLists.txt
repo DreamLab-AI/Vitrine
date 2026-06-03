@@ -90,7 +90,7 @@ set(BENCHMARK_FILES
     benchmark_scheduler.cpp
     benchmark_losses.cpp
     benchmark_ppisp_controller.cpp
-    benchmark_selection_modes.cpp
+    benchmark_reactive_store.cpp
     # profile_adam_optimizer.cpp  # Disabled - missing header
     test_tensor_benchmark.cpp
     test_memory_pool_benchmark.cpp
@@ -119,6 +119,7 @@ set(TEST_FILES
     test_tensor_basic.cpp
     test_tensor_ops.cpp
     test_tensor_memory.cpp
+    test_allocator_policy.cpp
     test_tensor_reduction.cpp
     test_tensor_reduction_alignment.cpp
     test_isolation.cpp
@@ -165,6 +166,7 @@ set(TEST_FILES
     test_dataloader_lfs.cpp
     test_bilateral_grid.cpp
     test_sparsity_debug.cpp
+    test_sparsity_optimizer.cpp
     test_dtype_operations_comprehensive.cpp
     test_tensor_bugs.cpp
     test_densification_performance.cpp
@@ -196,17 +198,26 @@ set(TEST_FILES
     test_spz_format.cpp
     test_converter_usd.cpp
     test_usd_format.cpp
+    test_nurec_usdz_format.cpp
     test_unicode_paths_windows.cpp
     test_interleaved_slice_copy.cpp
     test_densification_tensor_ops.cpp
     test_tensor_zero_dimension.cpp
     test_mask_loss.cpp
     test_checkpoint_resume.cpp
+    test_argument_parser.cpp
+    test_logger.cpp
     test_parameter_manager.cpp
     test_mcp_protocol.cpp
     test_mcp_app_utils.cpp
+    test_mcp_shared_scene_tools.cpp
     test_mcp_sequencer_tools.cpp
+    test_view_info_json.cpp
     test_video_export_utils.cpp
+    test_visualizer_post_work.cpp
+    test_panel_registry_animation_demand.cpp
+    test_panel_layout_render_demand.cpp
+    test_reactive_store.cpp
     test_video_color_convert.cpp
     test_python_integration.cpp
     test_python_lsp_client.cpp
@@ -221,6 +232,7 @@ set(TEST_FILES
     test_expanded_tensor_ops.cpp
     test_bool_any_all.cpp
     test_fused_l1_ssim.cpp
+    test_image_kernels.cpp
     test_add_new_gs_tensor_ops.cpp
     test_cpu_dtype_conversions.cpp
     test_cpu_large_tensor_bugs.cpp
@@ -236,6 +248,7 @@ set(TEST_FILES
     test_torch_conversion.cpp
     test_fastgs_kernels.cpp
     test_fastgs_fuzz.cpp
+    test_sh_swizzle_layout.cpp
     test_python_io.cpp
     test_extended_unary_ops_vs_torch.cpp
     # test_property_system.cpp  # Disabled: needs API update after merge
@@ -243,8 +256,10 @@ set(TEST_FILES
     test_render_settings_defaults.cpp
     test_selection_rasterization_ops.cpp
     test_rendering_refactor_services.cpp
+    test_theme_registry.cpp
     test_viewport.cpp
     test_input_controller_focus.cpp
+    test_input_controller_dataset_load.cpp
     test_selection_service_interactions.cpp
     test_undo_history.cpp
     test_selection_command_dispatch.cpp
@@ -254,6 +269,8 @@ set(TEST_FILES
     test_background_image.cpp
     test_operator_return_value.cpp
     test_sdl_rml_key_mapping.cpp
+    test_rml_path_utils.cpp
+    test_rml_static_style_boundaries.cpp
     test_sequencer_regressions.cpp
     test_tensor_storage_version.cpp
     test_modal_registry_regression.cpp
@@ -266,6 +283,7 @@ set(TEST_FILES
     test_ppisp_cuda_vs_torch.cpp
     test_controller_memory.cpp
     test_undistort.cpp
+    test_viewport_region_utils.cpp
     test_mesh_data.cpp
     test_openmesh_bridge.cpp
     test_mesh_loader.cpp
@@ -275,7 +293,9 @@ set(TEST_FILES
     test_rotated_sh_correctness.cpp
     test_tensor_stream.cpp
     test_tensor_memory_planner.cpp
+    test_vram_profiler_metrics.cpp
 )
+list(APPEND TEST_FILES test_vksplat_input_packer.cpp)
 
 # Build test sources list
 set(TEST_SOURCES test_main.cpp)
@@ -324,7 +344,6 @@ target_include_directories(lichtfeld_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/external/spz   # SPZ library headers
     ${NB_DIR}/include
     ${CUDAToolkit_INCLUDE_DIRS}
-    ${OPENGL_INCLUDE_DIRS}
 )
 
 # Define TEST_DATA_DIR and PROJECT_ROOT_PATH for tests
@@ -363,9 +382,7 @@ target_link_libraries(lichtfeld_tests PRIVATE
     nanobind-static
     imgui::imgui
     implot::implot
-    imguizmo::imguizmo
     ${TORCH_LIBRARIES}
-    ${OPENGL_LIBRARIES}
     OpenImageIO::OpenImageIO
     OpenMeshCore
     assimp::assimp
@@ -378,6 +395,8 @@ target_link_libraries(lichtfeld_tests PRIVATE
     # System libraries
     spdlog::spdlog
 )
+
+target_link_libraries(lichtfeld_tests PRIVATE lfs_vulkan_rasterizer Vulkan::Vulkan)
 
 # Compiler options for CUDA debugging
 target_compile_options(lichtfeld_tests PRIVATE
@@ -409,7 +428,6 @@ target_include_directories(lichtfeld_benchmarks PRIVATE
     ${CMAKE_SOURCE_DIR}/external/spz
     ${NB_DIR}/include
     ${CUDAToolkit_INCLUDE_DIRS}
-    ${OPENGL_INCLUDE_DIRS}
 )
 
 target_compile_definitions(lichtfeld_benchmarks PRIVATE
@@ -439,7 +457,6 @@ target_link_libraries(lichtfeld_benchmarks PRIVATE
 
     GTest::gtest
     ${TORCH_LIBRARIES}
-    ${OPENGL_LIBRARIES}
     OpenImageIO::OpenImageIO
     CUDA::cudart
     CUDA::curand

@@ -11,9 +11,25 @@
 #include <optional>
 
 namespace lfs::vis {
-    class GTTextureCache;
     class SceneManager;
     struct FrameResources;
+} // namespace lfs::vis
+
+namespace lfs::core {
+    class Camera;
+} // namespace lfs::core
+
+namespace lfs::vis {
+
+    namespace detail {
+        [[nodiscard]] LFS_VIS_API glm::mat4 currentSceneTransform(SceneManager* const scene_manager,
+                                                                  const int camera_uid);
+
+        [[nodiscard]] LFS_VIS_API std::optional<GTRenderCamera> buildGTRenderCamera(
+            const lfs::core::Camera& cam,
+            glm::ivec2 render_size,
+            const glm::mat4& scene_transform);
+    } // namespace detail
 
     class LFS_VIS_API SplitViewService {
     public:
@@ -50,13 +66,6 @@ namespace lfs::vis {
         [[nodiscard]] Viewport& secondaryViewport() { return secondary_viewport_; }
         [[nodiscard]] const Viewport& secondaryViewport() const { return secondary_viewport_; }
         void updateInfo(const FrameResources& resources);
-        void prepareGTComparisonContext(SceneManager* scene_manager,
-                                        const RenderSettings& settings,
-                                        int current_camera_id,
-                                        bool has_renderable_content,
-                                        bool has_viewport_output,
-                                        GTTextureCache& texture_cache,
-                                        bool& request_viewport_prerender);
 
     private:
         enum class GTExitBehavior {

@@ -129,6 +129,7 @@ namespace lfs::python {
         // Focus
         bool focus();
         void blur();
+        bool select();
         void submit(const std::string& name = "", const std::string& value = "");
 
         Rml::Element* raw() { return elem_; }
@@ -188,6 +189,7 @@ namespace lfs::python {
 
         void dirty(const std::string& name);
         void dirty_all();
+        void request_update();
         bool is_dirty(const std::string& name);
         void update_string_list(const std::string& name, nb::list items);
         void update_record_list(const std::string& name, nb::list items);
@@ -246,7 +248,9 @@ namespace lfs::python {
     };
 
     bool consume_document_dirty(Rml::ElementDocument* doc);
+    bool consume_document_update_request(Rml::ElementDocument* doc);
     bool is_document_dirty(Rml::ElementDocument* doc);
+    bool is_document_update_requested(Rml::ElementDocument* doc);
     void release_rml_context_state(Rml::Context* context);
 
     void register_rml_bindings(nb::module_& m);

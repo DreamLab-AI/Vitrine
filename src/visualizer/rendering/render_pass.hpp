@@ -12,7 +12,6 @@
 #include <optional>
 #include <rendering/frame_contract.hpp>
 #include <rendering/rendering.hpp>
-#include <shared_mutex>
 #include <vector>
 
 namespace lfs::core {
@@ -53,6 +52,7 @@ namespace lfs::vis {
         glm::ivec2 viewport_offset{0};
         float start_position = 0.0f;
         float end_position = 1.0f;
+        int grid_plane = 1;
 
         [[nodiscard]] bool valid() const {
             return viewport != nullptr && render_size.x > 0 && render_size.y > 0;
@@ -72,6 +72,7 @@ namespace lfs::vis {
         glm::ivec2 render_size;
         glm::ivec2 viewport_pos;
         DirtyMask frame_dirty = 0;
+        bool training_active = false;
 
         CursorPreviewState cursor_preview;
         GizmoState gizmo;
@@ -96,11 +97,12 @@ namespace lfs::vis {
                     .translation = source.getTranslation(),
                     .size = size,
                     .focal_length_mm = settings.focal_length_mm,
+                    .intrinsics_override = std::nullopt,
                     .near_plane = lfs::rendering::DEFAULT_NEAR_PLANE,
                     .far_plane = settings.depth_clip_enabled ? settings.depth_clip_far
                                                              : lfs::rendering::DEFAULT_FAR_PLANE,
                     .orthographic = settings.orthographic,
-                    .ortho_scale = settings.ortho_scale,
+                    .ortho_scale = source.ortho_scale_override.value_or(settings.ortho_scale),
                     .background_color = settings.background_color};
         }
 
@@ -150,6 +152,7 @@ namespace lfs::vis {
         float near_plane = lfs::rendering::DEFAULT_NEAR_PLANE;
         float far_plane = lfs::rendering::DEFAULT_FAR_PLANE;
         bool orthographic = false;
+        bool color_has_alpha = false;
 
         [[nodiscard]] const std::shared_ptr<lfs::core::Tensor>& primaryDepth() const {
             return depth_panels[0].depth;
@@ -164,6 +167,7 @@ namespace lfs::vis {
             .near_plane = result.near_plane,
             .far_plane = result.far_plane,
             .orthographic = result.orthographic,
+            .color_has_alpha = result.color_has_alpha,
         };
         for (size_t i = 0; i < result.depth_panel_count && i < metadata.depth_panels.size(); ++i) {
             metadata.depth_panels[i] = {
@@ -175,19 +179,6 @@ namespace lfs::vis {
         return metadata;
     }
 
-    // Pass execution order (defined in RenderingManager constructor):
-    //   [pre] SplatRasterPass — GT comparison pre-render (before loop, at GT dimensions)
-    //   [0]   SplitViewPass   — Side-by-side views (blocks scene raster passes if active)
-    //   [1]   SplatRasterPass — Render splats to offscreen FBO
-    //   [2]   PointCloudPass  — Pre-training point cloud (mutually exclusive with splats)
-    //   [3]   PresentPass     — Present cached GPU frame
-    //   [4]   MeshPass        — Render meshes, composite with splats
-    //   [5]   OverlayPass     — Grid, crop boxes, frustums, pivot, axes
-    //
-    // Inter-pass coordination flags:
-    //   split_view_executed — Set by SplitViewPass. Skips SplatRaster/PointCloud/Mesh.
-    //   splats_presented    — Set by PresentPass/PointCloudPass. Tells MeshPass to composite.
-    //   splat_pre_rendered  — Set by GT pre-render. Skips SplatRasterPass in the loop.
     struct FrameResources {
         CachedRenderMetadata cached_metadata;
         std::optional<lfs::rendering::GpuFrame> cached_gpu_frame;
@@ -204,22 +195,21 @@ namespace lfs::vis {
         std::optional<std::chrono::steady_clock::time_point> pivot_animation_end;
     };
 
-    std::optional<std::shared_lock<std::shared_mutex>> acquireRenderLock(const FrameContext& ctx);
-
-    class RenderPass {
-    public:
-        virtual ~RenderPass() = default;
-        [[nodiscard]] virtual const char* name() const = 0;
-        [[nodiscard]] virtual DirtyMask sensitivity() const = 0;
-
-        [[nodiscard]] virtual bool shouldExecute(DirtyMask frame_dirty,
-                                                 const FrameContext& /*ctx*/) const {
-            return (frame_dirty & sensitivity()) != 0;
+    inline void applyGTComparisonRenderCamera(
+        lfs::rendering::FrameView& frame_view,
+        bool& equirectangular,
+        const std::optional<GTComparisonContext>& gt_context) {
+        if (!gt_context || !gt_context->render_camera.has_value()) {
+            return;
         }
 
-        virtual void execute(lfs::rendering::RenderingEngine& engine,
-                             const FrameContext& ctx,
-                             FrameResources& res) = 0;
-    };
+        const auto& render_camera = *gt_context->render_camera;
+        frame_view.rotation = render_camera.rotation;
+        frame_view.translation = render_camera.translation;
+        frame_view.intrinsics_override = render_camera.intrinsics;
+        frame_view.orthographic = false;
+        frame_view.ortho_scale = lfs::rendering::DEFAULT_ORTHO_SCALE;
+        equirectangular = render_camera.equirectangular;
+    }
 
 } // namespace lfs::vis

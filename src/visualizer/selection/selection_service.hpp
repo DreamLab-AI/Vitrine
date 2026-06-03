@@ -78,14 +78,20 @@ namespace lfs::vis {
                                                   int camera_index = 0);
         [[nodiscard]] SelectionResult selectRect(float x0, float y0, float x1, float y1, SelectionMode mode,
                                                  int camera_index = 0);
-        [[nodiscard]] SelectionResult selectPolygon(const core::Tensor& vertices, SelectionMode mode,
+        [[nodiscard]] SelectionResult selectPolygon(const std::vector<glm::vec2>& vertices, SelectionMode mode,
                                                     int camera_index = 0);
-        [[nodiscard]] SelectionResult selectLasso(const core::Tensor& vertices, SelectionMode mode,
+        [[nodiscard]] SelectionResult selectLasso(const std::vector<glm::vec2>& vertices, SelectionMode mode,
                                                   int camera_index = 0);
         [[nodiscard]] SelectionResult selectRing(float x, float y, SelectionMode mode, int camera_index = 0);
+        [[nodiscard]] SelectionResult selectByColorAt(float x, float y, SelectionMode mode,
+                                                      SelectionFilterState filters = {},
+                                                      int camera_index = -1);
+        [[nodiscard]] SelectionResult selectAllFiltered();
+        [[nodiscard]] SelectionResult invertFiltered();
 
         [[nodiscard]] SelectionResult applyMask(const std::vector<uint8_t>& mask, SelectionMode mode);
         [[nodiscard]] SelectionResult applyMask(const core::Tensor& mask, SelectionMode mode);
+        [[nodiscard]] SelectionResult previewMask(const core::Tensor& mask, SelectionMode mode);
 
         void beginStroke();
         [[nodiscard]] core::Tensor* getStrokeSelection();
@@ -147,12 +153,16 @@ namespace lfs::vis {
             int dragged_polygon_vertex = -1;
             bool preview_dirty = false;
             core::Tensor working_selection;
+            core::Tensor live_delta_selection;
+            std::vector<bool> live_preview_node_mask;
+            size_t preview_brush_point_count = 0;
         };
 
         [[nodiscard]] SelectionResult commitSelection(const core::Tensor& selection, SelectionMode mode,
                                                       const std::vector<bool>& node_mask,
                                                       const SelectionFilterState& filters,
-                                                      const char* undo_name);
+                                                      const char* undo_name,
+                                                      bool push_undo = true);
         [[nodiscard]] core::Tensor& resetBoolScratchBuffer(core::Tensor& buffer, size_t size);
         [[nodiscard]] std::optional<ViewerViewportContext> resolveViewerViewportContext(
             std::optional<glm::vec2> screen_point = std::nullopt,
@@ -161,6 +171,7 @@ namespace lfs::vis {
         [[nodiscard]] std::shared_ptr<core::Tensor> getScreenPositionsForContext(
             const ViewerViewportContext& context) const;
         [[nodiscard]] std::shared_ptr<core::Tensor> resolveCommandScreenPositions(int camera_index) const;
+        [[nodiscard]] std::optional<rendering::FrameView> resolveCommandFrameView(int camera_index) const;
         [[nodiscard]] std::shared_ptr<core::Tensor> renderScreenPositionsForCamera(int camera_index) const;
         [[nodiscard]] std::shared_ptr<core::Tensor> renderScreenPositionsForViewerContext(
             const ViewerViewportContext& context) const;
@@ -180,6 +191,7 @@ namespace lfs::vis {
                                                                                    const SelectionFilterState& filters);
         [[nodiscard]] bool buildSelectionMaskForInteractiveSession(core::Tensor& selection_out,
                                                                    bool include_polygon_cursor = false);
+        [[nodiscard]] bool buildInteractiveBrushPreviewIncremental();
         [[nodiscard]] bool buildBrushSelection(const std::vector<glm::vec2>& points, float radius,
                                                core::Tensor& selection_out) const;
         [[nodiscard]] bool buildRectangleSelection(glm::vec2 start, glm::vec2 end,
@@ -212,6 +224,9 @@ namespace lfs::vis {
         std::shared_ptr<core::Tensor> selection_before_stroke_;
         core::Tensor command_selection_buffer_;
         core::Tensor locked_groups_device_mask_;
+        std::array<uint32_t, 8> locked_groups_host_mask_{};
+        bool locked_groups_host_mask_valid_ = false;
+        core::Tensor selection_group_counts_scratch_;
         std::array<core::Tensor, 2> selection_output_buffers_;
         size_t selection_output_buffer_index_ = 0;
         std::shared_ptr<core::Tensor> testing_screen_positions_;

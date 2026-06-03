@@ -5,6 +5,7 @@
 
 #include "core/export.hpp"
 #include "tensor_functors.hpp"
+#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #include <vector>
 
@@ -272,6 +273,14 @@ namespace lfs::core::tensor_ops {
 
     LFS_CORE_API void launch_masked_fill(float* data, const unsigned char* mask,
                                          float value, size_t n, cudaStream_t stream);
+    LFS_CORE_API void launch_masked_fill(int32_t* data, const unsigned char* mask,
+                                         int32_t value, size_t n, cudaStream_t stream);
+    LFS_CORE_API void launch_masked_fill(int64_t* data, const unsigned char* mask,
+                                         int64_t value, size_t n, cudaStream_t stream);
+    LFS_CORE_API void launch_masked_fill(uint8_t* data, const unsigned char* mask,
+                                         uint8_t value, size_t n, cudaStream_t stream);
+    LFS_CORE_API void launch_masked_fill(__half* data, const unsigned char* mask,
+                                         __half value, size_t n, cudaStream_t stream);
 
     LFS_CORE_API void launch_masked_scatter(float* data, const unsigned char* mask,
                                             const float* src, size_t n, size_t src_size, cudaStream_t stream);

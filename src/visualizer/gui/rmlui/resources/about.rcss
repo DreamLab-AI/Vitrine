@@ -10,13 +10,19 @@
 
 .info-key {
     width: 120dp;
-    color: #a6adc8;
-    font-size: 10dp;
+    font-size: 12dp;
 }
 
 .info-val {
-    color: #cdd6f4;
-    font-size: 10dp;
+    font-size: 12dp;
+}
+
+.info-val--copy {
+    cursor: pointer;
+}
+
+.info-val--copy:hover {
+    text-decoration: underline;
 }
 
 .link-row {
@@ -26,15 +32,13 @@
 }
 
 .link-label {
-    color: #cdd6f4;
     margin-right: 6dp;
-    font-size: 10dp;
+    font-size: 12dp;
 }
 
 .link-url {
-    color: #89b4fa;
     cursor: pointer;
-    font-size: 10dp;
+    font-size: 12dp;
     background-color: transparent;
     border-width: 0;
     padding: 0;
@@ -52,11 +56,9 @@
 }
 
 .footer-text {
-    color: #a6adc8;
-    font-size: 11dp;
+    font-size: 12dp;
 }
 
 .footer-sep {
-    color: #585b70;
-    font-size: 11dp;
+    font-size: 12dp;
 }

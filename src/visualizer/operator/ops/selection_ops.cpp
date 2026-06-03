@@ -29,6 +29,16 @@ namespace lfs::vis::op {
             }
         }
 
+        [[nodiscard]] lfs::vis::SelectionMode selectionModeFromModifiers(const int mods) {
+            if (mods & input::KEYMOD_SHIFT) {
+                return lfs::vis::SelectionMode::Add;
+            }
+            if (mods & input::KEYMOD_CTRL) {
+                return lfs::vis::SelectionMode::Remove;
+            }
+            return lfs::vis::SelectionMode::Replace;
+        }
+
     } // namespace
 
     const OperatorDescriptor SelectionStrokeOperator::DESCRIPTOR = {
@@ -54,13 +64,23 @@ namespace lfs::vis::op {
             return OperatorResult::CANCELLED;
         }
 
-        shape_ = toSelectionShape(props.get_or<int>("mode", 0));
+        const int mode_int = props.get_or<int>("mode", 0);
         mode_ = toSelectionMode(props.get_or<int>("op", 0));
         brush_radius_ = props.get_or<float>("brush_radius", 20.0f);
+        stroke_button_ = props.get_or<int>("button", static_cast<int>(input::AppMouseButton::LEFT));
         filters_.crop_filter = props.get_or<bool>("use_crop_filter", false);
         filters_.depth_filter = props.get_or<bool>("use_depth_filter", false);
         filters_.restrict_to_selected_nodes = props.get_or<bool>("restrict_to_selected_nodes", true);
 
+        // Color selection mode (5): pick Gaussian under cursor and select by color similarity.
+        if (mode_int == 5) {
+            const float click_x = static_cast<float>(props.get_or<double>("x", 0.0));
+            const float click_y = static_cast<float>(props.get_or<double>("y", 0.0));
+            const auto result = service->selectByColorAt(click_x, click_y, mode_, filters_);
+            return result.success ? OperatorResult::FINISHED : OperatorResult::CANCELLED;
+        }
+
+        shape_ = toSelectionShape(mode_int);
         const glm::vec2 start_pos(props.get_or<double>("x", 0.0), props.get_or<double>("y", 0.0));
         if (!service->beginInteractiveSelection(shape_, mode_, start_pos, brush_radius_, filters_)) {
             return OperatorResult::CANCELLED;
@@ -101,9 +121,10 @@ namespace lfs::vis::op {
                 return OperatorResult::RUNNING_MODAL;
             }
 
+            const bool is_stroke_button = mb->button == stroke_button_;
+
             if (shape_ == lfs::vis::SelectionShape::Polygon) {
-                if (mb->button == static_cast<int>(input::AppMouseButton::LEFT) &&
-                    mb->action == input::ACTION_PRESS) {
+                if (is_stroke_button && mb->action == input::ACTION_PRESS) {
                     if (service->isInteractiveSelectionClosed()) {
                         if (mb->mods & input::KEYMOD_SHIFT) {
                             (void)service->insertInteractivePolygonVertex(glm::vec2(mb->position));
@@ -122,67 +143,69 @@ namespace lfs::vis::op {
                     return OperatorResult::RUNNING_MODAL;
                 }
 
-                if (mb->button == static_cast<int>(input::AppMouseButton::LEFT) &&
-                    mb->action == input::ACTION_RELEASE &&
+                if (is_stroke_button && mb->action == input::ACTION_RELEASE &&
                     service->isInteractivePolygonVertexDragActive()) {
                     service->endInteractivePolygonVertexDrag();
                     return OperatorResult::RUNNING_MODAL;
                 }
 
-                if (mb->button == static_cast<int>(input::AppMouseButton::RIGHT) &&
-                    mb->action == input::ACTION_PRESS) {
-                    if (!service->undoInteractivePolygonVertex()) {
-                        return OperatorResult::CANCELLED;
-                    }
-                    return OperatorResult::RUNNING_MODAL;
-                }
-
                 return OperatorResult::PASS_THROUGH;
             }
 
-            if (mb->button == static_cast<int>(input::AppMouseButton::LEFT) &&
-                mb->action == input::ACTION_RELEASE) {
+            if (is_stroke_button && mb->action == input::ACTION_RELEASE) {
                 const auto result = service->finishInteractiveSelection();
                 return result.success ? OperatorResult::FINISHED : OperatorResult::CANCELLED;
             }
-
-            if (mb->button == static_cast<int>(input::AppMouseButton::RIGHT) &&
-                mb->action == input::ACTION_PRESS) {
-                return OperatorResult::CANCELLED;
-            }
         }
 
-        if (event->type == ModalEvent::Type::MOUSE_SCROLL &&
-            shape_ == lfs::vis::SelectionShape::Polygon) {
+        // Always let scroll events through so the user can resize the selection
+        // ring mid-stroke (BRUSH_RESIZE is bound to Ctrl/Shift+scroll). The
+        // shape doesn't matter — the operator never uses scroll input itself.
+        if (event->type == ModalEvent::Type::MOUSE_SCROLL) {
             return OperatorResult::PASS_THROUGH;
         }
 
-        if (event->type == ModalEvent::Type::KEY) {
-            const auto* key = event->as<KeyEvent>();
-            if (!key || key->action != input::ACTION_PRESS) {
+        if (event->type == ModalEvent::Type::ACTION) {
+            const auto* action = event->as<ActionEvent>();
+            if (!action) {
                 return OperatorResult::RUNNING_MODAL;
             }
 
-            if (key->key == input::KEY_ESCAPE) {
-                return OperatorResult::CANCELLED;
-            }
-
-            if (shape_ == lfs::vis::SelectionShape::Polygon && key->key == input::KEY_ENTER) {
-                if (key->mods & input::KEYMOD_SHIFT) {
-                    mode_ = lfs::vis::SelectionMode::Add;
-                } else if (key->mods & input::KEYMOD_CTRL) {
-                    mode_ = lfs::vis::SelectionMode::Remove;
-                } else {
-                    mode_ = lfs::vis::SelectionMode::Replace;
+            switch (action->action) {
+            case input::Action::CONFIRM_POLYGON: {
+                if (shape_ != lfs::vis::SelectionShape::Polygon) {
+                    return OperatorResult::PASS_THROUGH;
                 }
+
+                mode_ = selectionModeFromModifiers(action->mods);
                 service->setInteractiveSelectionMode(mode_);
                 const auto result = service->finishInteractiveSelection();
                 return result.success ? OperatorResult::FINISHED : OperatorResult::RUNNING_MODAL;
             }
 
-            if (shape_ == lfs::vis::SelectionShape::Polygon) {
+            case input::Action::UNDO_POLYGON_VERTEX:
+                if (shape_ == lfs::vis::SelectionShape::Polygon) {
+                    if (!service->undoInteractivePolygonVertex()) {
+                        return OperatorResult::CANCELLED;
+                    }
+                    return OperatorResult::RUNNING_MODAL;
+                }
+                return OperatorResult::CANCELLED;
+
+            case input::Action::CANCEL_POLYGON:
+                return OperatorResult::CANCELLED;
+
+            default:
                 return OperatorResult::PASS_THROUGH;
             }
+        }
+
+        if (event->type == ModalEvent::Type::KEY) {
+            const auto* key = event->as<KeyEvent>();
+            if (!key) {
+                return OperatorResult::RUNNING_MODAL;
+            }
+            return OperatorResult::PASS_THROUGH;
         }
 
         return OperatorResult::RUNNING_MODAL;

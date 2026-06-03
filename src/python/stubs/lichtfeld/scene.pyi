@@ -21,7 +21,9 @@ class SplatData:
 
     @property
     def shN_raw(self) -> lichtfeld.Tensor:
-        """Raw SHN tensor [N, (degree+1)^2-1, 3] (view)"""
+        """
+        SHN tensor in canonical [N, (degree+1)^2-1, 3] layout (materialised from the internal swizzled storage — this allocates, not a view).
+        """
 
     @property
     def scaling_raw(self) -> lichtfeld.Tensor:
@@ -374,7 +376,7 @@ class SceneNode:
     def has_mask(self) -> bool:
         """Whether this camera node has a mask file"""
 
-    def load_mask(self, resize_factor: int = 1, max_width: int = 3840, invert: bool = False, threshold: float = 0.5) -> lichtfeld.Tensor | None:
+    def load_mask(self, resize_factor: int = 1, max_width: int = 0, invert: bool = False, threshold: float = 0.5) -> lichtfeld.Tensor | None:
         """
         Load mask as tensor [1, H, W] on CUDA (None if not a camera node or no mask)
         """
@@ -468,7 +470,7 @@ class Scene:
     def add_camera_group(self, name: str, parent: int, camera_count: int) -> int:
         """Add a camera group node"""
 
-    def add_camera(self, name: str, parent: int, R: lichtfeld.Tensor, T: lichtfeld.Tensor, focal_x: float, focal_y: float, width: int, height: int, image_path: str = '', uid: int = -1) -> int:
+    def add_camera(self, name: str, parent: int, R: lichtfeld.Tensor, T: lichtfeld.Tensor, focal_x: float, focal_y: float, width: int, height: int, image_path: str = '', uid: int = -1, mask: lichtfeld.Tensor | None = None) -> int:
         """
         Add a camera node with intrinsic and extrinsic parameters.
 
@@ -483,6 +485,11 @@ class Scene:
             height: Image height in pixels
             image_path: Optional path to camera image
             uid: Optional unique identifier (-1 for auto-assigned)
+            mask: Optional in-memory mask tensor (H, W) or (1, H, W) at the image
+                resolution. Bypasses the on-disk masks/ workflow — useful for
+                direct-scene plugins that want to attach per-frame masks without
+                writing files. Set the session's ``mask_mode`` to ``Ignore`` or
+                ``Segment`` for it to take effect during training.
 
         Returns:
             Node ID of created camera
@@ -581,6 +588,15 @@ class Scene:
 
     def set_selection_mask(self, mask: lichtfeld.Tensor) -> None:
         """Set selection from boolean mask tensor [N]"""
+
+    def preview_selection_mask(self, mask: lichtfeld.Tensor) -> None:
+        """Preview a selection mask without pushing an undo step"""
+
+    def commit_selection_preview(self) -> None:
+        """Commit a transient selection update as one undo step"""
+
+    def cancel_selection_preview(self) -> None:
+        """Cancel a transient selection update and restore the original selection"""
 
     def clear_selection(self) -> None:
         """Clear all selected Gaussians"""
@@ -698,11 +714,11 @@ class Camera:
 
     @property
     def fov_x(self) -> float:
-        """Horizontal field of view in radians"""
+        """Horizontal field of view in degrees"""
 
     @property
     def fov_y(self) -> float:
-        """Vertical field of view in radians"""
+        """Vertical field of view in degrees"""
 
     @property
     def image_width(self) -> int:
@@ -741,29 +757,45 @@ class Camera:
         """Unique camera identifier"""
 
     @property
-    def R(self) -> lichtfeld.Tensor:
-        """Rotation matrix [3, 3]"""
+    def rotation(self) -> lichtfeld.Tensor:
+        """
+        Visualizer camera-to-world rotation [3, 3], directly usable with render_view()
+        """
 
     @property
-    def T(self) -> lichtfeld.Tensor:
-        """Translation vector [3]"""
+    def translation(self) -> lichtfeld.Tensor:
+        """Visualizer camera position [3], directly usable with render_view()"""
 
     @property
     def K(self) -> lichtfeld.Tensor:
         """Intrinsic matrix [3, 3]"""
 
     @property
+    def view_matrix(self) -> lichtfeld.Tensor:
+        """Visualizer world-to-camera view matrix [4, 4]"""
+
+    @property
+    def R(self) -> lichtfeld.Tensor:
+        """Deprecated raw dataset world-to-camera rotation [3, 3]"""
+
+    @property
+    def T(self) -> lichtfeld.Tensor:
+        """Deprecated raw dataset world-to-camera translation [3]"""
+
+    @property
     def world_view_transform(self) -> lichtfeld.Tensor:
-        """World-to-view transform [4, 4]"""
+        """Deprecated raw dataset world-to-camera transform [1, 4, 4]"""
 
     @property
     def cam_position(self) -> lichtfeld.Tensor:
-        """Camera position in world space [3]"""
+        """Deprecated raw dataset-world camera position [3]"""
 
-    def load_image(self, resize_factor: int = 1, max_width: int = 3840) -> lichtfeld.Tensor:
-        """Load image as tensor [C, H, W] on CUDA"""
+    def load_image(self, resize_factor: int = 1, max_width: int = 0, output_uint8: bool = False) -> lichtfeld.Tensor:
+        """
+        Load image as tensor [C, H, W] on CUDA. Set output_uint8=True to return uint8 [0,255] instead of float32 [0,1].
+        """
 
-    def load_mask(self, resize_factor: int = 1, max_width: int = 3840, invert: bool = False, threshold: float = 0.5) -> lichtfeld.Tensor:
+    def load_mask(self, resize_factor: int = 1, max_width: int = 0, invert: bool = False, threshold: float = 0.5) -> lichtfeld.Tensor:
         """Load mask as tensor [1, H, W] on CUDA"""
 
 class CameraDataset:

@@ -104,7 +104,7 @@ class PluginContext:
                         screen_positions=viewport.screen_positions,
                         width=view_info.width,
                         height=view_info.height,
-                        fov=view_info.fov_x,
+                        fov=view_info.fov_y,
                         rotation=view_info.rotation,
                         translation=view_info.translation,
                     )

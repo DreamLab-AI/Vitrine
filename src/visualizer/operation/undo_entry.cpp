@@ -25,6 +25,7 @@ namespace lfs::vis::op {
         using lfs::core::events::state::PLYRemoved;
         using lfs::core::events::state::SceneCleared;
         constexpr auto PROPERTY_COALESCE_WINDOW = std::chrono::milliseconds(500);
+        constexpr size_t DENSE_SELECTION_SNAPSHOT_THRESHOLD = 1u << 20;
 
         bool cropBoxesEqual(const lfs::core::CropBoxData& lhs, const lfs::core::CropBoxData& rhs) {
             return lhs.min == rhs.min &&
@@ -366,13 +367,30 @@ namespace lfs::vis::op {
             return (tensor && tensor->is_valid()) ? tensor->numel() : 0;
         }
 
+        lfs::core::Tensor normalizeMaskTensor(lfs::core::Tensor tensor,
+                                              const size_t total_size,
+                                              const lfs::core::Device device,
+                                              const lfs::core::DataType dtype) {
+            auto normalized_dtype = tensor.dtype() == dtype ? tensor : tensor.to(dtype);
+            if (normalized_dtype.numel() == total_size) {
+                return normalized_dtype;
+            }
+
+            auto normalized = lfs::core::Tensor::zeros({total_size}, device, dtype);
+            const size_t copy_count = std::min(total_size, normalized_dtype.numel());
+            if (copy_count > 0 && normalized_dtype.ndim() == 1) {
+                normalized.slice(0, 0, copy_count) = normalized_dtype.slice(0, 0, copy_count);
+            }
+            return normalized;
+        }
+
         lfs::core::Tensor materializeMaskTensor(const std::shared_ptr<lfs::core::Tensor>& tensor,
                                                 const size_t total_size,
                                                 const lfs::core::Device device,
                                                 const lfs::core::DataType dtype) {
             if (tensor && tensor->is_valid()) {
                 auto materialized = tensor->device() == device ? *tensor : tensor->to(device);
-                return materialized.dtype() == dtype ? materialized : materialized.to(dtype);
+                return normalizeMaskTensor(std::move(materialized), total_size, device, dtype);
             }
             return total_size > 0 ? lfs::core::Tensor::zeros({total_size}, device, dtype) : lfs::core::Tensor{};
         }
@@ -383,7 +401,7 @@ namespace lfs::vis::op {
                                                 const lfs::core::DataType dtype) {
             if (tensor && tensor->is_valid()) {
                 auto materialized = tensor->device() == device ? *tensor : tensor->to(device);
-                return materialized.dtype() == dtype ? materialized : materialized.to(dtype);
+                return normalizeMaskTensor(std::move(materialized), total_size, device, dtype);
             }
             return total_size > 0 ? lfs::core::Tensor::zeros({total_size}, device, dtype) : lfs::core::Tensor{};
         }
@@ -447,6 +465,36 @@ namespace lfs::vis::op {
                 storage.stored_values = std::move(before_tensor);
             }
 
+            return storage;
+        }
+
+        TensorSwapStorage buildDenseTensorSwapStorage(const std::shared_ptr<lfs::core::Tensor>& before,
+                                                      const lfs::core::Tensor* after,
+                                                      const size_t total_size,
+                                                      const lfs::core::Device fallback_device,
+                                                      const lfs::core::DataType dtype,
+                                                      const bool before_present,
+                                                      const bool after_present) {
+            TensorSwapStorage storage;
+            storage.mode = TensorSwapStorageMode::DENSE;
+            storage.total_size = total_size;
+            storage.device = fallback_device;
+            storage.dtype = dtype;
+            storage.before_present = before_present;
+            storage.after_present = after_present;
+
+            if (total_size == 0) {
+                storage.mode = TensorSwapStorageMode::NONE;
+                return storage;
+            }
+
+            const lfs::core::Device device =
+                (after && after->is_valid()) ? after->device()
+                                             : ((before && before->is_valid()) ? before->device() : fallback_device);
+            storage.device = device;
+            if (before_present) {
+                storage.stored_values = materializeMaskTensor(before, total_size, device, dtype);
+            }
             return storage;
         }
 
@@ -630,7 +678,8 @@ namespace lfs::vis::op {
                 src.scaling_raw().clone(),
                 src.rotation_raw().clone(),
                 src.opacity_raw().clone(),
-                src.get_scene_scale());
+                src.get_scene_scale(),
+                lfs::core::SplatData::ShNLayout::Swizzled);
             cloned->set_active_sh_degree(src.get_active_sh_degree());
             cloned->set_max_sh_degree(src.get_max_sh_degree());
             if (src.has_deleted_mask()) {
@@ -684,6 +733,7 @@ namespace lfs::vis::op {
             snapshot.image_name = camera.image_name();
             snapshot.image_path = camera.image_path();
             snapshot.mask_path = camera.mask_path();
+            snapshot.split = camera.split();
             snapshot.focal_x = camera.focal_x();
             snapshot.focal_y = camera.focal_y();
             snapshot.center_x = camera.center_x();
@@ -715,6 +765,7 @@ namespace lfs::vis::op {
                 snapshot.camera_height,
                 snapshot.uid,
                 snapshot.camera_id);
+            camera->set_split(snapshot.split);
             camera->set_image_dimensions(snapshot.image_width, snapshot.image_height);
             return camera;
         }
@@ -943,7 +994,8 @@ namespace lfs::vis::op {
                     .total_gaussians = scene_manager.getScene().getTotalGaussianCount(),
                     .is_visible = node->visible,
                     .parent_name = snapshot.parent_name,
-                    .is_group = node->type == lfs::core::NodeType::GROUP,
+                    .is_group = node->type == lfs::core::NodeType::GROUP ||
+                                node->type == lfs::core::NodeType::PLY_SEQUENCE,
                     .node_type = static_cast<int>(node->type),
                     .from_history = true}
                     .emit();
@@ -999,6 +1051,9 @@ namespace lfs::vis::op {
                 break;
             case lfs::core::NodeType::DATASET:
                 node_id = scene.addDataset(snapshot.name);
+                break;
+            case lfs::core::NodeType::PLY_SEQUENCE:
+                node_id = scene.addPlySequence(snapshot.name, parent_id, snapshot.gaussian_count);
                 break;
             case lfs::core::NodeType::CAMERA_GROUP:
                 node_id = scene.addCameraGroup(snapshot.name, parent_id, snapshot.gaussian_count);
@@ -1136,6 +1191,12 @@ namespace lfs::vis::op {
         : scene_(scene),
           name_(std::move(name)) {}
 
+    void SceneSnapshot::setSelectionChangeHint(const bool changed, const bool prefer_dense_storage) {
+        selection_change_known_ = true;
+        selection_changed_ = changed;
+        prefer_dense_selection_storage_ = prefer_dense_storage;
+    }
+
     void SceneSnapshot::captureDeletedMasks(
         std::unordered_map<std::string, TensorPresenceSnapshot>& target) {
         target.clear();
@@ -1184,6 +1245,21 @@ namespace lfs::vis::op {
 
     void SceneSnapshot::captureTopology() {
         captureDeletedMasks(deleted_masks_before_);
+        combined_deleted_before_.reset();
+        combined_deleted_storage_ = {};
+        if (scene_.getScene().isConsolidated()) {
+            if (const auto* combined = scene_.getScene().getCombinedModel()) {
+                TensorPresenceSnapshot snapshot;
+                snapshot.total_size = combined->size();
+                snapshot.device = combined->means_raw().device();
+                snapshot.present = combined->has_deleted_mask();
+                if (snapshot.present) {
+                    snapshot.tensor =
+                        std::make_shared<lfs::core::Tensor>(combined->deleted().clone());
+                }
+                combined_deleted_before_ = std::move(snapshot);
+            }
+        }
         captured_ = captured_ | ModifiesFlag::TOPOLOGY;
     }
 
@@ -1200,19 +1276,36 @@ namespace lfs::vis::op {
                 : ((selection_before_.mask && selection_before_.mask->is_valid())
                        ? selection_before_.mask->device()
                        : lfs::core::Device::CUDA);
-        selection_mask_storage_ = buildTensorSwapStorage(
-            selection_before_.mask,
-            selection_after.get(),
-            total_size,
-            fallback_device,
-            lfs::core::DataType::UInt8,
-            selection_before_.has_selection,
-            selection_after_metadata_.has_selection);
+        if (selection_change_known_ && !selection_changed_) {
+            selection_mask_storage_ = {};
+        } else if (selection_change_known_ &&
+                   selection_changed_ &&
+                   prefer_dense_selection_storage_ &&
+                   total_size >= DENSE_SELECTION_SNAPSHOT_THRESHOLD) {
+            selection_mask_storage_ = buildDenseTensorSwapStorage(
+                selection_before_.mask,
+                selection_after.get(),
+                total_size,
+                fallback_device,
+                lfs::core::DataType::UInt8,
+                selection_before_.has_selection,
+                selection_after_metadata_.has_selection);
+        } else {
+            selection_mask_storage_ = buildTensorSwapStorage(
+                selection_before_.mask,
+                selection_after.get(),
+                total_size,
+                fallback_device,
+                lfs::core::DataType::UInt8,
+                selection_before_.has_selection,
+                selection_after_metadata_.has_selection);
+        }
         selection_before_.mask.reset();
     }
 
     void SceneSnapshot::compactTopology() {
         deleted_mask_storage_.clear();
+        combined_deleted_storage_ = {};
 
         for (const auto& [node_name, before] : deleted_masks_before_) {
             const auto* node = scene_.getScene().getNode(node_name);
@@ -1240,6 +1333,32 @@ namespace lfs::vis::op {
         }
 
         deleted_masks_before_.clear();
+
+        if (combined_deleted_before_) {
+            const auto& before = *combined_deleted_before_;
+            const auto* combined = scene_.getScene().isConsolidated()
+                                       ? scene_.getScene().getCombinedModel()
+                                       : nullptr;
+            const auto* after_tensor =
+                (combined && combined->has_deleted_mask()) ? &combined->deleted() : nullptr;
+            const size_t model_size = combined ? static_cast<size_t>(combined->size()) : 0;
+            const size_t total_size =
+                std::max({before.total_size,
+                          tensorNumel(before.tensor),
+                          tensorNumel(after_tensor),
+                          model_size});
+
+            combined_deleted_storage_ = buildTensorSwapStorage(
+                before.tensor,
+                after_tensor,
+                total_size,
+                before.device,
+                lfs::core::DataType::Bool,
+                before.present,
+                combined && combined->has_deleted_mask());
+        }
+
+        combined_deleted_before_.reset();
     }
 
     void SceneSnapshot::captureAfter() {
@@ -1269,7 +1388,8 @@ namespace lfs::vis::op {
             return true;
         }
 
-        if (hasFlag(captured_, ModifiesFlag::TOPOLOGY) && !deleted_mask_storage_.empty()) {
+        if (hasFlag(captured_, ModifiesFlag::TOPOLOGY) &&
+            (!deleted_mask_storage_.empty() || combined_deleted_storage_.hasChanges())) {
             return true;
         }
 
@@ -1348,8 +1468,43 @@ namespace lfs::vis::op {
             restored_any = true;
         }
 
+        if (combined_deleted_storage_.hasChanges()) {
+            if (!scene_.getScene().isConsolidated()) {
+                throw std::runtime_error("Cannot replay consolidated topology history after scene unconsolidated");
+            }
+
+            auto* combined = const_cast<lfs::core::SplatData*>(scene_.getScene().getCombinedModel());
+            if (!combined) {
+                throw std::runtime_error("Cannot restore consolidated deleted mask without combined model");
+            }
+
+            if (combined_deleted_storage_.mode == TensorSwapStorageMode::SPARSE &&
+                combined->size() != combined_deleted_storage_.total_size) {
+                throw std::runtime_error("Cannot replay consolidated topology history after gaussian count changed");
+            }
+
+            const bool target_present =
+                undo_direction ? combined_deleted_storage_.before_present : combined_deleted_storage_.after_present;
+            const lfs::core::Tensor* current_deleted =
+                combined->has_deleted_mask() ? &combined->deleted() : nullptr;
+            const size_t model_size = static_cast<size_t>(combined->size());
+            const size_t total_size =
+                std::max({combined_deleted_storage_.total_size, model_size, tensorNumel(current_deleted)});
+            auto working_mask = materializeMaskTensor(
+                current_deleted, total_size, combined_deleted_storage_.device, lfs::core::DataType::Bool);
+
+            applyTensorSwapStorage(working_mask, combined_deleted_storage_);
+
+            if (target_present) {
+                combined->deleted() = std::move(working_mask);
+            } else {
+                combined->deleted() = lfs::core::Tensor{};
+            }
+            restored_any = true;
+        }
+
         if (restored_any) {
-            scene_.getScene().markDirty();
+            scene_.getScene().notifyMutation(lfs::core::Scene::MutationType::MODEL_CHANGED);
         }
     }
 
@@ -1390,6 +1545,7 @@ namespace lfs::vis::op {
         for (const auto& [_, storage] : deleted_mask_storage_) {
             total += storage.estimatedBytes();
         }
+        total += combined_deleted_storage_.estimatedBytes();
         for (const auto& [node_name, _] : transforms_before_) {
             total += sizeof(glm::mat4) + node_name.size();
         }
@@ -1408,6 +1564,7 @@ namespace lfs::vis::op {
         for (const auto& [_, storage] : deleted_mask_storage_) {
             total += storage.memoryBreakdown();
         }
+        total += combined_deleted_storage_.memoryBreakdown();
         for (const auto& [node_name, _] : transforms_before_) {
             total.cpu_bytes += sizeof(glm::mat4) + node_name.size();
         }
@@ -1422,6 +1579,7 @@ namespace lfs::vis::op {
         for (auto& [_, storage] : deleted_mask_storage_) {
             storage.offloadToCPU();
         }
+        combined_deleted_storage_.offloadToCPU();
     }
 
     void SceneSnapshot::restoreToPreferredDevice() {
@@ -1429,6 +1587,7 @@ namespace lfs::vis::op {
         for (auto& [_, storage] : deleted_mask_storage_) {
             storage.restoreToDevice();
         }
+        combined_deleted_storage_.restoreToDevice();
     }
 
     UndoMetadata SceneSnapshot::metadata() const {
@@ -2009,7 +2168,7 @@ namespace lfs::vis::op {
 
             if (scene.getNodeCount() == 0 &&
                 desired.context->content_type == static_cast<int>(SceneManager::ContentType::Empty)) {
-                python::set_application_scene(nullptr);
+                python::set_application_scene(&scene);
                 SceneCleared{.from_history = true}.emit();
             } else {
                 python::set_application_scene(&scene);

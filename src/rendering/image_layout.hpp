@@ -6,6 +6,7 @@
 
 #include "core/tensor.hpp"
 #include <cassert>
+#include <vector>
 
 namespace lfs::rendering {
 
@@ -17,8 +18,9 @@ namespace lfs::rendering {
 
     inline ImageLayout detectImageLayout(const Tensor& image) {
         assert(image.ndim() == 3);
-        const bool last_is_channel = (image.size(2) == 3 || image.size(2) == 4);
-        const bool first_is_channel = (image.size(0) == 3 || image.size(0) == 4);
+        const auto is_channel = [](const auto dim) { return dim == 1 || dim == 3 || dim == 4; };
+        const bool last_is_channel = is_channel(image.size(2));
+        const bool first_is_channel = is_channel(image.size(0));
 
         if (first_is_channel && !last_is_channel)
             return ImageLayout::CHW;
@@ -43,6 +45,24 @@ namespace lfs::rendering {
     inline int imageChannels(const Tensor& image, ImageLayout layout) {
         assert(layout != ImageLayout::Unknown);
         return static_cast<int>(layout == ImageLayout::HWC ? image.size(2) : image.size(0));
+    }
+
+    inline Tensor flipImageVertical(const Tensor& image, ImageLayout layout) {
+        assert(layout != ImageLayout::Unknown);
+        if (!image.is_valid()) {
+            return {};
+        }
+
+        const int height = imageHeight(image, layout);
+        std::vector<int> row_indices(static_cast<size_t>(height));
+        for (int row = 0; row < height; ++row) {
+            row_indices[static_cast<size_t>(row)] = height - 1 - row;
+        }
+
+        const Tensor indices = Tensor::from_vector(
+            row_indices, {static_cast<size_t>(height)}, image.device());
+        const int dim = (layout == ImageLayout::HWC) ? 0 : 1;
+        return image.index_select(dim, indices).contiguous();
     }
 
 } // namespace lfs::rendering

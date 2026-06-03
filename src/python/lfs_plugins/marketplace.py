@@ -10,7 +10,9 @@ import threading
 import time
 import urllib.request
 from dataclasses import dataclass
-from typing import Dict, List, Set, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
+
+from .http import urlopen
 
 _log = logging.getLogger(__name__)
 
@@ -74,6 +76,21 @@ class PluginMarketplaceCatalog:
         self._registry_loaded = False
         self._github_enriched = False
         self._last_attempt: float = 0.0
+        self._on_change: Optional[Callable[[], None]] = None
+
+    def set_on_change(self, callback: Optional[Callable[[], None]]) -> None:
+        with self._lock:
+            self._on_change = callback
+
+    def _notify_change(self) -> None:
+        with self._lock:
+            callback = self._on_change
+        if callback is None:
+            return
+        try:
+            callback()
+        except Exception:
+            _log.debug("Plugin marketplace change callback failed", exc_info=True)
 
     def refresh_async(self, force: bool = False, require_github_enrichment: bool = False) -> None:
         """Fetch registry entries, optionally enriching curated entries with GitHub metadata."""
@@ -93,6 +110,7 @@ class PluginMarketplaceCatalog:
                 return
             self._loading = True
             self._last_attempt = now
+        self._notify_change()
 
         def worker():
             from .manager import PluginManager
@@ -130,6 +148,7 @@ class PluginMarketplaceCatalog:
                 self._loading = False
                 self._registry_loaded = registry_ok
                 self._github_enriched = self._github_enriched or require_github_enrichment
+            self._notify_change()
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -254,7 +273,7 @@ def _fetch_repo_metadata(owner: str, repo: str) -> dict:
             "User-Agent": "LichtFeld-PluginMarketplace/1.0",
         },
     )
-    with urllib.request.urlopen(req, timeout=GITHUB_TIMEOUT_SEC) as resp:
+    with urlopen(req, timeout=GITHUB_TIMEOUT_SEC) as resp:
         raw = resp.read().decode("utf-8")
     return json.loads(raw)
 

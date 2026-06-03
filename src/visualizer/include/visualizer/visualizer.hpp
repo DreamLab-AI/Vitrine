@@ -25,14 +25,18 @@ namespace lfs::vis {
     class SceneManager;
     class RenderingManager;
 
+    enum class GraphicsBackend {
+        Vulkan,
+    };
+
     struct LFS_VIS_API ViewerOptions {
         std::string title = "LichtFeld Studio";
         int width = 1280;
         int height = 720;
         bool antialiasing = false;
-        bool enable_cuda_interop = true;
         bool show_startup_overlay = true;
         bool gut = false;
+        GraphicsBackend graphics_backend = GraphicsBackend::Vulkan;
         int monitor_x = 0; // Monitor hint for window placement
         int monitor_y = 0;
         int monitor_width = 0;
@@ -55,7 +59,7 @@ namespace lfs::vis {
         virtual std::expected<void, std::string> loadDataset(const std::filesystem::path& path) = 0;
         virtual std::expected<void, std::string> loadCheckpointForTraining(const std::filesystem::path& path) = 0;
         virtual void consolidateModels() = 0;
-        virtual void clearScene() = 0;
+        [[nodiscard]] virtual std::expected<void, std::string> clearScene() = 0;
         virtual core::Scene& getScene() = 0;
         virtual SceneManager* getSceneManager() = 0;
         virtual RenderingManager* getRenderingManager() = 0;

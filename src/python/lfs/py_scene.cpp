@@ -8,11 +8,15 @@
 #include "core/logger.hpp"
 #include "core/path_utils.hpp"
 #include "core/property_registry.hpp"
+#include "io/loader.hpp"
 #include "python/python_runtime.hpp"
 #include "visualizer/gui_capabilities.hpp"
 #include "visualizer/operation/undo_entry.hpp"
 #include "visualizer/operation/undo_history.hpp"
+#include "visualizer/rendering/vulkan_external_tensor.hpp"
 #include "visualizer/scene/scene_manager.hpp"
+#include "visualizer/training/training_manager.hpp"
+#include "visualizer/training/training_state.hpp"
 #include <algorithm>
 #include <nanobind/ndarray.h>
 
@@ -71,6 +75,7 @@ namespace lfs::python {
                             0.0f, 1.0f, "Flash effect intensity")
                 .build();
         }
+
     } // namespace
 
     // Helper to convert glm::mat4 to nb::tuple (row-major for NumPy compatibility)
@@ -382,6 +387,14 @@ namespace lfs::python {
             opacity.tensor().clone(),
             scene_scale);
 
+        if (auto allocator = vis::makeViewerSplatTensorAllocator()) {
+            if (auto migrated = io::migrateSplatTensorsToAllocator(*splat, allocator); !migrated) {
+                throw std::runtime_error("Failed to prepare splat tensors for rendering: " +
+                                         migrated.error().format());
+            }
+            scene_->setCombinedModelAllocator(std::move(allocator));
+        }
+
         const size_t gaussian_count = splat->size();
         const int32_t node_id = scene_->addSplat(name, std::move(splat), parent);
 
@@ -514,7 +527,8 @@ namespace lfs::python {
                                 int width,
                                 int height,
                                 const std::string& image_path,
-                                int uid) {
+                                int uid,
+                                std::optional<PyTensor> mask) {
         std::optional<vis::op::SceneGraphStateSnapshot> history_before;
         if (auto* const scene_manager = get_scene_manager()) {
             history_before = vis::op::SceneGraphPatchEntry::captureState(*scene_manager, {name});
@@ -540,6 +554,12 @@ namespace lfs::python {
             std::filesystem::path{},
             width, height,
             uid);
+
+        // Attach an in-memory mask if the caller passed one (direct-scene
+        // plugins use this to bypass the on-disk masks/ workflow).
+        if (mask.has_value() && mask->tensor().is_valid()) {
+            camera->set_mask_tensor(mask->tensor().clone());
+        }
 
         const int32_t node_id = scene_->addCamera(name, parent, std::move(camera));
         if (auto* const scene_manager = get_scene_manager()) {
@@ -570,7 +590,19 @@ namespace lfs::python {
 
     void PyScene::clear() {
         if (auto* const scene_manager = get_scene_manager()) {
-            scene_manager->clear();
+            if (scene_manager->clear()) {
+                return;
+            }
+
+            if (auto* const trainer_manager = lfs::python::get_trainer_manager();
+                trainer_manager &&
+                scene_manager->getContentType() == lfs::vis::SceneManager::ContentType::Dataset &&
+                !trainer_manager->canPerform(lfs::vis::TrainingAction::ClearScene)) {
+                throw std::runtime_error(
+                    std::string(trainer_manager->getActionBlockedReason(lfs::vis::TrainingAction::ClearScene)));
+            }
+
+            throw std::runtime_error("Scene clear request was rejected");
             return;
         }
         scene_->clear();
@@ -605,10 +637,14 @@ namespace lfs::python {
     }
 
     std::optional<PySceneNode> PyScene::get_node(const std::string& name) {
-        auto* node = scene_->getMutableNode(name);
+        // Use the const lookup + const_cast so we don't blow the combined-model
+        // cache on every read. Actual mutations go through SceneNode property
+        // setters whose callbacks trigger Scene::notifyMutation, which still
+        // invalidates the cache — same pattern as get_nodes/get_visible_nodes.
+        const auto* node = scene_->getNode(name);
         if (!node)
             return std::nullopt;
-        return PySceneNode(node, scene_);
+        return PySceneNode(const_cast<core::SceneNode*>(node), scene_);
     }
 
     std::vector<PySceneNode> PyScene::get_nodes() {
@@ -837,20 +873,30 @@ namespace lfs::python {
 
     void PyScene::set_selection_mask(const PyTensor& mask) {
         if (auto* const scene_manager = get_scene_manager()) {
-            const auto cpu_mask = mask.tensor().device() == core::Device::CUDA ? mask.tensor().cpu() : mask.tensor();
-            std::vector<uint8_t> values;
-            if (cpu_mask.dtype() == core::DataType::Bool) {
-                const auto bool_values = cpu_mask.to_vector_bool();
-                values.reserve(bool_values.size());
-                for (const bool value : bool_values)
-                    values.push_back(value ? 1 : 0);
-            } else {
-                values = cpu_mask.to_vector_uint8();
-            }
-            (void)scene_manager->applySelectionMask(values);
+            (void)scene_manager->applySelectionMask(mask.tensor());
             return;
         }
         scene_->setSelectionMask(std::make_shared<core::Tensor>(mask.tensor()));
+    }
+
+    void PyScene::preview_selection_mask(const PyTensor& mask) {
+        if (auto* const scene_manager = get_scene_manager()) {
+            (void)scene_manager->previewSelectionMask(mask.tensor());
+            return;
+        }
+        scene_->setSelectionMask(std::make_shared<core::Tensor>(mask.tensor()));
+    }
+
+    void PyScene::commit_selection_preview() {
+        if (auto* const scene_manager = get_scene_manager()) {
+            scene_manager->commitSelectionPreview();
+        }
+    }
+
+    void PyScene::cancel_selection_preview() {
+        if (auto* const scene_manager = get_scene_manager()) {
+            scene_manager->cancelSelectionPreview();
+        }
     }
 
     void PyScene::clear_selection() {
@@ -951,6 +997,7 @@ namespace lfs::python {
             .value("SPLAT", core::NodeType::SPLAT)
             .value("POINTCLOUD", core::NodeType::POINTCLOUD)
             .value("GROUP", core::NodeType::GROUP)
+            .value("PLY_SEQUENCE", core::NodeType::PLY_SEQUENCE)
             .value("CROPBOX", core::NodeType::CROPBOX)
             .value("ELLIPSOID", core::NodeType::ELLIPSOID)
             .value("DATASET", core::NodeType::DATASET)
@@ -1086,7 +1133,7 @@ namespace lfs::python {
             .def_prop_ro("has_camera", &PySceneNode::has_camera, "Whether this node has camera data")
             .def_prop_ro("has_mask", &PySceneNode::has_mask, "Whether this camera node has a mask file")
             .def("load_mask", &PySceneNode::load_mask,
-                 nb::arg("resize_factor") = 1, nb::arg("max_width") = 3840,
+                 nb::arg("resize_factor") = 1, nb::arg("max_width") = 0,
                  nb::arg("invert") = false, nb::arg("threshold") = 0.5f,
                  "Load mask as tensor [1, H, W] on CUDA (None if not a camera node or no mask)")
             .def_prop_ro("camera_R", &PySceneNode::camera_R, "Camera rotation matrix [3, 3]")
@@ -1194,6 +1241,7 @@ Returns:
                  nb::arg("height"),
                  nb::arg("image_path") = "",
                  nb::arg("uid") = -1,
+                 nb::arg("mask") = nb::none(),
                  R"doc(Add a camera node with intrinsic and extrinsic parameters.
 
 Args:
@@ -1207,6 +1255,11 @@ Args:
     height: Image height in pixels
     image_path: Optional path to camera image
     uid: Optional unique identifier (-1 for auto-assigned)
+    mask: Optional in-memory mask tensor (H, W) or (1, H, W) at the image
+        resolution. Bypasses the on-disk masks/ workflow — useful for
+        direct-scene plugins that want to attach per-frame masks without
+        writing files. Set the session's ``mask_mode`` to ``Ignore`` or
+        ``Segment`` for it to take effect during training.
 
 Returns:
     Node ID of created camera
@@ -1277,6 +1330,9 @@ Returns:
             .def_prop_ro("selection_mask", &PyScene::selection_mask, "Current selection mask tensor [N] uint8 (None if no selection)")
             .def("set_selection", &PyScene::set_selection, nb::arg("indices"), "Set selection from index tensor")
             .def("set_selection_mask", &PyScene::set_selection_mask, nb::arg("mask"), "Set selection from boolean mask tensor [N]")
+            .def("preview_selection_mask", &PyScene::preview_selection_mask, nb::arg("mask"), "Preview a selection mask without pushing an undo step")
+            .def("commit_selection_preview", &PyScene::commit_selection_preview, "Commit a transient selection update as one undo step")
+            .def("cancel_selection_preview", &PyScene::cancel_selection_preview, "Cancel a transient selection update and restore the original selection")
             .def("clear_selection", &PyScene::clear_selection, "Clear all selected Gaussians")
             .def("has_selection", &PyScene::has_selection, "Check if any Gaussians are selected")
             // Selection groups

@@ -4,6 +4,8 @@
 #pragma once
 
 #include <cuda_runtime.h>
+#include <stdexcept>
+#include <string>
 
 #include "core/export.hpp"
 
@@ -13,6 +15,37 @@ namespace lfs::core {
     // Exported from lfs_core so the singleton is shared across DSO boundaries.
     LFS_CORE_API cudaStream_t getCurrentCUDAStream();
     LFS_CORE_API void setCurrentCUDAStream(cudaStream_t stream);
+
+    inline void waitForCUDAStream(cudaStream_t execution_stream, cudaStream_t dependency_stream) {
+        if (dependency_stream == nullptr || dependency_stream == execution_stream) {
+            return;
+        }
+
+        cudaEvent_t ready = nullptr;
+        cudaError_t status = cudaEventCreateWithFlags(&ready, cudaEventDisableTiming);
+        if (status == cudaSuccess) {
+            status = cudaEventRecord(ready, dependency_stream);
+            if (status == cudaSuccess) {
+                status = cudaStreamWaitEvent(execution_stream, ready, 0);
+            }
+        }
+
+        if (ready != nullptr) {
+            const cudaError_t destroy_status = cudaEventDestroy(ready);
+            if (status == cudaSuccess && destroy_status != cudaSuccess) {
+                status = destroy_status;
+            }
+        }
+
+        if (status != cudaSuccess) {
+            const cudaError_t sync_status = cudaStreamSynchronize(dependency_stream);
+            if (sync_status != cudaSuccess) {
+                throw std::runtime_error(
+                    std::string("Failed to synchronize CUDA streams: ") +
+                    cudaGetErrorString(sync_status));
+            }
+        }
+    }
 
     /**
      * RAII guard for temporarily setting the current CUDA stream

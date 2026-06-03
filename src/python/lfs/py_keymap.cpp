@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "core/logger.hpp"
+#include "core/path_utils.hpp"
 #include "python/python_runtime.hpp"
 #include "visualizer/input/input_bindings.hpp"
 
@@ -11,11 +12,91 @@
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
 
+#include <cstdint>
+
 namespace nb = nanobind;
 
 namespace lfs::python {
 
     using namespace lfs::vis::input;
+
+    namespace {
+        nb::dict triggerToDict(const InputTrigger& trigger) {
+            nb::dict result;
+            std::visit(
+                [&result](const auto& t) {
+                    using T = std::decay_t<decltype(t)>;
+                    if constexpr (std::is_same_v<T, KeyTrigger>) {
+                        result["type"] = "key";
+                        result["key"] = t.key;
+                        result["modifiers"] = t.modifiers;
+                    } else if constexpr (std::is_same_v<T, MouseButtonTrigger>) {
+                        result["type"] = "mouse_button";
+                        result["button"] = static_cast<int>(t.button);
+                        result["modifiers"] = t.modifiers;
+                        result["double_click"] = t.double_click;
+                    } else if constexpr (std::is_same_v<T, MouseScrollTrigger>) {
+                        result["type"] = "scroll";
+                        result["modifiers"] = t.modifiers;
+                        if (t.chord_key.has_value()) {
+                            result["chord_key"] = *t.chord_key;
+                        }
+                    } else if constexpr (std::is_same_v<T, MouseDragTrigger>) {
+                        result["type"] = "drag";
+                        result["button"] = static_cast<int>(t.button);
+                        result["modifiers"] = t.modifiers;
+                        if (t.chord_key.has_value()) {
+                            result["chord_key"] = *t.chord_key;
+                        }
+                    }
+                },
+                trigger);
+            return result;
+        }
+
+        std::optional<InputTrigger> triggerFromDict(const nb::dict& d) {
+            if (!d.contains("type")) {
+                return std::nullopt;
+            }
+
+            const auto type = nb::cast<std::string>(d["type"]);
+            const int modifiers = d.contains("modifiers") ? nb::cast<int>(d["modifiers"]) : MODIFIER_NONE;
+            const auto chord_key = [&]() -> std::optional<int> {
+                if (!d.contains("chord_key")) {
+                    return std::nullopt;
+                }
+                return nb::cast<int>(d["chord_key"]);
+            }();
+
+            if (type == "key") {
+                if (!d.contains("key")) {
+                    return std::nullopt;
+                }
+                return KeyTrigger{nb::cast<int>(d["key"]), modifiers, false};
+            }
+            if (type == "mouse_button") {
+                if (!d.contains("button")) {
+                    return std::nullopt;
+                }
+                const bool double_click = d.contains("double_click") && nb::cast<bool>(d["double_click"]);
+                return MouseButtonTrigger{static_cast<MouseButton>(nb::cast<int>(d["button"])),
+                                          modifiers,
+                                          double_click};
+            }
+            if (type == "scroll") {
+                return MouseScrollTrigger{modifiers, chord_key};
+            }
+            if (type == "drag") {
+                if (!d.contains("button")) {
+                    return std::nullopt;
+                }
+                return MouseDragTrigger{static_cast<MouseButton>(nb::cast<int>(d["button"])),
+                                        modifiers,
+                                        chord_key};
+            }
+            return std::nullopt;
+        }
+    } // namespace
 
     void register_keymap(nb::module_& m) {
         auto keymap = m.def_submodule("keymap", "Keymap configuration");
@@ -34,6 +115,7 @@ namespace lfs::python {
             .value("CAMERA_MOVE_UP", Action::CAMERA_MOVE_UP)
             .value("CAMERA_MOVE_DOWN", Action::CAMERA_MOVE_DOWN)
             .value("CAMERA_RESET_HOME", Action::CAMERA_RESET_HOME)
+            .value("CAMERA_SET_HOME", Action::CAMERA_SET_HOME)
             .value("CAMERA_FOCUS_SELECTION", Action::CAMERA_FOCUS_SELECTION)
             .value("CAMERA_SET_PIVOT", Action::CAMERA_SET_PIVOT)
             .value("CAMERA_NEXT_VIEW", Action::CAMERA_NEXT_VIEW)
@@ -90,7 +172,8 @@ namespace lfs::python {
             .value("TOOL_BRUSH", Action::TOOL_BRUSH)
             .value("TOOL_ALIGN", Action::TOOL_ALIGN)
             .value("PIE_MENU", Action::PIE_MENU)
-            .value("DEPTH_ADJUST_NEAR", Action::DEPTH_ADJUST_NEAR);
+            .value("DEPTH_ADJUST_NEAR", Action::DEPTH_ADJUST_NEAR)
+            .value("HISTOGRAM_ZOOM_MARKED", Action::HISTOGRAM_ZOOM_MARKED);
 
         // Expose ToolMode enum
         nb::enum_<ToolMode>(keymap, "ToolMode")
@@ -145,6 +228,16 @@ namespace lfs::python {
             "Get action bound to a key in given mode");
 
         keymap.def(
+            "get_action_for_scroll",
+            [](ToolMode mode, int modifiers, std::vector<int> held_keys) {
+                if (!get_keymap_bindings())
+                    return Action::NONE;
+                return get_keymap_bindings()->getActionForScroll(mode, modifiers, held_keys);
+            },
+            nb::arg("mode"), nb::arg("modifiers") = 0, nb::arg("held_keys") = std::vector<int>{},
+            "Get action bound to a mouse scroll trigger in given mode");
+
+        keymap.def(
             "get_key_for_action",
             [](Action action, ToolMode mode) {
                 if (!get_keymap_bindings())
@@ -159,10 +252,33 @@ namespace lfs::python {
             [](Action action, ToolMode mode) {
                 if (!get_keymap_bindings())
                     return std::string();
-                return get_keymap_bindings()->getTriggerDescription(action, mode);
+                return get_keymap_bindings()->getLocalizedTriggerDescription(action, mode);
             },
             nb::arg("action"), nb::arg("mode") = ToolMode::GLOBAL,
             "Get human-readable description of action's trigger");
+
+        keymap.def(
+            "is_bound",
+            [](Action action, ToolMode mode) {
+                if (!get_keymap_bindings())
+                    return false;
+                return get_keymap_bindings()->getEffectiveTriggerForAction(action, mode).has_value();
+            },
+            nb::arg("action"), nb::arg("mode") = ToolMode::GLOBAL,
+            "Check whether an action has an effective binding");
+
+        keymap.def(
+            "get_trigger",
+            [](Action action, ToolMode mode) -> nb::object {
+                if (!get_keymap_bindings())
+                    return nb::none();
+                const auto trigger = get_keymap_bindings()->getTriggerForAction(action, mode);
+                if (!trigger)
+                    return nb::none();
+                return triggerToDict(*trigger);
+            },
+            nb::arg("action"), nb::arg("mode") = ToolMode::GLOBAL,
+            "Get action's trigger as a serializable dict");
 
         keymap.def(
             "set_binding",
@@ -176,6 +292,20 @@ namespace lfs::python {
             "Bind a key to an action in given mode");
 
         keymap.def(
+            "set_trigger_binding",
+            [](ToolMode mode, Action action, nb::dict trigger_dict) {
+                if (!get_keymap_bindings())
+                    return false;
+                const auto trigger = triggerFromDict(trigger_dict);
+                if (!trigger)
+                    return false;
+                get_keymap_bindings()->setBinding(mode, action, *trigger);
+                return true;
+            },
+            nb::arg("mode"), nb::arg("action"), nb::arg("trigger"),
+            "Bind a key, mouse button, scroll, or drag trigger dict to an action");
+
+        keymap.def(
             "clear_binding",
             [](ToolMode mode, Action action) {
                 if (!get_keymap_bindings())
@@ -186,8 +316,28 @@ namespace lfs::python {
             "Remove binding for an action in given mode");
 
         keymap.def(
+            "find_conflict_for_action",
+            [](ToolMode mode, Action action) -> nb::object {
+                auto* bindings = get_keymap_bindings();
+                if (!bindings)
+                    return nb::none();
+                const auto trigger = bindings->getTriggerForAction(action, mode);
+                if (!trigger)
+                    return nb::none();
+                const auto conflict = bindings->findConflict(mode, *trigger, action);
+                if (!conflict)
+                    return nb::none();
+                nb::dict d;
+                d["other_action"] = conflict->other_action;
+                d["other_mode"] = conflict->other_mode;
+                return d;
+            },
+            nb::arg("mode"), nb::arg("action"),
+            "Return {other_action, other_mode} if another action shares this action's trigger, else None");
+
+        keymap.def(
             "get_action_name",
-            [](Action action) { return getActionName(action); },
+            [](Action action) { return getLocalizedActionName(action); },
             nb::arg("action"),
             "Get display name for an action");
 
@@ -202,6 +352,24 @@ namespace lfs::python {
             [](int modifiers) { return getModifierString(modifiers); },
             nb::arg("modifiers"),
             "Get display string for modifier bitmask");
+
+        keymap.def(
+            "get_allowed_trigger_kinds",
+            [](Action action) {
+                nb::list result;
+                const auto allowed = describe(action).allowed_kinds;
+                if (allowed & TRIGGER_KIND_KEY)
+                    result.append("key");
+                if (allowed & TRIGGER_KIND_MOUSE_BUTTON)
+                    result.append("mouse_button");
+                if (allowed & TRIGGER_KIND_MOUSE_SCROLL)
+                    result.append("mouse_scroll");
+                if (allowed & TRIGGER_KIND_MOUSE_DRAG)
+                    result.append("mouse_drag");
+                return result;
+            },
+            nb::arg("action"),
+            "Get allowed trigger kinds for an action");
 
         keymap.def(
             "get_available_profiles",
@@ -220,6 +388,15 @@ namespace lfs::python {
                 return get_keymap_bindings()->getCurrentProfileName();
             },
             "Get name of active keymap profile");
+
+        keymap.def(
+            "bindings_revision",
+            []() -> std::uint64_t {
+                if (!get_keymap_bindings())
+                    return 0;
+                return get_keymap_bindings()->getBindingsRevision();
+            },
+            "Get a monotonic revision for key binding changes");
 
         keymap.def(
             "load_profile",
@@ -244,9 +421,10 @@ namespace lfs::python {
         keymap.def(
             "export_profile",
             [](const std::string& path) {
+                const auto path_fs = lfs::core::utf8_to_path(path);
                 if (!get_keymap_bindings())
                     return false;
-                return get_keymap_bindings()->saveProfileToFile(path);
+                return get_keymap_bindings()->saveProfileToFile(path_fs);
             },
             nb::arg("path"),
             "Export current profile to file");
@@ -254,9 +432,10 @@ namespace lfs::python {
         keymap.def(
             "import_profile",
             [](const std::string& path) {
+                const auto path_fs = lfs::core::utf8_to_path(path);
                 if (!get_keymap_bindings())
                     return false;
-                return get_keymap_bindings()->loadProfileFromFile(path);
+                return get_keymap_bindings()->loadProfileFromFile(path_fs);
             },
             nb::arg("path"),
             "Import profile from file");
@@ -278,6 +457,15 @@ namespace lfs::python {
                     get_keymap_bindings()->cancelCapture();
             },
             "Cancel active capture");
+
+        keymap.def(
+            "capture_scroll",
+            [](int modifiers, std::optional<int> chord_key) {
+                if (get_keymap_bindings())
+                    get_keymap_bindings()->captureScroll(modifiers, chord_key);
+            },
+            nb::arg("modifiers") = 0, nb::arg("chord_key") = nb::none(),
+            "Forward a scroll-wheel event into the active capture");
 
         keymap.def(
             "is_capturing",
@@ -306,29 +494,7 @@ namespace lfs::python {
                 if (!trigger)
                     return nb::none();
 
-                nb::dict result;
-                std::visit([&result](const auto& t) {
-                    using T = std::decay_t<decltype(t)>;
-                    if constexpr (std::is_same_v<T, KeyTrigger>) {
-                        result["type"] = "key";
-                        result["key"] = t.key;
-                        result["modifiers"] = t.modifiers;
-                    } else if constexpr (std::is_same_v<T, MouseButtonTrigger>) {
-                        result["type"] = "mouse_button";
-                        result["button"] = static_cast<int>(t.button);
-                        result["modifiers"] = t.modifiers;
-                        result["double_click"] = t.double_click;
-                    } else if constexpr (std::is_same_v<T, MouseScrollTrigger>) {
-                        result["type"] = "scroll";
-                        result["modifiers"] = t.modifiers;
-                    } else if constexpr (std::is_same_v<T, MouseDragTrigger>) {
-                        result["type"] = "drag";
-                        result["button"] = static_cast<int>(t.button);
-                        result["modifiers"] = t.modifiers;
-                    }
-                },
-                           *trigger);
-                return result;
+                return triggerToDict(*trigger);
             },
             "Get captured trigger (clears it), returns None if nothing captured");
 
@@ -343,7 +509,7 @@ namespace lfs::python {
                 for (const auto& [action, desc] : bindings) {
                     nb::dict d;
                     d["action"] = action;
-                    d["action_name"] = getActionName(action);
+                    d["action_name"] = getLocalizedActionName(action);
                     d["description"] = desc;
                     result.append(d);
                 }
@@ -369,19 +535,7 @@ namespace lfs::python {
 
         keymap.def(
             "get_tool_mode_name",
-            [](ToolMode mode) {
-                switch (mode) {
-                case ToolMode::GLOBAL: return "Global";
-                case ToolMode::SELECTION: return "Selection";
-                case ToolMode::BRUSH: return "Brush";
-                case ToolMode::TRANSLATE: return "Translate";
-                case ToolMode::ROTATE: return "Rotate";
-                case ToolMode::SCALE: return "Scale";
-                case ToolMode::ALIGN: return "Align";
-                case ToolMode::CROP_BOX: return "Crop Box";
-                default: return "Unknown";
-                }
-            },
+            [](ToolMode mode) { return getLocalizedToolModeName(mode); },
             nb::arg("mode"),
             "Get human-readable name for tool mode");
     }

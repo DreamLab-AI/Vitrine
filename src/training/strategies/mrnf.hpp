@@ -14,6 +14,7 @@
 
 class MRNFStrategyTest_EdgeGuidanceFactorPrefersHigherPrecomputedEdgeScores_Test;
 class MRNFStrategyTest_GrowAndSplitResetsOptimizerStateForParents_Test;
+class MRNFStrategyTest_SHDegree0KeepsShNEmptyAndFusedAdamUsableAfterGrowth_Test;
 class MRNFStrategyTest_GrowAndSplitUsesIgsPlusSplitRule_Test;
 class MRNFStrategyTest_GrowAndSplitWithoutMaxCapExtendsBookkeepingMasks_Test;
 class MRNFStrategyTest_GrowAndSplitReplacementSkipsZeroWeightCandidates_Test;
@@ -61,6 +62,7 @@ namespace lfs::training {
     private:
         friend class ::MRNFStrategyTest_EdgeGuidanceFactorPrefersHigherPrecomputedEdgeScores_Test;
         friend class ::MRNFStrategyTest_GrowAndSplitResetsOptimizerStateForParents_Test;
+        friend class ::MRNFStrategyTest_SHDegree0KeepsShNEmptyAndFusedAdamUsableAfterGrowth_Test;
         friend class ::MRNFStrategyTest_GrowAndSplitUsesIgsPlusSplitRule_Test;
         friend class ::MRNFStrategyTest_GrowAndSplitWithoutMaxCapExtendsBookkeepingMasks_Test;
         friend class ::MRNFStrategyTest_GrowAndSplitReplacementSkipsZeroWeightCandidates_Test;
@@ -79,10 +81,15 @@ namespace lfs::training {
         void ensure_densification_info_shape();
         void enforce_max_cap();
         void refresh_decay_schedule_from_current_state();
+        void accumulate_edge_sample(int iter, const RenderOutput& render_output);
+        [[nodiscard]] bool should_accumulate_edge_sample(int iter) const;
+        [[nodiscard]] int edge_target_samples_per_refine_window() const;
+        void reset_edge_accumulator();
         size_t active_count() const;
         size_t free_count() const;
         [[nodiscard]] lfs::core::Tensor get_active_indices() const;
         void mark_as_free(const lfs::core::Tensor& indices);
+        // Writes child shN linear rows directly into resident swizzled splat_data.shN().
         std::pair<lfs::core::Tensor, int64_t> fill_free_slots_with_data(
             const lfs::core::Tensor& positions,
             const lfs::core::Tensor& rotations,
@@ -106,6 +113,10 @@ namespace lfs::training {
         lfs::core::Tensor _vis_count;
         lfs::core::Tensor _precomputed_edge_scores;
         bool _edge_precompute_valid = false;
+        lfs::core::Tensor _edge_score_sum;
+        lfs::core::Tensor _edge_canny_nms_output;
+        int _edge_sample_count = 0;
+        int _edge_last_sample_iter = -1;
         lfs::core::Tensor _free_mask;
 
         mrnf_strategy::MRNFBounds _bounds = {};

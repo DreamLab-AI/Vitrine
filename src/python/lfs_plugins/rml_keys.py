@@ -3,6 +3,8 @@
 """Centralized RmlUI key identifier constants (Rml::Input::KeyIdentifier)."""
 
 KI_SPACE = 1
+KI_A = 12
+KI_C = 14
 KI_1 = 3
 KI_F = 17
 KI_I = 20

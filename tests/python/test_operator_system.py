@@ -1,7 +1,7 @@
 """Tests for the Blender-style operator system.
 
 These tests verify the operator registration, invocation, and lifecycle methods.
-All tests run without GUI/OpenGL context, so EditorContext is not available.
+All tests run without the visualizer GUI backend, so EditorContext is not available.
 """
 
 import pytest
@@ -87,6 +87,11 @@ class TestSceneAPIs:
         assert result is None
 
     def test_get_selection_world_center_without_backend(self, lf):
-        """get_selection_world_center returns None without selection."""
-        result = lf.get_selection_world_center()
+        """get_selection_world_center warns and returns None without selection."""
+        with pytest.warns(
+            DeprecationWarning,
+            match=r"lichtfeld\.get_selection_world_center\(\) is deprecated; use "
+                  r"lichtfeld\.get_selection_visualizer_world_center\(\) instead",
+        ):
+            result = lf.get_selection_world_center()
         assert result is None

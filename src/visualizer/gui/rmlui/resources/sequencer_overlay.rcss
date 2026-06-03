@@ -29,7 +29,7 @@ body {
 
 .popup-title {
     display: block;
-    font-size: 10dp;
+    font-size: 12dp;
     margin-bottom: 6dp;
 }
 
@@ -61,6 +61,28 @@ body {
     border-radius: 6dp;
 }
 
+#pip-preview-window {
+    width: 336dp;
+    padding: 4dp;
+    pointer-events: none;
+}
+
+#pip-preview-window.playing {
+    border-width: 2dp;
+}
+
+#pip-preview-title {
+    display: block;
+    font-size: 12dp;
+    margin-bottom: 4dp;
+}
+
+#pip-preview-image {
+    display: block;
+    width: 320dp;
+    height: 180dp;
+}
+
 .kf-edit-header {
     display: flex;
     justify-content: space-between;
@@ -76,7 +98,7 @@ body {
 #kf-edit-label {
     display: block;
     flex: 1;
-    font-size: 10dp;
+    font-size: 12dp;
 }
 
 .kf-close-btn {
@@ -86,7 +108,7 @@ body {
 
 #kf-edit-delta {
     display: block;
-    font-size: 11dp;
+    font-size: 12dp;
     margin-bottom: 4dp;
 }
 

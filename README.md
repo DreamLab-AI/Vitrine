@@ -67,6 +67,7 @@ Four backends are available. Set `config.training.mesh_method` to one of the val
 **Auto-selection policy** (`"auto"`): thin-structure hint → GaussianWrapping; CoMe available → CoMe; MILo available → MILo; fallback → TSDF.
 
 **Licensing note**: CoMe and GaussianWrapping have no formal LICENSE files as of 2026-05-26. Both are gated behind Docker build args (`INSTALL_COME=1`, `INSTALL_GAUSSIANWRAPPING=1`) and must not be included in commercial distribution images without legal review. See ADR-004 and ADR-005.
+Windows binaries are now available through the Lichtfeld Portal. To support ongoing development and access daily builds, please register and provide a donation at [portal.lichtfeld.io](https://portal.lichtfeld.io/). Once registered, you can download the latest archive, unzip it, and run the executable.
 
 **CLI flag notice**: CoMe and GaussianWrapping CLI flags are inferred from their upstream repositories and have not been verified against the released source. All script names and flag constants are defined as module-level constants in `come_extractor.py` and `gaussianwrapping_extractor.py` for easy correction once verified.
 
@@ -122,6 +123,22 @@ Tested on:
 | CPU | AMD Threadripper PRO 48-core |
 | RAM | 251 GB |
 | Storage | NVMe SSD |
+<p>
+  <a href="https://www.core11.eu/">
+    <img src="docs/media/core11_multi.svg" alt="Core 11" height="60">
+  </a>
+</p>
+
+<br>
+
+<p>
+  <a href="https://web.volinga.ai/">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="docs/media/volinga-dark.svg">
+      <img src="docs/media/volinga.svg" alt="Volinga" height="108">
+    </picture>
+  </a>
+</p>
 
 Minimum: single GPU with 12 GB VRAM (TSDF only; MILo, CoMe, and GaussianWrapping sidecars require a second GPU or sequential scheduling).
 

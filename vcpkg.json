@@ -1,7 +1,9 @@
 {
   "builtin-baseline": "c3867e714dd3a51c272826eea77267876517ed99",
   "dependencies": [
+    "cppzmq",
     "args",
+    "assimp",
     "boost-preprocessor",
     "boost-regex",
     {
@@ -9,14 +11,12 @@
       "features": [
         "avcodec",
         "avformat",
-        "swscale",
         "nvcodec",
+        "swscale",
         "x264"
       ]
     },
     "freetype",
-    "glad",
-    "sdl3",
     "glm",
     "gtest",
     {
@@ -24,14 +24,17 @@
       "features": [
         "docking-experimental",
         "freetype",
-        "opengl3-binding",
         "sdl3-binding"
       ]
     },
     "implot",
     "libarchive",
     "libwebp",
-    "nativefiledialog-extended",
+    "nanobind",
+    {
+      "name": "nativefiledialog-extended",
+      "platform": "windows | osx"
+    },
     "nlohmann-json",
     {
       "name": "openimageio",
@@ -39,22 +42,162 @@
         "webp"
       ]
     },
-    "spdlog",
-    "tbb",
-    "usd",
     {
       "name": "python3",
       "features": [
         "extensions"
       ]
     },
-    "nanobind",
-    "assimp",
     {
       "name": "rmlui",
       "features": [
         "svg"
       ]
+    },
+    {
+      "name": "sdl3",
+      "features": [
+        "vulkan"
+      ]
+    },
+    "spdlog",
+    "tbb",
+    "vulkan",
+    {
+      "name": "vulkan-loader",
+      "features": [
+        "xcb",
+        "xlib"
+      ],
+      "platform": "linux"
+    },
+    "vulkan-memory-allocator",
+    "volk",
+    {
+      "name": "glslang",
+      "features": [
+        "tools"
+      ]
+    },
+    "shader-slang",
+    "usd"
+  ],
+  "overrides": [
+    {
+      "name": "cppzmq",
+      "version": "4.11.0"
+    },
+    {
+      "name": "zeromq",
+      "version": "4.3.5#3"
+    },
+    {
+      "name": "args",
+      "version": "6.4.8"
+    },
+    {
+      "name": "boost-preprocessor",
+      "version": "1.90.0#1"
+    },
+    {
+      "name": "boost-regex",
+      "version": "1.90.0#1"
+    },
+    {
+      "name": "ffmpeg",
+      "version": "8.0.1#2"
+    },
+    {
+      "name": "freetype",
+      "version": "2.13.3"
+    },
+    {
+      "name": "sdl3",
+      "version": "3.4.2"
+    },
+    {
+      "name": "glm",
+      "version": "1.0.3"
+    },
+    {
+      "name": "gtest",
+      "version": "1.17.0#2"
+    },
+    {
+      "name": "imgui",
+      "version": "1.92.6"
+    },
+    {
+      "name": "implot",
+      "version": "0.17"
+    },
+    {
+      "name": "libarchive",
+      "version": "3.8.6"
+    },
+    {
+      "name": "libwebp",
+      "version": "1.6.0#2"
+    },
+    {
+      "name": "nativefiledialog-extended",
+      "version": "1.3.0"
+    },
+    {
+      "name": "nlohmann-json",
+      "version": "3.12.0#2"
+    },
+    {
+      "name": "openimageio",
+      "version": "3.0.9.1#3"
+    },
+    {
+      "name": "spdlog",
+      "version": "1.17.0"
+    },
+    {
+      "name": "tbb",
+      "version": "2022.3.0"
+    },
+    {
+      "name": "vulkan",
+      "version-date": "2023-12-17"
+    },
+    {
+      "name": "vulkan-memory-allocator",
+      "version": "3.3.0"
+    },
+    {
+      "name": "volk",
+      "version": "1.4.341.0"
+    },
+    {
+      "name": "usd",
+      "version": "26.3"
+    },
+    {
+      "name": "python3",
+      "version": "3.12.13"
+    },
+    {
+      "name": "nanobind",
+      "version": "2.12.0"
+    },
+    {
+      "name": "assimp",
+      "version": "6.0.4"
+    },
+    {
+      "name": "rmlui",
+      "version": "6.2"
+    },
+    {
+      "name": "glslang",
+      "version": "16.2.0"
+    },
+    {
+      "name": "shader-slang",
+      "version": "2026.5"
     }
   ]
 }

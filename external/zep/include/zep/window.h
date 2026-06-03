@@ -32,6 +32,9 @@ namespace Zep {
         int spanLineIndex = 0;                    // The index of this line in spans; might be more than buffer index
         NVec2f padding = NVec2f(1.0f, 1.0f);      // Padding above and below the line
         bool isSplitContinuation = false;
+        bool hasFoldPlaceholder = false;
+        ByteRange foldedByteRange;
+        long foldedLineCount = 0;
         NVec2f lineWidgetHeights;
         ZepFont* pFont = nullptr;
 
@@ -94,7 +97,9 @@ namespace Zep {
     // Clients should return the marker information if appropriate
     struct ToolTipMessage : public ZepMessage {
         ToolTipMessage(ZepBuffer* pBuff, const NVec2f& pos, const GlyphIterator& loc = GlyphIterator())
-            : ZepMessage(Msg::ToolTip, pos), pBuffer(pBuff), location(loc) {
+            : ZepMessage(Msg::ToolTip, pos),
+              pBuffer(pBuff),
+              location(loc) {
         }
 
         ZepBuffer* pBuffer;
@@ -120,6 +125,8 @@ namespace Zep {
         // Cursor
         virtual GlyphIterator GetBufferCursor();
         virtual void SetBufferCursor(GlyphIterator location);
+        virtual GlyphIterator BufferLocationFromWindowPoint(const NVec2f& point, bool clamp_to_text_region = false);
+        virtual void DrawSelectionPreview(const GlyphRange& range, const NVec4f& color);
         virtual void MoveCursorY(int yDistance, LineLocation clampLocation = LineLocation::LineLastNonCR);
         virtual NVec2i BufferToDisplay();
         virtual NRectf GetCursorRect();
@@ -164,6 +171,7 @@ namespace Zep {
         const SpanInfo& GetCursorLineInfo(long y);
 
         float ToWindowY(float pos) const;
+        float ToWindowX(float pos) const;
         float TipBoxShadowWidth() const;
 
         // Display
@@ -179,6 +187,7 @@ namespace Zep {
 
         NVec4f ModifyBackgroundColor(ThemeColor color) const;
         void GetCursorInfo(NVec2f& pos, NVec2f& size);
+        float GetCursorTextX(const SpanInfo& cursorBufferLine, long cursorColumn, NVec2f* size = nullptr) const;
 
         void PlaceToolTip(const NVec2f& pos, ToolTipPos location, uint32_t lineGap, const std::shared_ptr<RangeMarker> spMarker);
 
@@ -199,6 +208,10 @@ namespace Zep {
         std::shared_ptr<Region> m_numberRegion;        // Numbers
         std::shared_ptr<Region> m_indicatorRegion;     // Indicators (between numbers and text)
         std::shared_ptr<Region> m_vScrollRegion;       // Vertical scroller
+        std::shared_ptr<Region> m_scrollFooterRegion;  // Row containing the horizontal scroller
+        std::shared_ptr<Region> m_hScrollOffsetRegion; // Spacer so the bottom scroller lines up with text
+        std::shared_ptr<Region> m_hScrollRegion;       // Horizontal scroller
+        std::shared_ptr<Region> m_scrollCornerRegion;  // Fill under the vertical scroller
         std::shared_ptr<Region> m_expandingEditRegion; // Region containing the text sub-box
         Airline m_airline;
 
@@ -210,6 +223,7 @@ namespace Zep {
 
         // Scroll bar, if visible
         std::shared_ptr<Scroller> m_vScroller;
+        std::shared_ptr<Scroller> m_hScroller;
 
         // Wrap ; need horizontal offset for this to be turned on.
         // This will indeed stop lines wrapping though!  You just can't move to the far right and have
@@ -232,6 +246,7 @@ namespace Zep {
         // Setup of displayed lines
         std::vector<SpanInfo*> m_windowLines; // Information about the currently displayed lines
         float m_textOffsetPx = 0.0f;          // The Scroll position within the text
+        float m_textOffsetXPx = 0.0f;         // The horizontal scroll position within the text
         NVec2f m_textSizePx;                  // The calculated size of the buffer text, containing just the text
         NVec2i m_visibleLineIndices = {0, 0}; // Index of the line spans that are visible
         long m_maxDisplayLines = 0;

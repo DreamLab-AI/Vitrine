@@ -1372,7 +1372,7 @@ TEST_F(UndoHistoryTest, SceneResetClearsHistory) {
     lfs::vis::op::undoHistory().push(std::make_unique<CountingEntry>("before.clear", value, 1));
     ASSERT_EQ(lfs::vis::op::undoHistory().undoCount(), 1u);
 
-    scene_manager->clear();
+    EXPECT_TRUE(scene_manager->clear());
 
     EXPECT_EQ(lfs::vis::op::undoHistory().undoCount(), 0u);
     EXPECT_EQ(lfs::vis::op::undoHistory().redoCount(), 0u);

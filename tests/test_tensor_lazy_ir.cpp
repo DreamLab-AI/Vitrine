@@ -2,6 +2,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "core/tensor.hpp"
+#include "core/tensor/internal/cuda_stream_context.hpp"
 #include "core/tensor/internal/lazy_config.hpp"
 #include "core/tensor/internal/lazy_executor.hpp"
 #include "core/tensor/internal/lazy_ir.hpp"
@@ -9,6 +10,7 @@
 #include <gtest/gtest.h>
 #include <optional>
 #include <span>
+#include <torch/torch.h>
 #include <unordered_map>
 #include <vector>
 
@@ -47,6 +49,44 @@ namespace {
         int device_count = 0;
         const auto status = cudaGetDeviceCount(&device_count);
         return status == cudaSuccess && device_count > 0;
+    }
+
+    torch::Tensor create_torch_cuda_tensor(const std::vector<float>& host, int64_t rows, int64_t cols) {
+        auto cpu = torch::from_blob(
+                       const_cast<float*>(host.data()),
+                       {rows, cols},
+                       torch::TensorOptions().dtype(torch::kFloat32))
+                       .clone();
+        return cpu.to(torch::kCUDA);
+    }
+
+    std::vector<float> make_scaling_data(int64_t rows, int64_t cols) {
+        std::vector<float> host_scaling(static_cast<size_t>(rows * cols));
+        for (size_t i = 0; i < host_scaling.size(); ++i) {
+            host_scaling[i] = 0.05f + static_cast<float>((i % 97) + 1) * 0.01f;
+        }
+        return host_scaling;
+    }
+
+    void expect_tensor_matches_torch_vector(const std::vector<float>& actual,
+                                            const torch::Tensor& expected,
+                                            float atol = 1e-4f) {
+        auto expected_cpu = expected.to(torch::kCPU).contiguous().view({-1});
+        auto expected_accessor = expected_cpu.accessor<float, 1>();
+
+        ASSERT_EQ(actual.size(), static_cast<size_t>(expected_cpu.numel()));
+        size_t mismatches = 0;
+        for (size_t i = 0; i < actual.size(); ++i) {
+            if (std::abs(actual[i] - expected_accessor[i]) > atol) {
+                ++mismatches;
+                if (mismatches <= 8) {
+                    ADD_FAILURE() << "Mismatch at index " << i
+                                  << ": actual=" << actual[i]
+                                  << ", expected=" << expected_accessor[i];
+                }
+            }
+        }
+        EXPECT_EQ(mismatches, 0u);
     }
 
 } // namespace
@@ -1556,6 +1596,225 @@ TEST(TensorLazyRuntimeTest, FusedSegmentedReduceMeanGPU) {
     for (size_t i = 0; i < fused_result.size(); ++i) {
         EXPECT_NEAR(fused_result[i], unfused_result[i], std::abs(unfused_result[i]) * 1e-5f);
     }
+}
+
+TEST(TensorLazyRuntimeTest, ErankExpressionMatchesTorchOnInheritedStream) {
+    if (!has_cuda_device()) {
+        GTEST_SKIP() << "CUDA device required";
+    }
+
+    LazyTestGuard guard;
+    internal::lazy_executor_set_pointwise_fusion_override_for_testing(true);
+    internal::lazy_executor_reset_diagnostics_for_testing();
+
+    constexpr int64_t kRows = 65536;
+    constexpr int64_t kCols = 3;
+    auto host_scaling = make_scaling_data(kRows, kCols);
+
+    cudaStream_t stream = nullptr;
+    ASSERT_EQ(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), cudaSuccess);
+
+    Tensor scaling;
+    {
+        CUDAStreamGuard stream_guard(stream);
+        scaling = Tensor::from_vector(host_scaling, {static_cast<size_t>(kRows), static_cast<size_t>(kCols)}, Device::CUDA);
+    }
+    ASSERT_EQ(scaling.stream(), stream);
+
+    auto energy = scaling.square();
+    auto probabilities = energy.div(energy.sum({1}, true).add(1e-12f));
+    auto entropy = (probabilities.mul(probabilities.add(1e-12f).log())).sum({1}).neg();
+    auto erank = entropy.exp().reshape({static_cast<size_t>(kRows)});
+
+    EXPECT_EQ(erank.stream(), stream);
+
+    const auto diagnostics = internal::lazy_executor_diagnostics_snapshot_for_testing();
+    EXPECT_GT(diagnostics.fused_reduce_launches, 0u);
+
+    ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+    auto actual_cpu = erank.to(Device::CPU).to_vector();
+
+    auto torch_scaling = create_torch_cuda_tensor(host_scaling, kRows, kCols);
+    auto torch_energy = torch_scaling.square();
+    auto torch_probabilities = torch_energy / (torch_energy.sum(1, true) + 1e-12f);
+    auto torch_entropy = -(torch_probabilities * (torch_probabilities + 1e-12f).log()).sum(1);
+    auto torch_erank = torch_entropy.exp();
+    expect_tensor_matches_torch_vector(actual_cpu, torch_erank);
+
+    cudaStreamDestroy(stream);
+}
+
+TEST(TensorLazyRuntimeTest, FusedSegmentedSquareSumMatchesTorchOnInheritedStream) {
+    if (!has_cuda_device()) {
+        GTEST_SKIP() << "CUDA device required";
+    }
+
+    LazyTestGuard guard;
+    internal::lazy_executor_set_pointwise_fusion_override_for_testing(true);
+    internal::lazy_executor_reset_diagnostics_for_testing();
+
+    constexpr int64_t kRows = 65536;
+    constexpr int64_t kCols = 3;
+    auto host_scaling = make_scaling_data(kRows, kCols);
+
+    cudaStream_t stream = nullptr;
+    ASSERT_EQ(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), cudaSuccess);
+
+    Tensor scaling;
+    {
+        CUDAStreamGuard stream_guard(stream);
+        scaling = Tensor::from_vector(host_scaling, {static_cast<size_t>(kRows), static_cast<size_t>(kCols)}, Device::CUDA);
+    }
+    ASSERT_EQ(scaling.stream(), stream);
+
+    auto fused_sum = scaling.square().sum({1}, true);
+
+    EXPECT_EQ(fused_sum.stream(), stream);
+
+    const auto diagnostics = internal::lazy_executor_diagnostics_snapshot_for_testing();
+    EXPECT_GT(diagnostics.fused_reduce_launches, 0u);
+
+    ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+    auto actual_cpu = fused_sum.to(Device::CPU).to_vector();
+
+    auto torch_scaling = create_torch_cuda_tensor(host_scaling, kRows, kCols);
+    auto torch_sum = torch_scaling.square().sum(1, true);
+    expect_tensor_matches_torch_vector(actual_cpu, torch_sum);
+
+    cudaStreamDestroy(stream);
+}
+
+TEST(TensorLazyRuntimeTest, DeferredMaterializationKeepsActualExecutionStream) {
+    if (!has_cuda_device()) {
+        GTEST_SKIP() << "CUDA device required";
+    }
+
+    LazyTestGuard guard;
+    internal::lazy_executor_set_size_heuristic_override_for_testing(false);
+
+    cudaStream_t producer = nullptr;
+    cudaStream_t consumer = nullptr;
+    ASSERT_EQ(cudaStreamCreateWithFlags(&producer, cudaStreamNonBlocking), cudaSuccess);
+    ASSERT_EQ(cudaStreamCreateWithFlags(&consumer, cudaStreamNonBlocking), cudaSuccess);
+
+    Tensor base;
+    {
+        CUDAStreamGuard producer_guard(producer);
+        base = Tensor::ones({8192}, Device::CUDA, DataType::Float32);
+    }
+    ASSERT_EQ(base.stream(), producer);
+
+    Tensor deferred = base.add(2.0f);
+    ASSERT_TRUE(deferred.has_lazy_expr());
+    EXPECT_EQ(deferred.stream(), producer);
+
+    {
+        CUDAStreamGuard consumer_guard(consumer);
+        ASSERT_NE(deferred.ptr<float>(), nullptr);
+        EXPECT_EQ(deferred.stream(), consumer);
+    }
+
+    ASSERT_EQ(cudaStreamSynchronize(consumer), cudaSuccess);
+    auto values = deferred.to(Device::CPU).to_vector();
+    ASSERT_EQ(values.size(), 8192u);
+    EXPECT_FLOAT_EQ(values.front(), 3.0f);
+    EXPECT_FLOAT_EQ(values.back(), 3.0f);
+
+    cudaStreamDestroy(consumer);
+    cudaStreamDestroy(producer);
+}
+
+TEST(TensorLazyRuntimeTest, DeferredViewChainPreservesSourceStreamHint) {
+    if (!has_cuda_device()) {
+        GTEST_SKIP() << "CUDA device required";
+    }
+
+    LazyTestGuard guard;
+    internal::lazy_executor_set_size_heuristic_override_for_testing(false);
+
+    cudaStream_t stream = nullptr;
+    ASSERT_EQ(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), cudaSuccess);
+
+    Tensor base;
+    {
+        CUDAStreamGuard stream_guard(stream);
+        base = Tensor::ones({2, 3}, Device::CUDA, DataType::Float32);
+    }
+    ASSERT_EQ(base.stream(), stream);
+
+    std::vector<int> axes = {1, 0};
+    Tensor view_chain = base.add(2.0f)
+                            .reshape({3, 2})
+                            .permute(std::span<const int>(axes))
+                            .slice(1, 0, 2);
+
+    ASSERT_TRUE(view_chain.has_lazy_expr());
+    EXPECT_EQ(view_chain.stream(), stream);
+
+    ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+    auto values = view_chain.to(Device::CPU).to_vector();
+    ASSERT_EQ(values.size(), 4u);
+    for (float value : values) {
+        EXPECT_FLOAT_EQ(value, 3.0f);
+    }
+
+    cudaStreamDestroy(stream);
+}
+
+TEST(TensorLazyRuntimeTest, DeferredHintedChainWaitsForProducerWhenConsumedWithoutGuard) {
+    if (!has_cuda_device()) {
+        GTEST_SKIP() << "CUDA device required";
+    }
+
+    LazyTestGuard guard;
+    internal::lazy_executor_set_size_heuristic_override_for_testing(false);
+
+    cudaStream_t producer = nullptr;
+    cudaStream_t hinted_consumer = nullptr;
+    cudaEvent_t gate = nullptr;
+    ASSERT_EQ(cudaStreamCreateWithFlags(&producer, cudaStreamNonBlocking), cudaSuccess);
+    ASSERT_EQ(cudaStreamCreateWithFlags(&hinted_consumer, cudaStreamNonBlocking), cudaSuccess);
+    ASSERT_EQ(cudaEventCreateWithFlags(&gate, cudaEventDisableTiming), cudaSuccess);
+
+    Tensor base;
+    {
+        CUDAStreamGuard producer_guard(producer);
+        base = Tensor::zeros({8192}, Device::CUDA, DataType::Float32);
+    }
+    ASSERT_EQ(base.stream(), producer);
+
+    ASSERT_EQ(cudaStreamWaitEvent(producer, gate, 0), cudaSuccess);
+    base.fill_(1.0f, producer);
+
+    Tensor bias;
+    {
+        CUDAStreamGuard hint_guard(hinted_consumer);
+        bias = Tensor::full({8192}, 2.0f, Device::CUDA, DataType::Float32);
+    }
+    ASSERT_EQ(bias.stream(), hinted_consumer);
+
+    Tensor deferred;
+    {
+        CUDAStreamGuard hint_guard(hinted_consumer);
+        deferred = base.add(bias);
+    }
+    ASSERT_TRUE(deferred.has_lazy_expr());
+    ASSERT_EQ(deferred.stream(), hinted_consumer);
+
+    Tensor result = deferred.mul(3.0f);
+    EXPECT_EQ(result.stream(), hinted_consumer);
+
+    ASSERT_EQ(cudaEventRecord(gate), cudaSuccess);
+    ASSERT_EQ(cudaStreamSynchronize(result.stream()), cudaSuccess);
+
+    auto values = result.to(Device::CPU).to_vector();
+    ASSERT_EQ(values.size(), 8192u);
+    EXPECT_FLOAT_EQ(values.front(), 9.0f);
+    EXPECT_FLOAT_EQ(values.back(), 9.0f);
+
+    ASSERT_EQ(cudaEventDestroy(gate), cudaSuccess);
+    cudaStreamDestroy(hinted_consumer);
+    cudaStreamDestroy(producer);
 }
 
 TEST(TensorLazyRuntimeTest, FusedSegmentedReduceMaxGPU) {

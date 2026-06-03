@@ -4,7 +4,8 @@
 
 #pragma once
 
-#include "gui/rmlui/rml_fbo.hpp"
+#include "gui/rmlui/rmlui_manager.hpp"
+
 #include <RmlUi/Core/DataModelHandle.h>
 #include <cstddef>
 #include <cstdint>
@@ -23,8 +24,6 @@ namespace lfs::vis {
     struct Theme;
 }
 namespace lfs::vis::gui {
-
-    class RmlUIManager;
 
     struct TabSnapshot {
         std::string id;
@@ -49,11 +48,13 @@ namespace lfs::vis::gui {
         void shutdown();
 
         void processInput(const RightPanelLayout& layout, const PanelInputState& input);
+        void reloadResources();
         void render(const RightPanelLayout& layout,
                     const std::vector<TabSnapshot>& tabs,
                     const std::string& active_tab,
                     float screen_x, float screen_y,
                     int screen_w, int screen_h);
+        void blurFocus();
 
         bool wantsInput() const { return wants_input_; }
         bool wantsKeyboard() const { return wants_keyboard_; }
@@ -68,7 +69,6 @@ namespace lfs::vis::gui {
 
     private:
         bool updateTheme();
-        std::string generateThemeRCSS(const lfs::vis::Theme& t) const;
         bool syncTabData(const std::vector<TabSnapshot>& tabs, const std::string& active_tab);
         bool syncTabScrollState();
         void syncTabNavigation();
@@ -85,7 +85,6 @@ namespace lfs::vis::gui {
         Rml::Element* tab_strip_viewport_el_ = nullptr;
         Rml::Element* tab_separator_el_ = nullptr;
 
-        RmlFBO fbo_;
         Rml::DataModelHandle tab_model_;
         std::vector<TabSnapshot> tabs_;
         Rml::String active_tab_;
@@ -101,7 +100,6 @@ namespace lfs::vis::gui {
         bool wants_keyboard_ = false;
 
         bool splitter_dragging_ = false;
-        float drag_start_y_ = 0;
 
         bool resize_dragging_ = false;
 
@@ -116,6 +114,7 @@ namespace lfs::vis::gui {
         float last_splitter_h_ = -1.0f;
         bool input_dirty_ = false;
         bool last_over_interactive_ = false;
+        CachedVulkanContextRender direct_cache_;
     };
 
 } // namespace lfs::vis::gui

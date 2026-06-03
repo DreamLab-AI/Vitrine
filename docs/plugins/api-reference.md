@@ -82,7 +82,8 @@ import lichtfeld as lf
 | `template` | `str \| os.PathLike[str]` | `""` | Retained RML template. Use an absolute path for plugin-local files |
 | `style` | `str` | `""` | Inline RCSS appended to the retained document |
 | `height_mode` | `lf.ui.PanelHeightMode` | `lf.ui.PanelHeightMode.FILL` | `FILL` or `CONTENT` for retained panels |
-| `update_interval_ms` | `int` | `100` | Cadence for retained/hybrid `on_update()` work |
+| `update_policy` | `str` | `"interval"` | Set to `"dirty"` or `"reactive"` for retained panels that update from explicit model/store invalidation |
+| `update_interval_ms` | `int` | `100` | Fallback cadence for retained/hybrid `on_update()` work. Prefer `update_policy = "dirty"` for data-driven panels |
 
 | Method | Returns | Description |
 |---|---|---|
@@ -91,7 +92,7 @@ import lichtfeld as lf
 | `on_bind_model(self, ctx)` | `None` | Bind retained data models before document load |
 | `on_mount(self, doc)` | `None` | Called once after the retained document mounts |
 | `on_unmount(self, doc)` | `None` | Called before the retained document is destroyed |
-| `on_update(self, doc)` | `None \| bool` | Periodic retained update. Return `True` to mark content dirty |
+| `on_update(self, doc)` | `None \| bool` | Retained update hook. With `update_policy = "interval"` it runs on the interval; with `"dirty"` it runs only after explicit invalidation, scene changes, or update requests. Return `True` to mark content dirty |
 | `on_scene_changed(self, doc)` | `None` | Called when the active scene generation changes |
 
 Registering a panel with the same `id` as an existing panel replaces it (see [Panel replacement](getting-started.md#panel-replacement)).
@@ -101,6 +102,99 @@ Registering a panel with the same `id` as an existing panel replaces it (see [Pa
 Panel definitions are validated during `lf.register_class()`. Invalid enum values, removed legacy field names, unsupported retained features on `VIEWPORT_OVERLAY`, or conflicting embedded-panel fields raise `ValueError`, `TypeError`, or `AttributeError`.
 
 The panel API is strict in v1: use the enum values above, not string literals.
+
+### Reactive retained panels
+
+For retained RML panels, prefer dirty-policy updates over timer polling. A dirty-policy panel runs `on_update()` only when scene state changes, document/model state is marked dirty, or an explicit update is requested.
+
+```python
+import lichtfeld as lf
+from lfs_plugins.ui import RuntimeState, PanelStateBinding
+
+
+class MyPanel(lf.ui.Panel):
+    id = "my_plugin.panel"
+    label = "My Panel"
+    template = "/absolute/path/to/main_panel.rml"
+    update_policy = "dirty"
+
+    def __init__(self):
+        self._handle = None
+        self._store_binding = PanelStateBinding()
+        self._title = "No scene"
+
+    def on_bind_model(self, ctx):
+        model = ctx.create_data_model("my_plugin_panel")
+        if model is None:
+            return
+        model.bind_func("title", lambda: self._title)
+        self._handle = model.get_handle()
+
+    def on_mount(self, doc):
+        self._store_binding.set_handle(self._handle).watch(
+            RuntimeState.scene_generation,
+            RuntimeState.selection_generation,
+            refresh=self._refresh_title,
+            dirty="title",
+            immediate=True,
+        )
+
+    def on_unmount(self, doc):
+        self._store_binding.close()
+        doc.remove_data_model("my_plugin_panel")
+        self._handle = None
+
+    def _refresh_title(self):
+        scene = lf.get_scene()
+        self._title = getattr(scene, "name", "Scene") if scene else "No scene"
+```
+
+Use `PanelStateBinding` for normal panel subscriptions. It keeps subscription lifetime and RML invalidation together:
+
+| API | Purpose |
+|---|---|
+| `RuntimeState.<field>.value` | Read or publish a current app value |
+| `RuntimeState.<field>.subscribe(callback)` | Low-level subscription, mostly for non-panel code |
+| `PanelStateBinding(handle).watch(...)` | Preferred retained-panel subscription helper |
+| `dirty=None` | Request `on_update()` without dirtying every bound variable |
+| `dirty="field"` | Dirty one data-model variable |
+| `dirty=("a", "b")` | Dirty several data-model variables |
+| `dirty="*"` | Dirty the full data model |
+| `batch_updates()` | Publish several store fields atomically |
+
+Store fields currently exposed to plugins:
+
+```python
+RuntimeState.iteration
+RuntimeState.total_iterations
+RuntimeState.loss
+RuntimeState.num_gaussians
+RuntimeState.max_gaussians
+RuntimeState.training_running
+RuntimeState.training_state
+RuntimeState.trainer_loaded
+RuntimeState.eval_psnr
+RuntimeState.eval_ssim
+RuntimeState.scene_generation
+RuntimeState.selection_generation
+RuntimeState.fps
+RuntimeState.mode_text
+RuntimeState.active_tool
+RuntimeState.active_submode
+RuntimeState.transform_space
+RuntimeState.pivot_mode
+RuntimeState.import_overlay_state
+RuntimeState.video_export_overlay_state
+RuntimeState.export_progress_state
+RuntimeState.mesh2splat_state
+RuntimeState.splat_simplify_state
+RuntimeState.scripts_generation
+RuntimeState.language_generation
+```
+
+`AppState`, `AppStore`, and `NativeAppStore` remain as compatibility aliases for older plugins. New plugin code should import `RuntimeState` from `lfs_plugins.ui`.
+
+Old Python UI hooks still compile, but hook registration is deprecated for external plugins. Use retained RML data models plus `RuntimeState` subscriptions for new UI.
 
 ### Panel spaces
 
@@ -129,7 +223,7 @@ Built-in template aliases:
 | Full custom retained UI | `template` | Use an absolute path for plugin-local `.rml` |
 | Hybrid panel | `template` plus `draw(ui)` | Render immediate content into `<div id="im-root"></div>` |
 
-When a plugin-local template file such as `main_panel.rml` is present, LichtFeld automatically loads a sibling `main_panel.rcss` stylesheet if it exists.
+When a plugin-local template file such as `main_panel.rml` is present, LichtFeld automatically loads a sibling `main_panel.rcss` stylesheet if it exists. A sibling `main_panel.theme.rcss` file is also loaded for palette-dependent overrides.
 
 ---
 
@@ -461,6 +555,42 @@ from lfs_plugins.tools import ToolRegistry
 | `set_active(tool_id)`      | `bool`               | Activate a tool                          |
 | `get_active()`             | `Optional[ToolDef]`  | Get active tool                          |
 | `get_active_id()`          | `str`                | Get active tool ID                       |
+
+---
+
+## Native Transform Gizmos
+
+| API | Returns | Description |
+|-----|---------|-------------|
+| `lf.TransformGizmo(operation="translate", matrix=[], id="")` | `TransformGizmo` | Reusable native TRS gizmo |
+| `lf.TranslationGizmo(matrix=[], id="")` | `TransformGizmo` | Translate handle |
+| `lf.RotationGizmo(matrix=[], id="")` | `TransformGizmo` | Rotate handle |
+| `lf.ScaleGizmo(matrix=[], id="")` | `TransformGizmo` | Scale handle |
+| `lf.get_transform_gizmo_ids()` | `list[str]` | Attached transform gizmo IDs |
+| `lf.has_transform_gizmos()` | `bool` | Whether any native TRS gizmos are attached |
+| `lf.clear_transform_gizmos()` | `None` | Detach all native TRS gizmos |
+
+`TransformGizmo` properties:
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `id` | `str` | Stable ID |
+| `operation` | `str` | `"translate"`, `"rotate"`, or `"scale"` |
+| `space` | `str` | `"local"` or `"world"` |
+| `matrix` | `list[float]` | 16 floats, column-major |
+| `translation` | `list[float]` | Translation component |
+| `visible`, `enabled`, `input_enabled` | `bool` | Runtime draw/input controls |
+| `active`, `hovered`, `changed` | `bool` | Last-frame interaction state |
+| `snap` | `bool` | Enable snapping |
+| `translate_snap`, `rotate_snap_degrees`, `scale_snap_ratio` | `float` | Per-operation snap settings |
+
+| Method | Description |
+|--------|-------------|
+| `attach()` | Draw without an automatic target |
+| `attach_to_callbacks(getter, setter)` | Bind to arbitrary Python transform callbacks |
+| `attach_to_node(node_name, visualizer_world=True)` | Bind to a scene node |
+| `detach()` | Remove from viewport drawing |
+| `set_on_begin(callback)`, `set_on_change(callback)`, `set_on_end(callback)` | Drag lifecycle callbacks |
 
 ---
 
@@ -876,7 +1006,7 @@ ui.image_texture(tex, (256, 256))
 
 ### DynamicTexture
 
-GPU tensor to OpenGL texture bridge via CUDA-GL interop.
+GPU tensor to UI texture bridge. In the Vulkan viewer this uses the backend's opaque ImGui texture handle.
 
 ```python
 tex = lf.ui.DynamicTexture()          # Empty
@@ -886,14 +1016,14 @@ tex = lf.ui.DynamicTexture(tensor)    # From tensor
 | Method / Property  | Returns              | Description                                    |
 |--------------------|----------------------|------------------------------------------------|
 | `update(tensor)`   | `None`               | Upload `[H, W, 3\|4]` tensor (auto-converts CPU→CUDA, uint8→float32) |
-| `destroy()`        | `None`               | Release GL resources                           |
-| `id`               | `int`                | OpenGL texture ID                              |
+| `destroy()`        | `None`               | Release UI texture resources                   |
+| `id`               | `int`                | Opaque ImGui backend texture handle            |
 | `width`            | `int`                | Current width in pixels                        |
 | `height`           | `int`                | Current height in pixels                       |
 | `valid`            | `bool`               | `True` if texture is initialized               |
 | `uv1`             | `tuple[float, float]` | UV scale factors for power-of-2 padding        |
 
-Calling `update()` with a different resolution automatically recreates the GL texture. Textures are freed on plugin unload via `lf.ui.free_plugin_textures(name)`.
+Calling `update()` with a different resolution automatically recreates the backend texture. Textures are freed on plugin unload via `lf.ui.free_plugin_textures(name)`.
 
 ### Drag & Drop
 
@@ -1291,6 +1421,8 @@ Accessible via `scene.combined_model()` (all nodes merged) or `node.splat_data()
 | `@lf.on_post_step`          | Called after each step               |
 | `@lf.on_training_end`       | Called when training ends            |
 
+Callbacks registered with `lf.on_*` receive one positional hook payload. If you do not need it, declare the parameter as `_hook`.
+
 ### Rendering
 
 | Function                                              | Returns          | Description                |
@@ -1298,7 +1430,8 @@ Accessible via `scene.combined_model()` (all nodes merged) or `node.splat_data()
 | `get_current_view()`                                  | `ViewInfo`       | Current camera view        |
 | `get_viewport_render()`                               | `ViewportRender` | Current viewport image     |
 | `capture_viewport()`                                  | `ViewportRender` | Capture for async use      |
-| `render_view(rotation, translation, w, h, fov=60, bg=None)` | `Tensor`  | Render from camera         |
+| `render_view(rotation, translation, w, h, fov=60, bg=None)` | `Tensor`  | Render active visualizer scene from camera |
+| `render_view_u8(rotation, translation, w, h, fov=60, bg=None)` | `Tensor`  | Render active visualizer scene as CPU uint8 RGB |
 | `compute_screen_positions(rotation, translation, w, h, fov=60)` | `Tensor` | [N, 2] screen positions |
 | `get_render_settings()`                               | `RenderSettings` | Current render settings    |
 | `get_render_mode()` / `set_render_mode(mode)`         | `RenderMode`     | Render mode                |
@@ -1357,8 +1490,9 @@ lf.undo.stack() -> dict
 | `lf.ui.set_language(lang_code)`             | `None`           | Set UI language            |
 | `lf.ui.get_current_language()`              | `str`            | Active language code       |
 | `lf.ui.get_languages()`                     | `list[tuple[str, str]]` | Available languages  |
-| `lf.ui.set_theme(name)`                     | `None`           | Theme switch (`dark`/`light`) |
-| `lf.ui.get_theme()`                         | `str`            | Active theme name          |
+| `lf.ui.set_theme(name)`                     | `None`           | Theme switch by stable theme id |
+| `lf.ui.get_theme()`                         | `str`            | Active stable theme id     |
+| `lf.ui.themes()`                            | `list[dict]`     | Available theme presets    |
 | `lf.ui.set_panel_enabled(panel_id, enabled)`  | `None`           | Toggle panel by id         |
 | `lf.ui.is_panel_enabled(panel_id)`            | `bool`           | Panel enabled state        |
 | `lf.ui.get_panel_names(space=lf.ui.PanelSpace.FLOATING)` | `list[str]` | Panel ids for a space |
@@ -1543,7 +1677,7 @@ from lfs_plugins.icon_manager import get_icon, get_ui_icon, get_scene_icon, get_
 | `get_scene_icon(name)`                      | `int`   | Load `assets/icon/scene/{name}.png`      |
 | `get_plugin_icon(name, plugin_path, plugin_name)` | `int` | Load `{plugin_path}/icons/{name}.png` with fallback |
 
-All return OpenGL texture ID (0 on failure). Icons are cached by C++.
+All return opaque UI texture handles (0 on failure). Icons are cached by C++.
 
 Direct loading:
 ```python

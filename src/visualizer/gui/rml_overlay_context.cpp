@@ -1,15 +1,12 @@
 /* SPDX-FileCopyrightText: 2025 LichtFeld Studio Authors
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
-// clang-format off
-#include <glad/glad.h>
-// clang-format on
-
 #include "gui/rml_overlay_context.hpp"
 #include "core/logger.hpp"
+#include "gui/rmlui/rml_document_utils.hpp"
 #include "gui/rmlui/rml_theme.hpp"
 #include "gui/rmlui/rmlui_manager.hpp"
-#include "gui/rmlui/rmlui_render_interface.hpp"
+#include "gui/rmlui/sdl_rml_key_mapping.hpp"
 #include "internal/resource_paths.hpp"
 #include "theme/theme.hpp"
 
@@ -27,7 +24,6 @@ namespace lfs::vis::gui {
     }
 
     RmlOverlayContext::~RmlOverlayContext() {
-        fbo_.destroy();
         if (ctx_ && mgr_)
             mgr_->destroyContext(context_name_);
     }
@@ -44,7 +40,7 @@ namespace lfs::vis::gui {
 
         try {
             const auto full_path = lfs::vis::getAssetPath(rml_path_);
-            doc_ = ctx_->LoadDocument(full_path.string());
+            doc_ = rml_documents::loadDocument(ctx_, full_path);
             if (doc_) {
                 doc_->Show();
             } else {
@@ -77,30 +73,7 @@ namespace lfs::vis::gui {
             base_rcss_ = rml_theme::loadBaseRCSS(rcss_path);
         }
 
-        rml_theme::applyTheme(doc_, base_rcss_, rml_theme::generateAllThemeMedia([this](const auto& th) { return generateThemeRCSS(th); }));
-    }
-
-    std::string RmlOverlayContext::generateThemeRCSS(const lfs::vis::Theme& t) const {
-        const auto& p = t.palette;
-
-        using rml_theme::colorToRml;
-        using rml_theme::colorToRmlAlpha;
-
-        const auto surface = colorToRmlAlpha(p.surface, 0.95f);
-        const auto border = colorToRmlAlpha(p.border, 0.4f);
-        const auto text = colorToRml(p.text);
-        const auto text_dim = colorToRml(p.text_dim);
-        const auto primary = colorToRml(p.primary);
-        const int rounding = static_cast<int>(t.sizes.window_rounding);
-
-        return std::format(
-            ".overlay-panel {{ background-color: {}; border-width: 1dp; border-color: {}; "
-            "border-radius: {}dp; }}\n"
-            ".overlay-text {{ color: {}; }}\n"
-            ".overlay-text-dim {{ color: {}; }}\n"
-            ".overlay-primary {{ color: {}; }}\n",
-            surface, border, rounding,
-            text, text_dim, primary);
+        rml_theme::applyTheme(doc_, base_rcss_, rml_theme::loadBaseRCSS("rmlui/overlay_context.theme.rcss"));
     }
 
     void RmlOverlayContext::update() {
@@ -115,6 +88,8 @@ namespace lfs::vis::gui {
 
     void RmlOverlayContext::render(const float x, const float y, const float w, const float h,
                                    const int screen_w, const int screen_h) {
+        (void)screen_w;
+        (void)screen_h;
         if (!ctx_ || !doc_)
             return;
 
@@ -124,32 +99,13 @@ namespace lfs::vis::gui {
         if (px_w <= 0 || px_h <= 0)
             return;
 
-        if (!mgr_->shouldDeferFboUpdate(fbo_)) {
-            if (px_w != width_ || px_h != height_)
-                resize(px_w, px_h);
+        if (!mgr_ || !mgr_->getVulkanRenderInterface())
+            return;
 
-            fbo_.ensure(px_w, px_h);
-            if (!fbo_.valid())
-                return;
-
-            auto* render_iface = mgr_->getRenderInterface();
-            assert(render_iface);
-            render_iface->SetViewport(px_w, px_h);
-
-            GLint prev_fbo = 0;
-            fbo_.bind(&prev_fbo);
-            render_iface->SetTargetFramebuffer(fbo_.fbo());
-
-            render_iface->BeginFrame();
-            ctx_->Render();
-            render_iface->EndFrame();
-
-            render_iface->SetTargetFramebuffer(0);
-            fbo_.unbind(prev_fbo);
-        }
-
-        if (fbo_.valid())
-            fbo_.blitToScreen(x, y, w, h, screen_w, screen_h);
+        if (px_w != width_ || px_h != height_)
+            resize(px_w, px_h);
+        ctx_->Update();
+        mgr_->queueVulkanContext(ctx_, x, y, true, true, x, y, x + w, y + h);
     }
 
     void RmlOverlayContext::forwardMouseInput(const PanelInputState& input,
@@ -160,16 +116,19 @@ namespace lfs::vis::gui {
         const float local_x = input.mouse_x - overlay_x;
         const float local_y = input.mouse_y - overlay_y;
 
-        ctx_->ProcessMouseMove(static_cast<int>(local_x), static_cast<int>(local_y), 0);
+        const int mods = sdlModsToRml(input.key_ctrl, input.key_shift,
+                                      input.key_alt, input.key_super);
+
+        ctx_->ProcessMouseMove(static_cast<int>(local_x), static_cast<int>(local_y), mods);
 
         if (input.mouse_clicked[0])
-            ctx_->ProcessMouseButtonDown(0, 0);
+            ctx_->ProcessMouseButtonDown(0, mods);
         if (!input.mouse_down[0])
-            ctx_->ProcessMouseButtonUp(0, 0);
+            ctx_->ProcessMouseButtonUp(0, mods);
         if (input.mouse_clicked[1])
-            ctx_->ProcessMouseButtonDown(1, 0);
+            ctx_->ProcessMouseButtonDown(1, mods);
         if (!input.mouse_down[1])
-            ctx_->ProcessMouseButtonUp(1, 0);
+            ctx_->ProcessMouseButtonUp(1, mods);
     }
 
     Rml::Element* RmlOverlayContext::getElementById(const std::string& id) {
@@ -207,8 +166,7 @@ namespace lfs::vis::gui {
             el->SetClass("visible", false);
     }
 
-    void RmlOverlayContext::destroyGLResources() {
-        fbo_.destroy();
+    void RmlOverlayContext::releaseRendererResources() {
     }
 
 } // namespace lfs::vis::gui

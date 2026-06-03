@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "core/data_loading_service.hpp"
+#include "core/checkpoint_format.hpp"
 #include "core/logger.hpp"
 #include "core/parameter_manager.hpp"
 #include "core/path_utils.hpp"
@@ -62,18 +63,25 @@ namespace lfs::vis {
         }
 
         if (scene_manager_->getContentType() == SceneManager::ContentType::Dataset) {
-            scene_manager_->clear();
+            if (!scene_manager_->clear()) {
+                return;
+            }
         }
 
-        if (scene_manager_->getContentType() == SceneManager::ContentType::SplatFiles) {
-            const std::string name = lfs::core::path_to_utf8(path.stem());
-            scene_manager_->addSplatFile(path, name);
-            return;
-        }
+        try {
+            if (scene_manager_->getContentType() == SceneManager::ContentType::SplatFiles) {
+                const std::string name = lfs::core::path_to_utf8(path.stem());
+                scene_manager_->addSplatFile(path, name);
+                return;
+            }
 
-        // First import into an empty scene must take the full load path so SceneLoaded,
-        // application-scene binding, and UI state all refresh together.
-        scene_manager_->loadSplatFile(path);
+            // First import into an empty scene must take the full load path so SceneLoaded,
+            // application-scene binding, and UI state all refresh together.
+            scene_manager_->loadSplatFile(path);
+        } catch (const std::exception& e) {
+            LOG_ERROR("Failed to load {}: {}", lfs::core::path_to_utf8(path), e.what());
+            lfs::core::events::state::SplatFileLoadFailed{.path = path, .error = e.what()}.emit();
+        }
     }
 
     void DataLoadingService::handleLoadCheckpointForTrainingCommand(
@@ -152,7 +160,7 @@ namespace lfs::vis {
         } catch (const std::exception& e) {
             std::string error_msg = std::format("Failed to load PLY: {}", e.what());
             LOG_ERROR("{} (Path: {})", error_msg, lfs::core::path_to_utf8(path));
-            throw std::runtime_error(error_msg);
+            return std::unexpected(error_msg);
         }
     }
 
@@ -173,7 +181,7 @@ namespace lfs::vis {
         } catch (const std::exception& e) {
             std::string error_msg = std::format("Failed to load SOG: {}", e.what());
             LOG_ERROR("{} (Path: {})", error_msg, lfs::core::path_to_utf8(path));
-            throw std::runtime_error(error_msg);
+            return std::unexpected(error_msg);
         }
     }
 
@@ -197,7 +205,7 @@ namespace lfs::vis {
         } catch (const std::exception& e) {
             std::string error_msg = std::format("Failed to load splat file: {}", e.what());
             LOG_ERROR("{} (Path: {})", error_msg, lfs::core::path_to_utf8(path));
-            throw std::runtime_error(error_msg);
+            return std::unexpected(error_msg);
         }
     }
 
@@ -273,11 +281,15 @@ namespace lfs::vis {
         return scene_manager_->loadDataset(path, params_);
     }
 
-    void DataLoadingService::clearScene() {
+    bool DataLoadingService::clearScene() {
         try {
             LOG_DEBUG("Clearing scene");
-            scene_manager_->clear();
+            if (!scene_manager_->clear()) {
+                LOG_WARN("Scene clear request was rejected");
+                return false;
+            }
             LOG_INFO("Scene cleared");
+            return true;
         } catch (const std::exception& e) {
             LOG_ERROR("Failed to clear scene: {}", e.what());
             throw std::runtime_error(std::format("Failed to clear scene: {}", e.what()));
@@ -290,14 +302,21 @@ namespace lfs::vis {
         const std::filesystem::path& output_path) {
         LOG_TIMER("LoadCheckpointForTraining");
         try {
-            // Override dataset/output paths if provided by user
+            // Load checkpoint params first to preserve init_path and other settings
+            auto checkpoint_params_result = lfs::core::load_checkpoint_params(checkpoint_path);
             lfs::core::param::TrainingParameters params;
+            if (checkpoint_params_result) {
+                params = *checkpoint_params_result;
+            }
+            // Override dataset/output paths if provided by user
             if (!dataset_path.empty()) {
                 params.dataset.data_path = dataset_path;
             }
             if (!output_path.empty()) {
                 params.dataset.output_path = output_path;
             }
+            // Update our stored params so getParameters() returns checkpoint params
+            params_ = params;
             scene_manager_->loadCheckpointForTraining(checkpoint_path, params);
             return {};
         } catch (const std::exception& e) {

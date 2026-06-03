@@ -5,8 +5,11 @@
 #pragma once
 
 #include "core/export.hpp"
+#include "core/mesh2splat.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cctype>
 #include <expected>
 #include <filesystem>
 #include <string>
@@ -38,6 +41,19 @@ namespace lfs::core {
         inline constexpr std::string_view kStrategyMNRFLegacy = "mnrf";
         inline constexpr std::string_view kStrategyLFSLegacy = "lfs";
         inline constexpr std::string_view kStrategyIGSPlus = "igs+";
+
+        [[nodiscard]] inline std::filesystem::path default_dataset_output_path(
+            const std::filesystem::path& dataset_path) {
+            auto base_path = dataset_path;
+            auto ext = dataset_path.extension().string();
+            std::transform(ext.begin(), ext.end(), ext.begin(), [](const unsigned char c) {
+                return static_cast<char>(std::tolower(c));
+            });
+            if (ext == ".json") {
+                base_path = dataset_path.parent_path();
+            }
+            return base_path / "output";
+        }
 
         [[nodiscard]] inline constexpr std::string_view canonical_strategy_name(const std::string_view strategy) noexcept {
             if (strategy == kStrategyMCMC)
@@ -89,6 +105,7 @@ namespace lfs::core {
             float init_opacity = 0.5f;
             float init_scaling = 0.1f;
             int max_cap = 1000000;
+
             std::vector<size_t> eval_steps = {7'000, 30'000};  // Steps to evaluate the model
             std::vector<size_t> save_steps = {7'000, 30'000};  // Steps to save the model
             bool bg_modulation = false;                        // Enable sinusoidal background modulation
@@ -97,7 +114,6 @@ namespace lfs::core {
             bool headless = false;                             // Disable visualization during training
             bool auto_train = false;                           // Start training immediately on startup
             bool no_splash = false;                            // Skip splash screen on startup
-            bool no_interop = false;                           // Disable CUDA-GL interop (use CPU fallback)
             bool debug_python = false;                         // Start debugpy listener for plugin debugging
             int debug_python_port = 5678;                      // Port for debugpy listener
             std::string strategy = std::string(kStrategyMRNF); // Optimization strategy: mcmc, mrnf, igs+.
@@ -135,7 +151,7 @@ namespace lfs::core {
             std::filesystem::path ppisp_sidecar_path = {};
             bool ppisp_use_controller = false;
             bool ppisp_freeze_gaussians_on_distill = true;
-            int ppisp_controller_activation_step = -1; // Negative values use the default tail schedule
+            int ppisp_controller_activation_step = -1; // Negative values use the last-5000-steps default schedule
             float ppisp_controller_lr = 2e-3f;
 
             // Shared densification thresholds and reset controls
@@ -167,7 +183,7 @@ namespace lfs::core {
             int init_num_pts = 100'000; // Number of random points to initialize
             float init_extent = 3.0f;   // Extent of random point cloud
 
-            // Tile mode for memory-efficient training (1=1 tile, 2=2 tiles, 4=4 tiles)
+            // Tile mode for memory-efficient 3DGUT training (ignored for 3DGS/FastGS)
             int tile_mode = 1;
 
             // Sparsity optimization parameters
@@ -181,7 +197,8 @@ namespace lfs::core {
             void scale_steps(float ratio);
             void apply_step_scaling();
             void remove_step_scaling();
-            [[nodiscard]] int resolved_ppisp_controller_activation_step() const;
+            [[nodiscard]] int resolved_total_iterations() const;
+            [[nodiscard]] int resolved_ppisp_controller_activation_step(int total_iterations) const;
 
             nlohmann::json to_json() const;
             static OptimizationParameters from_json(const nlohmann::json& j);
@@ -209,6 +226,7 @@ namespace lfs::core {
         struct LFS_CORE_API DatasetConfig {
             std::filesystem::path data_path = "";
             std::filesystem::path output_path = "";
+            std::string output_name = "";
             std::string images = "images";
             int resize_factor = -1;
             int test_every = 8;
@@ -221,13 +239,26 @@ namespace lfs::core {
             bool invert_masks = false;
             float mask_threshold = 0.5f;
 
+            // Not serialized — UI-controlled per import.
+            std::string centralize_dataset = "off";
+
             nlohmann::json to_json() const;
             static DatasetConfig from_json(const nlohmann::json& j);
+        };
+
+        struct LFS_CORE_API ServerConfig {
+            int tcp_server_connection_port = -1;    // Set the TCP connection port when tcp connection is in use for server requests, -1 for auto
+            int tcp_broadcast_connection_port = -1; // Set the TCP connection port when tcp connection is in use for broadcasting, -1 for auto
+            bool tcp_connection = false;            // Use TCP connection for signals and events
+
+            nlohmann::json to_json() const;
+            static ServerConfig from_json(const nlohmann::json& j);
         };
 
         struct LFS_CORE_API TrainingParameters {
             DatasetConfig dataset;
             OptimizationParameters optimization;
+            ServerConfig server;
 
             // Viewer mode: splat files to load (.ply, .sog, .spz, .usd, .usda, .usdc, .usdz, .resume)
             std::vector<std::filesystem::path> view_paths;
@@ -238,11 +269,20 @@ namespace lfs::core {
             // Optional splat file for initialization (.ply, .sog, .spz, .usd, .usda, .usdc, .usdz, .resume)
             std::optional<std::string> init_path = std::nullopt;
 
+            // Optional trained splats to append to the training model before optimizer initialization
+            std::vector<std::filesystem::path> add_splat_paths;
+            std::vector<bool> add_splat_freeze;
+
             // Checkpoint to resume training from
             std::optional<std::filesystem::path> resume_checkpoint = std::nullopt;
 
             // Python scripts to execute for custom training callbacks
             std::vector<std::filesystem::path> python_scripts;
+
+            // True when --bg-color was provided on the command line.
+            bool cli_bg_color_set = false;
+
+            std::vector<int> disabled_camera_uids;
 
             [[nodiscard]] std::string validate() const;
         };
@@ -254,7 +294,8 @@ namespace lfs::core {
                                   HTML,
                                   USD,
                                   USDA,
-                                  USDC };
+                                  USDC,
+                                  RAD };
 
         // Parameters for the convert command
         struct LFS_CORE_API ConvertParameters {
@@ -263,7 +304,20 @@ namespace lfs::core {
             OutputFormat format = OutputFormat::PLY;
             int sh_degree = 3; // 0-3, -1 = keep original
             int sog_iterations = 10;
-            bool overwrite = false; // Skip overwrite prompts
+            bool overwrite = false;            // Skip overwrite prompts
+            std::vector<float> rad_lod_levels; // LOD levels for RAD format (as ratios, e.g., 0.5f = 50%)
+        };
+
+        // Parameters for the mesh2splat command
+        struct LFS_CORE_API Mesh2SplatParameters {
+            std::filesystem::path input_path;
+            std::filesystem::path output_path; // Empty = derive from input
+            OutputFormat format = OutputFormat::PLY;
+            std::vector<OutputFormat> formats{OutputFormat::PLY};
+            Mesh2SplatOptions options;
+            int sog_iterations = 10;
+            bool overwrite = false;
+            std::vector<float> rad_lod_levels;
         };
 
         // Modern C++23 functions returning expected values

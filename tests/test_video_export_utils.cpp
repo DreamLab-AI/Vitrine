@@ -6,7 +6,7 @@
 #include "core/splat_data.hpp"
 #include "core/tensor.hpp"
 #include "gui/video_export_utils.hpp"
-#include "rendering/render_constants.hpp"
+#include "rendering/coordinate_conventions.hpp"
 #include "scene/scene_manager.hpp"
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -89,6 +89,10 @@ namespace {
         EXPECT_FLOAT_EQ(transform[3][2], expected.z);
     }
 
+    void expect_visualizer_translation_from_data(const glm::mat4& transform, const glm::vec3& data_translation) {
+        expect_translation(transform, lfs::rendering::visualizerWorldPointFromDataWorld(data_translation));
+    }
+
 } // namespace
 
 TEST(VideoExportUtilsTest, CaptureSnapshotUsesRenderableModelAndTransforms) {
@@ -108,8 +112,8 @@ TEST(VideoExportUtilsTest, CaptureSnapshotUsesRenderableModelAndTransforms) {
     EXPECT_EQ(snapshot.combined_model->size(), 2u);
     EXPECT_FALSE(snapshot.point_cloud);
     ASSERT_EQ(snapshot.model_transforms.size(), 2u);
-    expect_translation(snapshot.model_transforms[0], {1.0f, 2.0f, 3.0f});
-    expect_translation(snapshot.model_transforms[1], {-4.0f, 0.5f, 2.0f});
+    expect_visualizer_translation_from_data(snapshot.model_transforms[0], {1.0f, 2.0f, 3.0f});
+    expect_visualizer_translation_from_data(snapshot.model_transforms[1], {-4.0f, 0.5f, 2.0f});
 
     ASSERT_TRUE(snapshot.transform_indices);
     EXPECT_EQ(snapshot.transform_indices->cpu().to_vector_int(), (std::vector<int>{0, 1}));
@@ -147,7 +151,7 @@ TEST(VideoExportUtilsTest, CaptureSnapshotKeepsPointCloudTransformWhenNoModelExi
     EXPECT_FALSE(snapshot.combined_model);
     ASSERT_TRUE(snapshot.point_cloud);
     EXPECT_EQ(snapshot.point_cloud->size(), 2);
-    expect_translation(snapshot.point_cloud_transform, {3.0f, -2.0f, 5.0f});
+    expect_visualizer_translation_from_data(snapshot.point_cloud_transform, {3.0f, -2.0f, 5.0f});
 }
 
 TEST(VideoExportUtilsTest, CaptureSnapshotSupportsMeshOnlyScenes) {
@@ -165,7 +169,7 @@ TEST(VideoExportUtilsTest, CaptureSnapshotSupportsMeshOnlyScenes) {
     EXPECT_FALSE(snapshot.point_cloud);
     ASSERT_EQ(snapshot.meshes.size(), 1u);
     ASSERT_TRUE(snapshot.meshes[0].mesh);
-    expect_translation(snapshot.meshes[0].transform, {-1.5f, 0.0f, 4.0f});
+    expect_visualizer_translation_from_data(snapshot.meshes[0].transform, {-1.5f, 0.0f, 4.0f});
 }
 
 TEST(VideoExportUtilsTest, ValidateVideoExportOptionsRejectsInvalidValues) {
@@ -181,25 +185,21 @@ TEST(VideoExportUtilsTest, ValidateVideoExportOptionsRejectsInvalidValues) {
                                                             .height = 1080,
                                                             .framerate = 0,
                                                             .crf = 18}));
-    EXPECT_FALSE(lfs::vis::gui::validateVideoExportOptions({.width = lfs::rendering::MAX_VIEWPORT_SIZE + 1,
-                                                            .height = 1080,
-                                                            .framerate = 30,
-                                                            .crf = 18}));
     EXPECT_FALSE(lfs::vis::gui::validateVideoExportOptions({.width = 1920,
                                                             .height = 1080,
                                                             .framerate = 30,
                                                             .crf = 99}));
 }
 
-TEST(VideoExportUtilsTest, ValidateVideoExportOptionsAcceptsTypicalPreset) {
-    auto result = lfs::vis::gui::validateVideoExportOptions({.width = 1920,
-                                                             .height = 1080,
+TEST(VideoExportUtilsTest, ValidateVideoExportOptionsAcceptsNativeResolution) {
+    auto result = lfs::vis::gui::validateVideoExportOptions({.width = 32768,
+                                                             .height = 17280,
                                                              .framerate = 30,
                                                              .crf = 18});
 
     ASSERT_TRUE(result.has_value()) << result.error();
-    EXPECT_EQ(result->width, 1920);
-    EXPECT_EQ(result->height, 1080);
+    EXPECT_EQ(result->width, 32768);
+    EXPECT_EQ(result->height, 17280);
     EXPECT_EQ(result->framerate, 30);
     EXPECT_EQ(result->crf, 18);
 }

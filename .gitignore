@@ -11,6 +11,7 @@ lichtfeld-studio.aps
 # ---------------------------------------------------------------------------
 # Build artifacts
 # ---------------------------------------------------------------------------
+CLAUDE.md
 build/
 build*/
 build*/**
@@ -25,6 +26,7 @@ test-data/
 # Dependencies / vendored libraries
 # ---------------------------------------------------------------------------
 external/libtorch/
+external/libtorch
 external/release/libtorch/
 external/debug/libtorch/
 vcpkg/
@@ -52,9 +54,11 @@ src/python/stubs/lichtfeld/build_info.pyi
 !scripts/benchmark_omniblender.sh
 !scripts/test_*.py
 !src/python/_lfs_panel_contract.py
+!src/python/lfs_splat_lod_hierarchy.py
 !src/python/lfs_plugins/**/*.py
 !src/python/scripts/manage_stubs.py
 !src/pipeline/**/*.py
+!tests/real_bicycle_sh_degree_training.py
 !tests/python/**/*.py
 !docs/plugins/examples/**/*.py
 
@@ -101,3 +105,26 @@ ruvector.db
 # ignore secret contents but keep the dir + committed .example template.
 secrets/*
 !secrets/*.example
+*.pt
+!weights/*.pt
+lichtfeld-studio.aps
+__pycache__/
+.vs__pycache__/
+*.pyc
+*.pyo
+src/python/stubs/lichtfeld/build_info.pyi
+tasks/
+
+# USD generated files
+lib/
+!external/tree-sitter/lib/
+!external/tree-sitter/lib/src/
+!external/tree-sitter/lib/src/query.c
+generatedSchema.usda
+plugInfo.json
+
+# Compiled SPIR-V shader binaries (regenerated from slang/glsl by CMake;
+# slangc + glslang are required by the build anyway, so checking these in
+# only creates merge-conflict churn).
+src/rendering/rasterizer/vulkan/shader/generated/*.spv
+src/rendering/rasterizer/vulkan/shader/radix_sort/*.spv

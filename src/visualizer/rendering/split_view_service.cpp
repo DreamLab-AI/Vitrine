@@ -3,13 +3,94 @@
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "split_view_service.hpp"
-#include "gt_texture_cache.hpp"
 #include "render_pass.hpp"
+#include "rendering/coordinate_conventions.hpp"
 #include "scene/scene_manager.hpp"
-#include "training/trainer.hpp"
-#include "training/training_manager.hpp"
+#include <algorithm>
 
 namespace lfs::vis {
+
+    namespace detail {
+        [[nodiscard]] glm::mat4 currentSceneTransform(SceneManager* const scene_manager,
+                                                      const int camera_uid) {
+            if (!scene_manager) {
+                return glm::mat4(1.0f);
+            }
+
+            const auto& scene = scene_manager->getScene();
+            if (const auto transform = scene.getCameraSceneTransformByUid(camera_uid)) {
+                return lfs::rendering::dataWorldTransformToVisualizerWorld(*transform);
+            }
+
+            const auto visible_nodes = scene.getNodes();
+            const lfs::core::SceneNode* single_visible_point_cloud = nullptr;
+            for (const auto* node : visible_nodes) {
+                if (!node || node->type != lfs::core::NodeType::POINTCLOUD || !node->point_cloud) {
+                    continue;
+                }
+                if (!scene.isNodeEffectivelyVisible(node->id)) {
+                    continue;
+                }
+                if (single_visible_point_cloud) {
+                    return lfs::rendering::dataWorldTransformToVisualizerWorld(glm::mat4(1.0f));
+                }
+                single_visible_point_cloud = node;
+            }
+            if (single_visible_point_cloud) {
+                return lfs::rendering::dataWorldTransformToVisualizerWorld(
+                    scene.getWorldTransform(single_visible_point_cloud->id));
+            }
+
+            const auto visible_transforms = scene.getVisibleNodeTransforms();
+            return visible_transforms.empty()
+                       ? glm::mat4(1.0f)
+                       : lfs::rendering::dataWorldTransformToVisualizerWorld(visible_transforms[0]);
+        }
+    } // namespace detail
+
+    namespace detail {
+
+        std::optional<GTRenderCamera> buildGTRenderCamera(const lfs::core::Camera& cam,
+                                                          const glm::ivec2 render_size,
+                                                          const glm::mat4& scene_transform) {
+            if (render_size.x <= 0 || render_size.y <= 0) {
+                return std::nullopt;
+            }
+
+            auto R_tensor = cam.R().cpu();
+            auto T_tensor = cam.T().cpu();
+            const float* const R_data = R_tensor.ptr<float>();
+            const float* const T_data = T_tensor.ptr<float>();
+            if (!R_data || !T_data) {
+                return std::nullopt;
+            }
+
+            const auto pose = lfs::rendering::visualizerCameraPoseFromDataWorldToCamera(
+                lfs::rendering::mat3FromRowMajor3x3(R_data),
+                glm::vec3(T_data[0], T_data[1], T_data[2]),
+                scene_transform);
+
+            GTRenderCamera render_camera;
+            render_camera.rotation = pose.rotation;
+            render_camera.translation = pose.translation;
+            render_camera.equirectangular =
+                cam.camera_model_type() == lfs::core::CameraModelType::EQUIRECTANGULAR;
+
+            if (!render_camera.equirectangular) {
+                const float x_scale =
+                    static_cast<float>(render_size.x) / static_cast<float>(std::max(cam.camera_width(), 1));
+                const float y_scale =
+                    static_cast<float>(render_size.y) / static_cast<float>(std::max(cam.camera_height(), 1));
+                render_camera.intrinsics = lfs::rendering::CameraIntrinsics{
+                    .focal_x = cam.focal_x() * x_scale,
+                    .focal_y = cam.focal_y() * y_scale,
+                    .center_x = cam.center_x() * x_scale,
+                    .center_y = cam.center_y() * y_scale};
+            }
+
+            return render_camera;
+        }
+    } // namespace detail
 
     bool SplitViewService::hasValidGTContext() const {
         return gt_context_ && gt_context_->valid();
@@ -101,8 +182,10 @@ namespace lfs::vis {
             if (primary_viewport) {
                 secondary_viewport_ = *primary_viewport;
             }
+            secondary_viewport_.ortho_scale_override = settings.ortho_scale;
             focused_panel_ = SplitViewPanelId::Left;
         } else if (previous_mode == SplitViewMode::IndependentDual) {
+            secondary_viewport_.ortho_scale_override.reset();
             focused_panel_ = SplitViewPanelId::Left;
         }
 
@@ -150,7 +233,7 @@ namespace lfs::vis {
             return {};
         }
 
-        const auto visible_nodes = scene_manager->getScene().getVisibleNodes();
+        const auto visible_nodes = scene_manager->getScene().getVisibleSplatNodeSlots();
         if (visible_nodes.size() >= 2) {
             return {};
         }
@@ -176,78 +259,6 @@ namespace lfs::vis {
     void SplitViewService::updateInfo(const FrameResources& resources) {
         std::lock_guard<std::mutex> lock(info_mutex_);
         current_info_ = resources.split_view_executed ? resources.split_info : SplitViewInfo{};
-    }
-
-    void SplitViewService::prepareGTComparisonContext(SceneManager* scene_manager,
-                                                      const RenderSettings& settings,
-                                                      const int current_camera_id,
-                                                      const bool has_renderable_content,
-                                                      const bool has_viewport_output,
-                                                      GTTextureCache& texture_cache,
-                                                      bool& request_viewport_prerender) {
-        request_viewport_prerender = false;
-
-        if (!isGTComparisonActive(settings) ||
-            current_camera_id < 0 ||
-            !has_renderable_content ||
-            !scene_manager) {
-            clearGTContext();
-            return;
-        }
-
-        clearGTContext();
-
-        auto* trainer_manager = scene_manager->getTrainerManager();
-        if (!trainer_manager || !trainer_manager->hasTrainer()) {
-            return;
-        }
-
-        const auto* trainer = trainer_manager->getTrainer();
-        if (!trainer) {
-            return;
-        }
-
-        const auto loader_owner = trainer->getActiveImageLoader();
-        const auto cam = trainer_manager->getCamById(current_camera_id);
-        if (!cam) {
-            return;
-        }
-
-        lfs::io::LoadParams gt_load_params;
-        const lfs::io::LoadParams* gt_load_params_ptr = nullptr;
-        if (loader_owner) {
-            const auto gt_load_config = trainer->getGTLoadConfigSnapshot();
-            gt_load_params.resize_factor = gt_load_config.resize_factor;
-            gt_load_params.max_width = gt_load_config.max_width;
-            if (gt_load_config.undistort && cam->is_undistort_prepared()) {
-                gt_load_params.undistort = &cam->undistort_params();
-            }
-            gt_load_params_ptr = &gt_load_params;
-        }
-
-        const auto gt_info = texture_cache.getGTTexture(
-            current_camera_id,
-            cam->image_path(),
-            loader_owner.get(),
-            gt_load_params_ptr);
-        if (gt_info.texture_id == 0) {
-            return;
-        }
-
-        const glm::ivec2 dims(gt_info.width, gt_info.height);
-        const glm::ivec2 aligned(
-            ((dims.x + GPU_ALIGNMENT - 1) / GPU_ALIGNMENT) * GPU_ALIGNMENT,
-            ((dims.y + GPU_ALIGNMENT - 1) / GPU_ALIGNMENT) * GPU_ALIGNMENT);
-
-        gt_context_ = GTComparisonContext{
-            .gt_texture_id = gt_info.texture_id,
-            .dimensions = dims,
-            .gpu_aligned_dims = aligned,
-            .render_texcoord_scale = glm::vec2(dims) / glm::vec2(aligned),
-            .gt_texcoord_scale = gt_info.texcoord_scale,
-            .gt_needs_flip = gt_info.needs_flip};
-
-        request_viewport_prerender = hasValidGTContext() && !has_viewport_output;
     }
 
 } // namespace lfs::vis

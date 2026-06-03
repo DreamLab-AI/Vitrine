@@ -35,6 +35,9 @@ namespace {
     }
 
     bool has_nan(const Tensor& t) {
+        if (t.dtype() != DataType::Float32) {
+            return false;
+        }
         auto cpu = t.to(Device::CPU);
         float* ptr = cpu.ptr<float>();
         for (size_t i = 0; i < t.numel(); ++i) {
@@ -45,6 +48,9 @@ namespace {
     }
 
     bool has_inf(const Tensor& t) {
+        if (t.dtype() != DataType::Float32) {
+            return false;
+        }
         auto cpu = t.to(Device::CPU);
         float* ptr = cpu.ptr<float>();
         for (size_t i = 0; i < t.numel(); ++i) {
@@ -52,6 +58,34 @@ namespace {
                 return true;
         }
         return false;
+    }
+
+    const AdamParamState& adam_state(const AdamOptimizer& opt, ParamType type) {
+        const auto* state = opt.get_state(type);
+        if (!state || !state->exp_avg.is_valid()) {
+            throw std::runtime_error("Missing Adam moment state");
+        }
+        return *state;
+    }
+
+    const Tensor& adam_moment(const AdamOptimizer& opt, ParamType type) {
+        return adam_state(opt, type).exp_avg;
+    }
+
+    void expect_adam_state_finite(const AdamOptimizer& opt, ParamType type) {
+        const auto& state = adam_state(opt, type);
+        EXPECT_FALSE(has_nan(state.exp_avg));
+        EXPECT_FALSE(has_inf(state.exp_avg));
+        EXPECT_FALSE(has_nan(state.exp_avg_sq));
+        EXPECT_FALSE(has_inf(state.exp_avg_sq));
+        if (state.exp_avg_scale.is_valid()) {
+            EXPECT_FALSE(has_nan(state.exp_avg_scale));
+            EXPECT_FALSE(has_inf(state.exp_avg_scale));
+        }
+        if (state.exp_avg_sq_scale.is_valid()) {
+            EXPECT_FALSE(has_nan(state.exp_avg_sq_scale));
+            EXPECT_FALSE(has_inf(state.exp_avg_sq_scale));
+        }
     }
 
     int count_nonzero(const Tensor& t) {
@@ -115,7 +149,7 @@ TEST_F(FastGSFuzzTest, SingleGaussian_Visible) {
     auto opacity = Tensor::full({1}, 2.0f, Device::CUDA); // sigmoid(2) ~ 0.88
 
     auto camera = make_camera(64, 64, 100, 100, 32, 32);
-    auto splat = std::make_unique<SplatData>(0, means, sh0, shN, scaling, rotation, opacity, 1.0f);
+    auto splat = std::make_unique<SplatData>(3, means, sh0, shN, scaling, rotation, opacity, 1.0f);
 
     auto result = fast_rasterize_forward(camera, *splat, bg_, 0, 0, 0, 0, false);
     ASSERT_TRUE(result.has_value());
@@ -537,11 +571,11 @@ TEST_F(FastGSFuzzTest, Backward_ZeroGradient) {
     auto grad_out = Tensor::zeros_like(result->first.image);
     fast_rasterize_backward(result->second, grad_out, *splat, *opt, {});
 
-    // All gradients should be zero
-    auto grad_means = opt->get_grad(ParamType::Means);
-    EXPECT_FALSE(has_nan(grad_means));
-    float grad_sum = grad_means.abs().sum().item<float>();
-    EXPECT_LT(grad_sum, 1e-6f);
+    // Quantized moments dequantize to zero when their scales are zero.
+    const auto& means_state = adam_state(*opt, ParamType::Means);
+    expect_adam_state_finite(*opt, ParamType::Means);
+    EXPECT_LT(means_state.exp_avg_scale.abs().sum().item<float>(), 1e-6f);
+    EXPECT_LT(means_state.exp_avg_sq_scale.abs().sum().item<float>(), 1e-6f);
 }
 
 TEST_F(FastGSFuzzTest, Backward_LargeGradient) {
@@ -569,10 +603,8 @@ TEST_F(FastGSFuzzTest, Backward_LargeGradient) {
     auto grad_out = Tensor::full_like(result->first.image, 1e6f);
     fast_rasterize_backward(result->second, grad_out, *splat, *opt, {});
 
-    // Gradients should be clamped, not NaN/Inf
-    auto grad_means = opt->get_grad(ParamType::Means);
-    EXPECT_FALSE(has_nan(grad_means));
-    EXPECT_FALSE(has_inf(grad_means));
+    // Fused Adam moments should be clamped, not NaN/Inf.
+    expect_adam_state_finite(*opt, ParamType::Means);
 }
 
 TEST_F(FastGSFuzzTest, Backward_AllCulled) {
@@ -602,9 +634,8 @@ TEST_F(FastGSFuzzTest, Backward_AllCulled) {
     auto grad_out = result->first.image.mul(2.0f);
     fast_rasterize_backward(result->second, grad_out, *splat, *opt, {});
 
-    // All culled - gradients should be zero
-    auto grad_means = opt->get_grad(ParamType::Means);
-    EXPECT_FALSE(has_nan(grad_means));
+    // All culled - moment update should stay finite.
+    expect_adam_state_finite(*opt, ParamType::Means);
 }
 
 // =============================================================================
@@ -644,9 +675,7 @@ TEST_F(FastGSFuzzTest, RandomStress_SmallBatch) {
         auto grad_out = result->first.image.mul(2.0f);
         fast_rasterize_backward(result->second, grad_out, *splat, *opt, {});
 
-        auto grad_means = opt->get_grad(ParamType::Means);
-        EXPECT_FALSE(has_nan(grad_means)) << "NaN gradient in trial " << trial;
-        EXPECT_FALSE(has_inf(grad_means)) << "Inf gradient in trial " << trial;
+        expect_adam_state_finite(*opt, ParamType::Means);
 
         cleanup_arena();
     }
@@ -674,6 +703,7 @@ TEST_F(FastGSFuzzTest, RandomStress_LargeBatch) {
         EXPECT_FALSE(has_nan(result->first.image)) << "NaN in large trial " << trial;
         EXPECT_FALSE(has_inf(result->first.image)) << "Inf in large trial " << trial;
 
+        result->second.release_forward_context();
         cleanup_arena();
     }
 }
@@ -710,9 +740,7 @@ TEST_F(FastGSFuzzTest, MipFilter_Enabled) {
     auto grad_out = result->first.image.mul(2.0f);
     fast_rasterize_backward(result->second, grad_out, *splat, *opt, {});
 
-    auto grad_opacity = opt->get_grad(ParamType::Opacity);
-    EXPECT_FALSE(has_nan(grad_opacity));
-    EXPECT_FALSE(has_inf(grad_opacity));
+    expect_adam_state_finite(*opt, ParamType::Opacity);
 }
 
 // =============================================================================
@@ -787,7 +815,7 @@ TEST_F(FastGSFuzzTest, HigherOrderSH) {
     auto opacity = Tensor::full({n}, 2.0f, Device::CUDA);
 
     auto camera = make_camera(64, 64, 100, 100, 32, 32);
-    auto splat = std::make_unique<SplatData>(0, means, sh0, shN, scaling, rotation, opacity, 1.0f);
+    auto splat = std::make_unique<SplatData>(3, means, sh0, shN, scaling, rotation, opacity, 1.0f);
 
     auto result = fast_rasterize_forward(camera, *splat, bg_, 0, 0, 0, 0, false);
     ASSERT_TRUE(result.has_value());
@@ -803,8 +831,7 @@ TEST_F(FastGSFuzzTest, HigherOrderSH) {
     auto grad_out = result->first.image.mul(2.0f);
     fast_rasterize_backward(result->second, grad_out, *splat, *opt, {});
 
-    auto grad_shN = opt->get_grad(ParamType::ShN);
-    EXPECT_FALSE(has_nan(grad_shN));
+    expect_adam_state_finite(*opt, ParamType::ShN);
 }
 
 TEST_F(FastGSFuzzTest, ExtremeSHCoefficients) {
@@ -1142,9 +1169,12 @@ TEST_F(FastGSFuzzTest, GradientStability_MultipleIterations) {
         auto grad_out = result->first.image.mul(2.0f);
         fast_rasterize_backward(result->second, grad_out, *splat, *opt, {});
 
-        auto grad_means = opt->get_grad(ParamType::Means);
-        EXPECT_FALSE(has_nan(grad_means)) << "NaN gradient at iteration " << iter;
-        EXPECT_FALSE(has_inf(grad_means)) << "Inf gradient at iteration " << iter;
+        const auto& means_state = adam_state(*opt, ParamType::Means);
+        expect_adam_state_finite(*opt, ParamType::Means);
+        EXPECT_GT(means_state.exp_avg_scale.abs().sum().item<float>(), 0.0f)
+            << "Adam first-moment scales were not written at iteration " << iter;
+        EXPECT_GT(means_state.exp_avg_sq_scale.abs().sum().item<float>(), 0.0f)
+            << "Adam second-moment scales were not written at iteration " << iter;
 
         cleanup_arena();
     }

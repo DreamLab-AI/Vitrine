@@ -2,23 +2,20 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
-// clang-format off
-#include <glad/glad.h>
-// clang-format on
-
 #include "gui/startup_overlay.hpp"
 #include "core/event_bridge/localization_manager.hpp"
 #include "core/image_io.hpp"
 #include "core/logger.hpp"
 #include "gui/gui_focus_state.hpp"
-#include "gui/rmlui/rml_panel_host.hpp"
+#include "gui/rmlui/rml_document_utils.hpp"
+#include "gui/rmlui/rml_input_utils.hpp"
 #include "gui/rmlui/rml_theme.hpp"
 #include "gui/rmlui/rmlui_manager.hpp"
-#include "gui/rmlui/rmlui_render_interface.hpp"
 #include "gui/rmlui/sdl_rml_key_mapping.hpp"
 #include "gui/string_keys.hpp"
 #include "internal/resource_paths.hpp"
 #include "theme/theme.hpp"
+#include "visualizer/app_store.hpp"
 
 #include <RmlUi/Core.h>
 #include <RmlUi/Core/Element.h>
@@ -40,9 +37,6 @@
 
 namespace lfs::vis::gui {
 
-    using rml_theme::colorToRml;
-    using rml_theme::colorToRmlAlpha;
-
     class LinkClickListener final : public Rml::EventListener {
     public:
         void ProcessEvent(Rml::Event& event) override {
@@ -57,6 +51,8 @@ namespace lfs::vis::gui {
 
     class LangChangeListener final : public Rml::EventListener {
     public:
+        explicit LangChangeListener(RmlUIManager* mgr) : mgr_(mgr) {}
+
         void ProcessEvent(Rml::Event& event) override {
             auto* el = event.GetCurrentElement();
             if (!el)
@@ -70,9 +66,18 @@ namespace lfs::vis::gui {
 
             auto& loc = lfs::event::LocalizationManager::getInstance();
             const auto available = loc.getAvailableLanguages();
-            if (idx < static_cast<int>(available.size()))
-                loc.setLanguage(available[idx]);
+            if (idx >= static_cast<int>(available.size()))
+                return;
+
+            const auto& lang = available[idx];
+            if (loc.setLanguage(lang))
+                lfs::vis::publish_language_generation();
+            if (mgr_ && (lang == "ja" || lang == "ko" || lang == "zh"))
+                mgr_->ensureCjkFontsLoaded();
         }
+
+    private:
+        RmlUIManager* mgr_ = nullptr;
     };
 
     void StartupOverlay::openURL(const char* url) {
@@ -96,7 +101,7 @@ namespace lfs::vis::gui {
 
         try {
             const auto rml_path = lfs::vis::getAssetPath("rmlui/startup.rml");
-            document_ = rml_context_->LoadDocument(rml_path.string());
+            document_ = rml_documents::loadDocument(rml_context_, rml_path);
             if (!document_) {
                 LOG_ERROR("StartupOverlay: failed to load startup.rml");
                 return;
@@ -111,13 +116,14 @@ namespace lfs::vis::gui {
         updateLocalizedText();
 
         link_listener_ = new LinkClickListener();
-        for (const char* id : {"link-discord", "link-x", "link-donate"}) {
+        for (const char* id : {"link-discord", "link-x", "link-donate", "link-core11",
+                               "link-volinga"}) {
             auto* el = document_->GetElementById(id);
             if (el)
                 el->AddEventListener(Rml::EventId::Click, link_listener_);
         }
 
-        lang_listener_ = new LangChangeListener();
+        lang_listener_ = new LangChangeListener(rml_manager_);
         auto* lang_select = document_->GetElementById("lang-select");
         if (lang_select)
             lang_select->AddEventListener(Rml::EventId::Change, lang_listener_);
@@ -126,7 +132,8 @@ namespace lfs::vis::gui {
     }
 
     void StartupOverlay::shutdown() {
-        fbo_.destroy();
+        if (rml_manager_)
+            rml_manager_->releaseCachedVulkanContext(direct_cache_);
         if (rml_context_ && rml_manager_)
             rml_manager_->destroyContext("startup_overlay");
         rml_context_ = nullptr;
@@ -135,6 +142,81 @@ namespace lfs::vis::gui {
         link_listener_ = nullptr;
         delete lang_listener_;
         lang_listener_ = nullptr;
+    }
+
+    void StartupOverlay::reloadResources() {
+        if (!rml_context_)
+            return;
+
+        if (rml_manager_)
+            rml_manager_->releaseCachedVulkanContext(direct_cache_);
+
+        if (document_) {
+            rml_context_->UnloadDocument(document_);
+            rml_context_->Update();
+        }
+
+        document_ = nullptr;
+        has_theme_signature_ = false;
+        has_language_generation_ = false;
+        shown_frames_ = 0;
+        width_ = 0;
+        height_ = 0;
+        content_dirty_ = true;
+        last_mouse_valid_ = false;
+
+        try {
+            const auto rml_path = lfs::vis::getAssetPath("rmlui/startup.rml");
+            document_ = rml_documents::loadDocument(rml_context_, rml_path);
+            if (!document_) {
+                LOG_ERROR("StartupOverlay: failed to reload startup.rml");
+                return;
+            }
+            document_->Show();
+        } catch (const std::exception& e) {
+            LOG_ERROR("StartupOverlay: resource not found during reload: {}", e.what());
+            return;
+        }
+
+        populateLanguages();
+        updateLocalizedText();
+
+        if (!link_listener_)
+            link_listener_ = new LinkClickListener();
+        for (const char* id : {"link-discord", "link-x", "link-donate", "link-core11",
+                               "link-volinga"}) {
+            auto* el = document_->GetElementById(id);
+            if (el)
+                el->AddEventListener(Rml::EventId::Click, link_listener_);
+        }
+
+        if (!lang_listener_)
+            lang_listener_ = new LangChangeListener(rml_manager_);
+        auto* lang_select = document_->GetElementById("lang-select");
+        if (lang_select)
+            lang_select->AddEventListener(Rml::EventId::Change, lang_listener_);
+
+        updateTheme();
+    }
+
+    void StartupOverlay::dismiss() {
+        visible_ = false;
+        input_ = nullptr;
+        last_mouse_valid_ = false;
+    }
+
+    bool StartupOverlay::needsAnimationFrame() const {
+        if (!visible_)
+            return false;
+        if (shown_frames_ < 3 || content_dirty_)
+            return true;
+        if (!has_theme_signature_ ||
+            rml_theme::currentThemeSignature() != last_theme_signature_)
+            return true;
+        if (!has_language_generation_ ||
+            app_store().language_generation.get() != last_language_generation_)
+            return true;
+        return false;
     }
 
     void StartupOverlay::populateLanguages() {
@@ -149,6 +231,12 @@ namespace lfs::vis::gui {
         const auto langs = loc.getAvailableLanguages();
         const auto names = loc.getAvailableLanguageNames();
         const auto& current = loc.getCurrentLanguage();
+
+        if (rml_manager_) {
+            if (current == "ja" || current == "ko" || current == "zh") {
+                ensureLanguageDropdownFontsLoaded();
+            }
+        }
 
         for (size_t i = 0; i < langs.size(); ++i) {
             select->Add(names[i], langs[i]);
@@ -172,55 +260,6 @@ namespace lfs::vis::gui {
         set_text("click-hint", lichtfeld::Strings::Startup::CLICK_TO_CONTINUE);
     }
 
-    std::string StartupOverlay::generateThemeRCSS(const lfs::vis::Theme& t) const {
-        const auto& p = t.palette;
-        const bool is_light = t.isLightTheme();
-
-        auto blend = [](const ImVec4& a, const ImVec4& b, float t_val) -> ImVec4 {
-            return {a.x + (b.x - a.x) * t_val,
-                    a.y + (b.y - a.y) * t_val,
-                    a.z + (b.z - a.z) * t_val,
-                    1.0f};
-        };
-
-        const auto border = colorToRmlAlpha(p.border, is_light ? 0.75f : 0.62f);
-        const auto text = colorToRml(p.text);
-        const auto text_dim_85 = colorToRmlAlpha(p.text_dim, 0.85f);
-        const auto text_dim_50 = colorToRmlAlpha(p.text_dim, 0.50f);
-        const auto primary = colorToRmlAlpha(p.primary, is_light ? 0.78f : 0.62f);
-        const auto select_bg = colorToRmlAlpha(p.background, is_light ? 0.90f : 0.78f);
-        const auto selectbox_bg = colorToRmlAlpha(p.surface, is_light ? 0.95f : 0.90f);
-
-        const ImVec4 base_color = blend(p.surface, p.text, is_light ? 0.04f : 0.10f);
-        const ImVec4 border_color = blend(p.border, p.text, is_light ? 0.28f : 0.38f);
-        const float base_alpha = is_light ? 0.82f : 0.86f;
-        const float bdr_alpha = is_light ? 0.40f : 0.50f;
-        const float inset_alpha = is_light ? 0.08f : 0.05f;
-
-        std::string box_shadow;
-        if (t.shadows.enabled)
-            box_shadow = std::format("box-shadow: {}, {} 0dp 0dp 0dp 1dp inset;",
-                                     rml_theme::layeredShadow(t, 4),
-                                     colorToRmlAlpha(RmlColor{1, 1, 1, 1}, inset_alpha));
-
-        return std::format(
-            "#overlay-box {{ background-color: {7}; border: 1dp {8}; border-radius: 12dp; {9} }}\n"
-            ".dim-text {{ color: {2}; }}\n"
-            ".hint-text {{ color: {3}; }}\n"
-            ".social-link span {{ color: {2}; }}\n"
-            ".social-icon {{ image-color: {2}; }}\n"
-            ".heart-icon {{ image-color: rgb(220, 50, 50); }}\n"
-            "select {{ color: {1}; background-color: {5}; border-color: {0}; }}\n"
-            "select:hover {{ border-color: {4}; }}\n"
-            "selectbox {{ background-color: {6}; border-color: {0}; }}\n"
-            "selectbox option:hover {{ background-color: {4}; }}\n"
-            "#lang-label {{ color: {2}; }}\n",
-            border, text, text_dim_85, text_dim_50, primary, select_bg, selectbox_bg,
-            colorToRmlAlpha(base_color, base_alpha),
-            colorToRmlAlpha(border_color, bdr_alpha),
-            box_shadow);
-    }
-
     void StartupOverlay::updateTheme() {
         if (!document_)
             return;
@@ -232,12 +271,16 @@ namespace lfs::vis::gui {
         last_theme_signature_ = theme_signature;
         has_theme_signature_ = true;
 
+        if (auto* body = document_->GetElementById("body")) {
+            body->SetClass("vulkan-compat", rml_manager_ && rml_manager_->getVulkanRenderInterface() != nullptr);
+        }
+
         const bool is_light = t.isLightTheme();
         const auto logo_path = lfs::vis::getAssetPath(
             is_light ? "lichtfeld-splash-logo-dark.png" : "lichtfeld-splash-logo.png");
         auto* logo = document_->GetElementById("logo");
         if (logo) {
-            logo->SetAttribute("src", logo_path.string());
+            logo->SetAttribute("src", rml_theme::pathToRmlImageSource(logo_path));
             auto [w, h, c] = lfs::core::get_image_info(logo_path);
             if (w > 0 && h > 0) {
                 logo->SetProperty("width", std::format("{:.0f}dp", w * 1.3f));
@@ -249,7 +292,7 @@ namespace lfs::vis::gui {
             is_light ? "core11-logo-dark.png" : "core11-logo.png");
         auto* core11 = document_->GetElementById("core11-logo");
         if (core11) {
-            core11->SetAttribute("src", core11_path.string());
+            core11->SetAttribute("src", rml_theme::pathToRmlImageSource(core11_path));
             auto [w, h, c] = lfs::core::get_image_info(core11_path);
             if (w > 0 && h > 0) {
                 core11->SetProperty("width", std::format("{:.0f}dp", w * 0.5f));
@@ -257,13 +300,74 @@ namespace lfs::vis::gui {
             }
         }
 
+        const auto volinga_path = lfs::vis::getAssetPath(
+            is_light ? "volinga-logo-dark.png" : "volinga-logo.png");
+        auto* volinga = document_->GetElementById("volinga-logo");
+        if (volinga) {
+            volinga->SetAttribute("src", rml_theme::pathToRmlImageSource(volinga_path));
+            auto [w, h, c] = lfs::core::get_image_info(volinga_path);
+            if (w > 0 && h > 0) {
+                constexpr float TARGET_HEIGHT_DP = 24.0f;
+                const float scale = TARGET_HEIGHT_DP / static_cast<float>(h);
+                volinga->SetProperty("width", std::format("{:.0f}dp", w * scale));
+                volinga->SetProperty("height", std::format("{:.0f}dp", h * scale));
+            }
+        }
+
         auto base_rcss = rml_theme::loadBaseRCSS("rmlui/startup.rcss");
-        rml_theme::applyTheme(document_, base_rcss, rml_theme::generateAllThemeMedia([this](const auto& th) { return generateThemeRCSS(th); }));
+        rml_theme::applyTheme(document_, base_rcss, rml_theme::loadBaseRCSS("rmlui/startup.theme.rcss"));
     }
 
-    void StartupOverlay::forwardInput(const PanelInputState& input, float overlay_x,
-                                      float overlay_y, float overlay_w, float overlay_h) {
+    bool StartupOverlay::hasInputActivity(const PanelInputState& input) const {
+        if (!last_mouse_valid_ ||
+            std::abs(input.mouse_x - last_mouse_x_) > 0.5f ||
+            std::abs(input.mouse_y - last_mouse_y_) > 0.5f) {
+            return true;
+        }
+        for (int i = 0; i < 3; ++i) {
+            if (input.mouse_clicked[i] || input.mouse_released[i])
+                return true;
+        }
+        return input.mouse_wheel != 0.0f ||
+               !input.keys_pressed.empty() ||
+               !input.keys_repeated.empty() ||
+               !input.keys_released.empty() ||
+               !input.text_codepoints.empty() ||
+               !input.text_inputs.empty() ||
+               input.has_text_editing;
+    }
+
+    bool StartupOverlay::isLanguageSelectOpen() const {
+        auto* lang_el = document_ ? document_->GetElementById("lang-select") : nullptr;
+        auto* sel = dynamic_cast<Rml::ElementFormControlSelect*>(lang_el);
+        return sel && sel->IsSelectBoxVisible();
+    }
+
+    bool StartupOverlay::isLanguageSelectHit(const float local_x, const float local_y) const {
+        auto* lang_el = document_ ? document_->GetElementById("lang-select") : nullptr;
+        if (!lang_el)
+            return false;
+
+        const auto offset = lang_el->GetAbsoluteOffset(Rml::BoxArea::Border);
+        const float width = lang_el->GetOffsetWidth();
+        const float height = lang_el->GetOffsetHeight();
+        return local_x >= offset.x && local_y >= offset.y &&
+               local_x < offset.x + width && local_y < offset.y + height;
+    }
+
+    void StartupOverlay::ensureLanguageDropdownFontsLoaded() {
+        if (language_dropdown_fonts_requested_ || !rml_manager_)
+            return;
+
+        rml_manager_->ensureCjkFontsLoaded();
+        language_dropdown_fonts_requested_ = true;
+    }
+
+    StartupOverlay::InputForwardResult StartupOverlay::forwardInput(
+        const PanelInputState& input, float overlay_x,
+        float overlay_y, float overlay_w, float overlay_h) {
         assert(rml_context_);
+        InputForwardResult result;
         if (rml_manager_) {
             rml_manager_->trackContextFrame(rml_context_,
                                             static_cast<int>(overlay_x - input.screen_x),
@@ -277,17 +381,65 @@ namespace lfs::vis::gui {
                              local_x < overlay_w && local_y < overlay_h;
 
         if (hovered) {
+            const int mods = sdlModsToRml(input.key_ctrl, input.key_shift,
+                                          input.key_alt, input.key_super);
+            const bool opening_language_select =
+                input.mouse_clicked[0] && isLanguageSelectHit(local_x, local_y);
+            if (isLanguageSelectOpen() || opening_language_select)
+                ensureLanguageDropdownFontsLoaded();
             rml_context_->ProcessMouseMove(static_cast<int>(local_x),
-                                           static_cast<int>(local_y), 0);
+                                           static_cast<int>(local_y), mods);
+            result.event_forwarded = true;
 
-            if (input.mouse_clicked[0])
-                rml_context_->ProcessMouseButtonDown(0, 0);
-            if (input.mouse_released[0])
-                rml_context_->ProcessMouseButtonUp(0, 0);
+            if (input.mouse_clicked[0]) {
+                rml_context_->ProcessMouseButtonDown(0, mods);
+                result.event_forwarded = true;
+            }
+            if (input.mouse_released[0]) {
+                rml_context_->ProcessMouseButtonUp(0, mods);
+                result.event_forwarded = true;
+            }
 
-            if (input.mouse_wheel != 0.0f)
-                rml_context_->ProcessMouseWheel(Rml::Vector2f(0.0f, -input.mouse_wheel), 0);
+            if (input.mouse_wheel != 0.0f) {
+                rml_context_->ProcessMouseWheel(Rml::Vector2f(0.0f, -input.mouse_wheel), mods);
+                result.event_forwarded = true;
+            }
         }
+
+        if (!input.viewport_keyboard_focus &&
+            rml_input::hasFocusedKeyboardTarget(rml_context_->GetFocusElement())) {
+            const int mods = sdlModsToRml(input.key_ctrl, input.key_shift,
+                                          input.key_alt, input.key_super);
+            for (int sc : input.keys_pressed) {
+                if (sc == SDL_SCANCODE_ESCAPE && rml_input::cancelFocusedElement(*rml_context_)) {
+                    result.escape_consumed = true;
+                    result.event_forwarded = true;
+                    continue;
+                }
+
+                const auto rml_key = sdlScancodeToRml(static_cast<SDL_Scancode>(sc));
+                if (rml_key != Rml::Input::KI_UNKNOWN) {
+                    rml_context_->ProcessKeyDown(rml_key, mods);
+                    result.event_forwarded = true;
+                }
+            }
+
+            for (int sc : input.keys_released) {
+                if (result.escape_consumed && sc == SDL_SCANCODE_ESCAPE)
+                    continue;
+
+                const auto rml_key = sdlScancodeToRml(static_cast<SDL_Scancode>(sc));
+                if (rml_key != Rml::Input::KI_UNKNOWN) {
+                    rml_context_->ProcessKeyUp(rml_key, mods);
+                    result.event_forwarded = true;
+                }
+            }
+        }
+
+        last_mouse_valid_ = true;
+        last_mouse_x_ = input.mouse_x;
+        last_mouse_y_ = input.mouse_y;
+        return result;
     }
 
     void StartupOverlay::render(const ViewportLayout& viewport, bool drag_hovering) {
@@ -305,85 +457,97 @@ namespace lfs::vis::gui {
         focus.want_capture_mouse = true;
         focus.want_capture_keyboard = true;
 
-        if (!rml_manager_->shouldDeferFboUpdate(fbo_)) {
+        if (!rml_manager_ || !rml_manager_->getVulkanRenderInterface())
+            return;
+
+        const int ctx_w = static_cast<int>(viewport.size.x);
+        const int ctx_h = static_cast<int>(viewport.size.y);
+        const bool size_changed = ctx_w != width_ || ctx_h != height_;
+        const std::size_t theme_signature = rml_theme::currentThemeSignature();
+        const bool theme_changed = !has_theme_signature_ || theme_signature != last_theme_signature_;
+        const auto language_generation = app_store().language_generation.get();
+        const bool language_changed =
+            !has_language_generation_ || language_generation != last_language_generation_;
+        bool refresh_cache = content_dirty_ || size_changed || theme_changed || language_changed ||
+                             shown_frames_ < 3;
+
+        if (theme_changed) {
             updateTheme();
+            refresh_cache = true;
+        }
+        if (language_changed) {
             updateLocalizedText();
+            last_language_generation_ = language_generation;
+            has_language_generation_ = true;
+            refresh_cache = true;
+        }
 
-            const int ctx_w = static_cast<int>(viewport.size.x);
-            const int ctx_h = static_cast<int>(viewport.size.y);
-
+        if (size_changed) {
+            width_ = ctx_w;
+            height_ = ctx_h;
             rml_context_->SetDimensions(Rml::Vector2i(ctx_w, ctx_h));
             document_->SetProperty("width", std::format("{}px", ctx_w));
             document_->SetProperty("height", std::format("{}px", ctx_h));
+            last_mouse_valid_ = false;
+            refresh_cache = true;
+        }
+
+        bool updated_this_frame = false;
+        if (refresh_cache) {
+            rml_context_->Update();
+            updated_this_frame = true;
+        }
+
+        bool escape_consumed = false;
+        bool rml_select_open = isLanguageSelectOpen();
+        bool input_event_forwarded = false;
+        if (input_ && hasInputActivity(*input_)) {
+            const auto input_result = forwardInput(*input_, viewport.pos.x, viewport.pos.y,
+                                                   viewport.size.x, viewport.size.y);
+            escape_consumed = input_result.escape_consumed;
+            refresh_cache = refresh_cache || input_result.event_forwarded;
+            input_event_forwarded = input_result.event_forwarded;
+            rml_select_open = rml_select_open || isLanguageSelectOpen();
+        }
+        if (input_event_forwarded || (refresh_cache && !updated_this_frame))
             rml_context_->Update();
 
-            fbo_.ensure(ctx_w, ctx_h);
-            if (!fbo_.valid())
-                return;
-
-            if (input_) {
-                forwardInput(*input_, viewport.pos.x, viewport.pos.y,
-                             viewport.size.x, viewport.size.y);
-            }
-
-            auto* render = rml_manager_->getRenderInterface();
-            assert(render);
-            render->SetViewport(ctx_w, ctx_h);
-
-            GLint prev_fbo = 0;
-            fbo_.bind(&prev_fbo);
-            render->SetTargetFramebuffer(fbo_.fbo());
-
-            render->BeginFrame();
-            rml_context_->Render();
-            render->EndFrame();
-
-            render->SetTargetFramebuffer(0);
-            fbo_.unbind(prev_fbo);
-        }
-
-        if (fbo_.valid()) {
-            auto* main_viewport = ImGui::GetMainViewport();
-            ImGui::SetNextWindowPos(ImVec2(viewport.pos.x, viewport.pos.y));
-            ImGui::SetNextWindowSize(ImVec2(viewport.size.x, viewport.size.y));
-            if (main_viewport)
-                ImGui::SetNextWindowViewport(main_viewport->ID);
-            ImGui::SetNextWindowBgAlpha(0.0f);
-
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-            const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration |
-                                           ImGuiWindowFlags_NoDocking |
-                                           ImGuiWindowFlags_NoMove |
-                                           ImGuiWindowFlags_NoSavedSettings |
-                                           ImGuiWindowFlags_NoScrollbar |
-                                           ImGuiWindowFlags_NoScrollWithMouse |
-                                           ImGuiWindowFlags_NoNav |
-                                           ImGuiWindowFlags_NoNavFocus;
-            if (ImGui::Begin("##StartupOverlayComposite", nullptr, flags)) {
-                ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());
-                // Keep the splash in ImGui's item stack so hover tests block viewport tools.
-                fbo_.blitAsImage(viewport.size.x, viewport.size.y);
-            }
-            ImGui::End();
-            ImGui::PopStyleVar(3);
-        }
+        const auto* main_viewport = ImGui::GetMainViewport();
+        const float screen_x = main_viewport ? main_viewport->Pos.x : 0.0f;
+        const float screen_y = main_viewport ? main_viewport->Pos.y : 0.0f;
+        const float offset_x = viewport.pos.x - screen_x;
+        const float offset_y = viewport.pos.y - screen_y;
+        rml_manager_->trackContextFrame(rml_context_,
+                                        static_cast<int>(offset_x),
+                                        static_cast<int>(offset_y));
+        rml_manager_->queueCachedVulkanContext({
+            .context = rml_context_,
+            .cache = &direct_cache_,
+            .cache_width = ctx_w,
+            .cache_height = ctx_h,
+            .offset_x = offset_x,
+            .offset_y = offset_y,
+            .draw_width = viewport.size.x,
+            .draw_height = viewport.size.y,
+            .refresh = refresh_cache,
+            .foreground = true,
+            .clip_enabled = true,
+            .clip = {
+                .x1 = offset_x,
+                .y1 = offset_y,
+                .x2 = offset_x + viewport.size.x,
+                .y2 = offset_y + viewport.size.y,
+            },
+        });
+        content_dirty_ = false;
 
         ++shown_frames_;
-
-        auto* lang_el = document_ ? document_->GetElementById("lang-select") : nullptr;
-        bool rml_select_open = false;
-        if (lang_el) {
-            auto* sel = dynamic_cast<Rml::ElementFormControlSelect*>(lang_el);
-            if (sel)
-                rml_select_open = sel->IsSelectBoxVisible();
-        }
 
         if (shown_frames_ > 2 && !rml_select_open && !drag_hovering && input_) {
             const bool mouse_clicked =
                 input_->mouse_clicked[0] || input_->mouse_clicked[1] || input_->mouse_clicked[2];
-            const bool key_action = hasKey(input_->keys_pressed, SDL_SCANCODE_ESCAPE) ||
+            const bool key_action = (!escape_consumed &&
+                                     hasKey(input_->keys_pressed, SDL_SCANCODE_ESCAPE)) ||
                                     hasKey(input_->keys_pressed, SDL_SCANCODE_SPACE) ||
                                     hasKey(input_->keys_pressed, SDL_SCANCODE_RETURN) ||
                                     hasKey(input_->keys_pressed, SDL_SCANCODE_KP_ENTER);

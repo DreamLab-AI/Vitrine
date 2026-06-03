@@ -12,6 +12,7 @@
 #include "operation/undo_history.hpp"
 #include "rendering/rendering_manager.hpp"
 #include "scene/scene_manager.hpp"
+#include "visualizer/scene_coordinate_utils.hpp"
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtx/euler_angles.hpp>
@@ -19,6 +20,14 @@
 #include <memory>
 
 namespace lfs::vis::cap {
+
+    bool isTransformableNodeType(const core::NodeType type) {
+        return type == core::NodeType::DATASET ||
+               type == core::NodeType::SPLAT ||
+               type == core::NodeType::CROPBOX ||
+               type == core::NodeType::ELLIPSOID ||
+               type == core::NodeType::MESH;
+    }
 
     namespace {
 
@@ -88,14 +97,6 @@ namespace lfs::vis::cap {
             return row_width;
         }
 
-        bool is_transformable_node_type(const core::NodeType type) {
-            return type == core::NodeType::DATASET ||
-                   type == core::NodeType::SPLAT ||
-                   type == core::NodeType::CROPBOX ||
-                   type == core::NodeType::ELLIPSOID ||
-                   type == core::NodeType::MESH;
-        }
-
         bool normalize_rotation_basis(glm::vec3& col0,
                                       glm::vec3& col1,
                                       glm::vec3& col2,
@@ -139,7 +140,7 @@ namespace lfs::vis::cap {
                 if (!node)
                     return std::unexpected("Node not found: " + name);
 
-                if (!is_transformable_node_type(node->type)) {
+                if (!isTransformableNodeType(node->type)) {
                     selection.found_untransformable = true;
                     continue;
                 }
@@ -217,7 +218,7 @@ namespace lfs::vis::cap {
                     continue;
                 }
 
-                const glm::mat4 world_transform = scene.getWorldTransform(node->id);
+                const glm::mat4 world_transform = scene_coords::nodeVisualizerWorldTransform(scene, node->id);
                 const glm::vec3 corners[8] = {
                     {local_min.x, local_min.y, local_min.z},
                     {local_max.x, local_min.y, local_min.z},
@@ -234,6 +235,18 @@ namespace lfs::vis::cap {
             if (!has_bounds)
                 return std::nullopt;
             return (total_min + total_max) * 0.5f;
+        }
+
+        std::expected<void, std::string> set_visualizer_world_transform(SceneManager& scene_manager,
+                                                                        const std::string& name,
+                                                                        const glm::mat4& visualizer_world_transform) {
+            const auto local_transform =
+                scene_coords::nodeLocalTransformFromVisualizerWorld(scene_manager.getScene(), name, visualizer_world_transform);
+            if (!local_transform)
+                return std::unexpected("Node not found: " + name);
+
+            scene_manager.setNodeTransform(name, *local_transform);
+            return {};
         }
 
         core::NodeId find_attached_child_node(const core::Scene& scene,
@@ -342,6 +355,11 @@ namespace lfs::vis::cap {
                 scene_manager.addToSelection(name);
             return {};
         }
+        if (mode == "remove") {
+            for (const auto& name : names)
+                scene_manager.removeFromSelection(name);
+            return {};
+        }
         if (mode != "replace")
             return std::unexpected("Unsupported node selection mode: " + std::string(mode));
 
@@ -405,14 +423,20 @@ namespace lfs::vis::cap {
         entry->captureTransforms(targets);
 
         for (const auto& name : targets) {
-            auto components = decomposeTransform(scene_manager.getScene().getNodeTransform(name));
+            const auto world_transform = scene_coords::nodeVisualizerWorldTransform(scene_manager.getScene(), name);
+            if (!world_transform)
+                return std::unexpected("Node not found: " + name);
+
+            auto components = decomposeTransform(*world_transform);
             if (translation)
                 components.translation = *translation;
             if (rotation)
                 components.rotation = *rotation;
             if (scale)
                 components.scale = *scale;
-            scene_manager.setNodeTransform(name, composeTransform(components));
+
+            if (auto result = set_visualizer_world_transform(scene_manager, name, composeTransform(components)); !result)
+                return result;
         }
 
         entry->captureAfter();
@@ -449,9 +473,14 @@ namespace lfs::vis::cap {
         entry->captureTransforms(targets);
 
         for (const auto& name : targets) {
-            auto transform = scene_manager.getScene().getNodeTransform(name);
-            transform[3] += glm::vec4(value, 0.0f);
-            scene_manager.setNodeTransform(name, transform);
+            const auto world_transform = scene_coords::nodeVisualizerWorldTransform(scene_manager.getScene(), name);
+            if (!world_transform)
+                return std::unexpected("Node not found: " + name);
+
+            glm::mat4 translated_world = *world_transform;
+            translated_world[3] += glm::vec4(value, 0.0f);
+            if (auto result = set_visualizer_world_transform(scene_manager, name, translated_world); !result)
+                return result;
         }
 
         entry->captureAfter();
@@ -471,12 +500,17 @@ namespace lfs::vis::cap {
 
         const glm::mat4 rotation_delta = glm::eulerAngleXYZ(value.x, value.y, value.z);
         for (const auto& name : targets) {
-            auto components = decomposeTransform(scene_manager.getScene().getNodeTransform(name));
-            const glm::mat4 current_rotation =
-                glm::eulerAngleXYZ(components.rotation.x, components.rotation.y, components.rotation.z);
-            const glm::mat4 new_rotation = rotation_delta * current_rotation;
-            glm::extractEulerAngleXYZ(new_rotation, components.rotation.x, components.rotation.y, components.rotation.z);
-            scene_manager.setNodeTransform(name, composeTransform(components));
+            const auto world_transform = scene_coords::nodeVisualizerWorldTransform(scene_manager.getScene(), name);
+            if (!world_transform)
+                return std::unexpected("Node not found: " + name);
+
+            glm::mat4 rotated_world = *world_transform;
+            const glm::mat3 rotated_basis = glm::mat3(rotation_delta) * glm::mat3(*world_transform);
+            rotated_world[0] = glm::vec4(rotated_basis[0], 0.0f);
+            rotated_world[1] = glm::vec4(rotated_basis[1], 0.0f);
+            rotated_world[2] = glm::vec4(rotated_basis[2], 0.0f);
+            if (auto result = set_visualizer_world_transform(scene_manager, name, rotated_world); !result)
+                return result;
         }
 
         entry->captureAfter();
@@ -495,9 +529,14 @@ namespace lfs::vis::cap {
         entry->captureTransforms(targets);
 
         for (const auto& name : targets) {
-            auto components = decomposeTransform(scene_manager.getScene().getNodeTransform(name));
+            const auto world_transform = scene_coords::nodeVisualizerWorldTransform(scene_manager.getScene(), name);
+            if (!world_transform)
+                return std::unexpected("Node not found: " + name);
+
+            auto components = decomposeTransform(*world_transform);
             components.scale *= value;
-            scene_manager.setNodeTransform(name, composeTransform(components));
+            if (auto result = set_visualizer_world_transform(scene_manager, name, composeTransform(components)); !result)
+                return result;
         }
 
         entry->captureAfter();
@@ -516,14 +555,31 @@ namespace lfs::vis::cap {
         if (!node || !node->model)
             return std::unexpected("Gaussian node not found: " + node_name);
 
-        auto* const field = resolve_gaussian_field(*node->model, field_name);
         const auto canonical_field_name = canonical_gaussian_field_name(field_name);
-        if (!field || canonical_field_name.empty())
+        if (canonical_field_name.empty())
             return std::unexpected("Unsupported gaussian field: " + std::string(field_name));
 
         for (const int index : indices) {
             if (index < 0 || static_cast<size_t>(index) >= node->model->size())
                 return std::unexpected("Gaussian index out of range: " + std::to_string(index));
+        }
+
+        // shN is stored swizzled; the API contract here is canonical [N, K, 3] writes.
+        // Deswizzle into a working buffer, apply the index_copy_, then reswizzle.
+        const bool is_shN = (canonical_field_name == "shN");
+        core::Tensor shN_canon;
+        core::Tensor* field = nullptr;
+        if (is_shN) {
+            if (!node->model->shN_raw().is_valid() || node->model->shN_raw().numel() == 0 ||
+                node->model->max_sh_coeffs_rest() == 0) {
+                return std::unexpected("shN storage is not allocated (max sh-degree 0)");
+            }
+            shN_canon = node->model->shN_canonical();
+            field = &shN_canon;
+        } else {
+            field = resolve_gaussian_field(*node->model, field_name);
+            if (!field)
+                return std::unexpected("Unsupported gaussian field: " + std::string(field_name));
         }
 
         const auto field_shape = field->shape();
@@ -540,11 +596,22 @@ namespace lfs::vis::cap {
 
         auto shape_dims = field_shape.dims();
         shape_dims[0] = indices.size();
-        const auto before = field->clone();
+        // Capture undo state: for shN, snapshot the swizzled storage bytes (cheaper than
+        // recomputing canonical); resolve_gaussian_field returns the swizzled raw which
+        // is what we'll reswizzle into after the write.
+        const auto before =
+            is_shN ? node->model->shN_raw().clone() : field->clone();
 
         const auto index_tensor = core::Tensor::from_vector(indices, {indices.size()}, field->device());
         const auto src_tensor = core::Tensor::from_vector(values, core::TensorShape(shape_dims), field->device());
         field->index_copy_(0, index_tensor, src_tensor);
+
+        // Reswizzle the mutated canonical view back into model.shN_raw().
+        if (is_shN) {
+            const size_t cap_rows = std::max<size_t>(node->model->means().capacity(),
+                                                     node->model->size());
+            node->model->shN_set_from_canonical(shN_canon, cap_rows);
+        }
 
         auto entry = std::make_unique<vis::op::TensorUndoEntry>(
             "gaussians.write",

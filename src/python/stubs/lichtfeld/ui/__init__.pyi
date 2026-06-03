@@ -11,7 +11,8 @@ from . import (
     mouse as mouse,
     ops as ops,
     rml as rml,
-    signals as signals
+    signals as signals,
+    store as store
 )
 import lichtfeld
 
@@ -178,6 +179,19 @@ class ThemeSizes:
     @property
     def toolbar_spacing(self) -> float: ...
 
+class ThemeVignette:
+    @property
+    def enabled(self) -> bool: ...
+
+    @property
+    def intensity(self) -> float: ...
+
+    @property
+    def radius(self) -> float: ...
+
+    @property
+    def softness(self) -> float: ...
+
 class Theme:
     @property
     def name(self) -> str: ...
@@ -188,8 +202,20 @@ class Theme:
     @property
     def sizes(self) -> ThemeSizes: ...
 
+    @property
+    def vignette(self) -> ThemeVignette: ...
+
 def theme() -> Theme:
     """Get the current theme"""
+
+def set_theme_vignette_enabled(arg: bool, /) -> None:
+    """Set theme vignette enabled"""
+
+def set_theme_vignette_intensity(arg: float, /) -> None:
+    """Set theme vignette intensity"""
+
+def set_theme_vignette_style(arg0: float, arg1: float, arg2: float, /) -> None:
+    """Set vignette intensity, radius, and softness"""
 
 class PanelSpace(enum.Enum):
     SIDE_PANEL = 0
@@ -202,7 +228,9 @@ class PanelSpace(enum.Enum):
 
     SCENE_HEADER = 4
 
-    STATUS_BAR = 5
+    BOTTOM_DOCK = 5
+
+    STATUS_BAR = 6
 
 class PanelHeightMode(enum.Enum):
     FILL = 0
@@ -251,6 +279,8 @@ class Panel:
     height_mode: PanelHeightMode = PanelHeightMode.FILL
 
     update_interval_ms: int = 100
+
+    update_policy: str = 'interval'
 
     @classmethod
     def poll(cls, context) -> bool: ...
@@ -925,7 +955,7 @@ def unregister_menu(cls: object) -> None:
 def unregister_all_menus() -> None:
     """Unregister all Python menus"""
 
-def show_context_menu(items: list, screen_x: float, screen_y: float) -> None: ...
+def show_context_menu(items: list, screen_x: float, screen_y: float, on_action: object | None = None) -> None: ...
 
 def poll_context_menu() -> str: ...
 
@@ -980,6 +1010,9 @@ def request_redraw() -> None:
 
 def consume_redraw_request() -> bool:
     """Consume and return pending redraw request flag"""
+
+def schedule_on_ui_thread(callback: Callable) -> None:
+    """Schedule a Python callable on the UI thread"""
 
 class Event:
     def __init__(self) -> None:
@@ -1603,7 +1636,7 @@ class UILayout:
         """End a disabled UI region"""
 
     def image(self, texture_id: int, size: tuple[float, float], tint: object | None = None) -> None:
-        """Draw an image from a GL texture ID"""
+        """Draw an image from a UI texture ID"""
 
     def image_uv(self, texture_id: int, size: tuple[float, float], uv0: tuple[float, float], uv1: tuple[float, float], tint: object | None = None) -> None:
         """Draw an image with custom UV coordinates"""
@@ -1618,7 +1651,7 @@ class UILayout:
         """Draw a DynamicTexture with automatic UV scaling"""
 
     def image_tensor(self, label: str, tensor: lichtfeld.Tensor, size: tuple[float, float], tint: object | None = None) -> None:
-        """Draw a tensor as an image, caching the GL texture by label"""
+        """Draw a tensor as an image, caching the UI texture by label"""
 
     def begin_drag_drop_source(self) -> bool:
         """Begin a drag-drop source on the last item, returns True if dragging"""
@@ -1850,6 +1883,11 @@ def open_image_dialog(start_dir: str = '') -> str:
     Open a file dialog to select an image file. Returns empty string if cancelled.
     """
 
+def open_environment_map_dialog(start_dir: str = '') -> str:
+    """
+    Open a file dialog to select an environment map (.hdr, .exr). Returns empty string if cancelled.
+    """
+
 def open_folder_dialog(title: str = 'Select Folder', start_dir: str = '') -> str:
     """
     Open a folder selection dialog. Returns empty string if cancelled. title is accepted for compatibility and currently ignored.
@@ -1880,6 +1918,31 @@ def open_json_file_dialog() -> str:
     Open a file dialog to select a JSON config file. Returns empty string if cancelled.
     """
 
+def open_csv_file_dialog() -> str:
+    """
+    Open a file dialog to select a CSV file. Returns empty string if cancelled.
+    """
+
+def open_xml_file_dialog() -> str:
+    """
+    Open a file dialog to select a Metashape XML file. Returns empty string if cancelled.
+    """
+
+def open_las_file_dialog() -> str:
+    """
+    Open a file dialog to select a LAS or LAZ point cloud file. Returns empty string if cancelled.
+    """
+
+def save_las_file_dialog(default_name: str = 'export') -> str:
+    """
+    Open a save file dialog for LAS files. Returns empty string if cancelled.
+    """
+
+def save_laz_file_dialog(default_name: str = 'export') -> str:
+    """
+    Open a save file dialog for LAZ compressed files. Returns empty string if cancelled.
+    """
+
 def save_json_file_dialog(default_name: str = 'config.json') -> str:
     """
     Open a save file dialog for JSON files. Returns empty string if cancelled.
@@ -1905,14 +1968,29 @@ def save_usd_file_dialog(default_name: str = 'export') -> str:
     Open a save file dialog for USD files. Returns empty string if cancelled.
     """
 
+def save_usdz_file_dialog(default_name: str = 'export') -> str:
+    """
+    Open a save file dialog for USDZ files. Returns empty string if cancelled.
+    """
+
 def save_html_file_dialog(default_name: str = 'viewer') -> str:
     """
     Open a save file dialog for HTML viewer files. Returns empty string if cancelled.
     """
 
-def open_dataset_folder_dialog() -> str:
+def save_rad_file_dialog(default_name: str = 'export') -> str:
+    """
+    Open a save file dialog for RAD files. Returns empty string if cancelled.
+    """
+
+def open_dataset_folder_dialog(default_path: str = '') -> str:
     """
     Open a folder dialog to select a dataset. Returns empty string if cancelled.
+    """
+
+def select_colmap_sparse_folder_dialog(default_path: str = '') -> str:
+    """
+    Open a folder dialog to select the COLMAP sparse export folder. Returns empty string if cancelled.
     """
 
 def open_video_file_dialog() -> str:
@@ -2060,6 +2138,22 @@ def execute_mirror(axis: str) -> None:
 def go_to_camera_view(cam_uid: int) -> None:
     """Go to camera view by UID"""
 
+def open_camera_preview(cam_uid: int) -> None:
+    """Open the image preview panel for a camera UID"""
+
+def toggle_gt_comparison() -> None:
+    """Toggle ground-truth comparison split view"""
+
+def is_gt_comparison_active() -> bool:
+    """
+    Returns true if ground-truth comparison split view is currently enabled.
+    """
+
+def reveal_in_file_manager(path: str) -> bool:
+    """
+    Reveal a file or directory in the OS file manager. Returns true on success.
+    """
+
 def apply_cropbox() -> None:
     """Apply the selected cropbox"""
 
@@ -2096,19 +2190,24 @@ def save_node_to_disk(node_name: str) -> None:
     """
 
 def load_image_texture(path: str) -> tuple:
-    """Load image as GL texture, returns (texture_id, width, height)"""
+    """Load image as UI texture, returns (texture_id, width, height)"""
 
 def load_thumbnail(path: str, max_size: int) -> tuple:
     """
-    Load downscaled image as GL texture, returns (texture_id, width, height)
+    Load downscaled image as UI texture, returns (texture_id, width, height)
     """
 
 def release_texture(texture_id: int) -> None:
-    """Release an OpenGL texture"""
+    """Release a UI texture"""
 
 def get_image_info(path: str) -> tuple:
     """
     Get image dimensions without loading pixel data, returns (width, height, channels)
+    """
+
+def sample_image_color(path: str, x: int, y: int, radius: int = 10) -> tuple:
+    """
+    Sample average color around pixel (x, y) within given radius, returns (r, g, b) in 0..1
     """
 
 def preload_image_async(path: str) -> None:
@@ -2118,7 +2217,7 @@ def is_preload_ready(path: str) -> bool:
     """Check if preloaded image is ready"""
 
 def get_preloaded_texture(path: str) -> tuple:
-    """Get preloaded image as GL texture, returns (texture_id, width, height)"""
+    """Get preloaded image as UI texture, returns (texture_id, width, height)"""
 
 def cancel_preload(path: str) -> None:
     """Cancel a pending preload"""
@@ -2280,7 +2379,12 @@ def is_windows_platform() -> bool:
 
 def register_file_associations() -> bool:
     """
-    Register LichtFeld Studio as default handler for .ply, .sog, .spz, .usd, .usda, .usdc, .usdz files (Windows only)
+    Register LichtFeld Studio as a supported handler for .ply, .sog, .spz, .usd, .usda, .usdc, .usdz files (Windows only)
+    """
+
+def open_file_association_settings() -> bool:
+    """
+    Open the Windows Default Apps UI for LichtFeld Studio file associations (Windows only)
     """
 
 def unregister_file_associations() -> bool:
@@ -2315,7 +2419,7 @@ def is_thumbnail_ready(video_id: str) -> bool:
     """Check if a thumbnail is ready to be displayed"""
 
 def get_thumbnail_texture(video_id: str) -> int:
-    """Get the OpenGL texture ID for a downloaded thumbnail (0 if not ready)"""
+    """Get the UI texture ID for a downloaded thumbnail (0 if not ready)"""
 
 def load_icon(name: str) -> int:
     """Load icon by name (e.g., 'selection.png'), returns texture ID"""
@@ -2331,6 +2435,9 @@ def free_plugin_icons(plugin_name: str) -> None:
 
 def free_plugin_textures(plugin_name: str) -> None:
     """Free all dynamic textures associated with a plugin"""
+
+def set_save_asset_callback(save_cb: Callable) -> None:
+    """Set callback for Save Asset operation from scene graph"""
 
 class DynamicTexture:
     @overload
@@ -2367,14 +2474,13 @@ def get_invert_masks() -> bool:
     """Get whether masks are inverted"""
 
 def set_theme(name: str) -> None:
-    """
-    Set theme ('dark', 'light', 'gruvbox', 'catppuccin_mocha', 'catppuccin_latte', or 'nord')
-    """
+    """Set theme by stable theme id"""
 
 def get_theme() -> str:
-    """
-    Get current theme name (e.g. 'Dark', 'Light', 'Gruvbox', 'Catppuccin Mocha', 'Catppuccin Latte', or 'Nord')
-    """
+    """Get current stable theme id"""
+
+def themes() -> list:
+    """Get available theme presets with stable ids and UI metadata"""
 
 def set_ui_scale(scale: float) -> None:
     """Set UI scale (0.0 = auto from OS, or 1.0-4.0)"""

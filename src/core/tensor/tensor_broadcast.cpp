@@ -3,6 +3,7 @@
 
 #include "internal/tensor_broadcast.hpp"
 #include "core/logger.hpp"
+#include "internal/cuda_stream_context.hpp"
 #include "internal/tensor_impl.hpp"
 #include "internal/tensor_ops.hpp"
 
@@ -41,7 +42,16 @@ namespace lfs::core {
             return src.clone();
         }
 
-        auto result = Tensor::empty(target, src.device(), src.dtype());
+        Tensor result;
+        if (src.device() == Device::CUDA) {
+            const cudaStream_t execution_stream =
+                getCurrentCUDAStream() ? getCurrentCUDAStream() : src.stream();
+            waitForCUDAStream(execution_stream, src.stream());
+            CUDAStreamGuard guard(execution_stream);
+            result = Tensor::empty(target, src.device(), src.dtype());
+        } else {
+            result = Tensor::empty(target, src.device(), src.dtype());
+        }
 
         if (src.device() == Device::CUDA) {
             const auto& src_strides = src.strides();

@@ -13,6 +13,7 @@ add_subdirectory(rasterization/edge_compute)
 
 # LibTorch-free CUDA kernels
 set(LFS_TRAINING_KERNEL_SOURCES
+    kernels/camera_loss_heatmap.cu
     kernels/ssim.cu
     kernels/l1_loss.cu
     kernels/ssim_reduction.cu
@@ -21,6 +22,7 @@ set(LFS_TRAINING_KERNEL_SOURCES
     kernels/bilateral_grid_backward.cu
     kernels/bilateral_grid_tv.cu
     kernels/ppisp.cu
+    kernels/pruning_kernels.cu
     kernels/mcmc_kernels.cu
     kernels/mrnf_kernels.cu
     kernels/densification_kernels.cu
@@ -101,7 +103,6 @@ target_include_directories(lfs_training
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
-        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/external>  # For indicators.hpp (used in progress.hpp)
         $<INSTALL_INTERFACE:include>
     PRIVATE
         ${CMAKE_SOURCE_DIR}/src                   # For old training components (TODO: port)
@@ -114,11 +115,16 @@ target_include_directories(lfs_training
         ${CMAKE_CURRENT_SOURCE_DIR}/rasterization/edge_compute/utils
         ${CMAKE_CURRENT_SOURCE_DIR}/rasterization  # For gsplat headers
 )
+# indicators.hpp is a PUBLIC system include so consumers (visualizer, mcp) also suppress its warnings
+target_include_directories(lfs_training SYSTEM PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/external>
+)
 
 # Link dependencies
 target_link_libraries(lfs_training
     PUBLIC
         lfs_core                # Depends on new core module (SplatData, Tensor)
+        lfs_diagnostics         # Live VRAM diagnostic accounting
         lfs_io                  # For CacheLoader, exporter, pipelined loader
         lfs_event_bridge        # Shared event bridge for cross-module singletons
         lfs_training_kernels    # LibTorch-free SSIM kernels
@@ -136,9 +142,9 @@ set_target_properties(lfs_training PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
 
-message(STATUS "╔════════════════════════════════════════════════════════════════╗")
-message(STATUS "║  lfs_training - Training Module with Optimizer & Losses       ║")
-message(STATUS "╚════════════════════════════════════════════════════════════════╝")
-message(STATUS "  • Contains: AdamOptimizer, LR Schedulers, Losses (LibTorch-free API)")
-message(STATUS "  • Namespace: lfs::training")
-message(STATUS "  • Uses: CUDA kernels from gs_training_kernels, fastgs_backend")
+message(STATUS "+------------------------------------------------------------------+")
+message(STATUS "|  lfs_training - Training Module with Optimizer & Losses          |")
+message(STATUS "+------------------------------------------------------------------+")
+message(STATUS "  - Contains: AdamOptimizer, LR Schedulers, Losses (LibTorch-free API)")
+message(STATUS "  - Namespace: lfs::training")
+message(STATUS "  - Uses: CUDA kernels from gs_training_kernels, fastgs_backend")

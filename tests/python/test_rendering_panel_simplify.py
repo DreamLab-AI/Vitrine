@@ -109,9 +109,26 @@ def test_rendering_panel_simplify_tracks_selected_splat_and_applies(rendering_pa
     assert panel._refresh_simplify_source(force=True) is True
     assert panel._simplify_source_name == "Patio"
     assert panel._simplify_original_count == 608_640
-    assert panel._compute_simplify_target_count() == 60_864
-    assert panel._simplify_output_name() == "Patio (Simplified 10%)"
+    assert panel._scrub_fields._specs["simplify_target"].min_value == 1.0
+    assert panel._scrub_fields._specs["simplify_target"].max_value == 608_640.0
+    assert panel._scrub_fields._specs["simplify_knn_k"].max_value == 64.0
+    assert panel._compute_simplify_target_count() == 304_320
+    assert panel._compute_simplify_knn_k() == 16
+    assert panel._compute_simplify_merge_cap() == pytest.approx(0.5)
+    assert panel._compute_simplify_opacity_prune_threshold() == pytest.approx(0.1)
+    assert panel._simplify_output_name() == "Patio_304320"
     assert panel._can_run_simplify() is True
+
+    panel._set_scrub_value("simplify_target", 100_000)
+    panel._set_scrub_value("simplify_knn_k", 24)
+    panel._set_scrub_value("simplify_merge_cap", 0.25)
+    panel._set_scrub_value("simplify_opacity_prune_threshold", 0.35)
+
+    assert panel._compute_simplify_target_count() == 100_000
+    assert panel._compute_simplify_knn_k() == 24
+    assert panel._compute_simplify_merge_cap() == pytest.approx(0.25)
+    assert panel._compute_simplify_opacity_prune_threshold() == pytest.approx(0.35)
+    assert panel._simplify_output_name() == "Patio_100000"
 
     panel._start_simplify()
 
@@ -119,10 +136,51 @@ def test_rendering_panel_simplify_tracks_selected_splat_and_applies(rendering_pa
         (
             "Patio",
             {
-                "ratio": 0.1,
+                "ratio": pytest.approx(100_000 / 608_640),
+                "knn_k": 24,
+                "merge_cap": pytest.approx(0.25),
+                "opacity_prune_threshold": pytest.approx(0.35),
             },
         )
     ]
+
+
+def test_rendering_panel_simplify_target_input_clamps_when_source_changes(rendering_panel_module):
+    module, state = rendering_panel_module
+    panel = module.RenderingPanel()
+    panel._handle = _HandleStub()
+
+    state.selected_name = "Large"
+    state.nodes["Large"] = _make_splat_node(module.lf.scene.NodeType.SPLAT, "Large", 608_640)
+    assert panel._refresh_simplify_source(force=True) is True
+
+    panel._set_scrub_value("simplify_target", 100_000)
+    panel._set_scrub_value("simplify_knn_k", 64)
+    assert panel._compute_simplify_target_count() == 100_000
+    assert panel._compute_simplify_knn_k() == 64
+
+    state.selected_name = "Small"
+    state.nodes["Small"] = _make_splat_node(module.lf.scene.NodeType.SPLAT, "Small", 5)
+    assert panel._refresh_simplify_source(force=False) is True
+    assert panel._scrub_fields._specs["simplify_target"].max_value == 5.0
+    assert panel._scrub_fields._specs["simplify_knn_k"].max_value == 4.0
+    assert panel._compute_simplify_target_count() == 5
+    assert panel._compute_simplify_knn_k() == 4
+    assert panel._simplify_output_name() == "Small_5"
+
+
+def test_rendering_panel_simplify_knn_defaults_to_16_when_source_appears(rendering_panel_module):
+    module, state = rendering_panel_module
+    panel = module.RenderingPanel()
+    panel._handle = _HandleStub()
+
+    assert panel._refresh_simplify_source(force=True) is True
+    assert panel._simplify_source_name == ""
+
+    state.selected_name = "Patio"
+    state.nodes["Patio"] = _make_splat_node(module.lf.scene.NodeType.SPLAT, "Patio", 608_640)
+    assert panel._refresh_simplify_source(force=False) is True
+    assert panel._compute_simplify_knn_k() == 16
 
 
 def test_rendering_panel_simplify_progress_and_cancel_update_retained_state(rendering_panel_module):
@@ -153,3 +211,32 @@ def test_rendering_panel_simplify_progress_and_cancel_update_retained_state(rend
 
     panel._on_simplify_cancel()
     assert state.cancel_calls == 1
+
+
+def test_rendering_panel_simplify_prefers_native_store_progress(rendering_panel_module, monkeypatch):
+    module, state = rendering_panel_module
+    panel = module.RenderingPanel()
+    panel._handle = _HandleStub()
+    state.active = False
+    state.progress = 0.0
+    state.stage = "legacy"
+    state.error = "legacy error"
+
+    monkeypatch.setattr(
+        module,
+        "_native_store_value",
+        lambda field, fallback: {
+            "active": True,
+            "progress": 0.875,
+            "stage": "Native simplify",
+            "error": "native error",
+        }
+        if field == "splat_simplify_state"
+        else fallback,
+    )
+
+    assert panel._sync_simplify_task_state(force=False) is True
+    assert panel._simplify_task_active is True
+    assert panel._simplify_progress_value == "0.875"
+    assert panel._simplify_progress_stage == "Native simplify"
+    assert panel._simplify_error_text == "native error"

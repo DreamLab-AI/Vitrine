@@ -158,6 +158,7 @@ namespace lfs::vis::op {
     public:
         explicit SceneSnapshot(SceneManager& scene, std::string name = "Operation");
 
+        void setSelectionChangeHint(bool changed, bool prefer_dense_storage = false);
         void captureSelection();
         void captureTransforms(const std::vector<std::string>& nodes);
         [[nodiscard]] bool captureTransformsBefore(const std::vector<std::string>& nodes,
@@ -182,12 +183,17 @@ namespace lfs::vis::op {
         lfs::core::Scene::SelectionStateSnapshot selection_before_;
         lfs::core::Scene::SelectionStateMetadata selection_after_metadata_;
         TensorSwapStorage selection_mask_storage_;
+        bool selection_change_known_ = false;
+        bool selection_changed_ = false;
+        bool prefer_dense_selection_storage_ = false;
 
         std::unordered_map<std::string, glm::mat4> transforms_before_;
         std::unordered_map<std::string, glm::mat4> transforms_after_;
 
         std::unordered_map<std::string, TensorPresenceSnapshot> deleted_masks_before_;
         std::unordered_map<std::string, TensorSwapStorage> deleted_mask_storage_;
+        std::optional<TensorPresenceSnapshot> combined_deleted_before_;
+        TensorSwapStorage combined_deleted_storage_;
 
         ModifiesFlag captured_ = ModifiesFlag::NONE;
 
@@ -355,6 +361,7 @@ namespace lfs::vis::op {
         std::string image_name;
         std::filesystem::path image_path;
         std::filesystem::path mask_path;
+        lfs::core::CameraSplit split = lfs::core::CameraSplit::Train;
         float focal_x = 0.0f;
         float focal_y = 0.0f;
         float center_x = 0.0f;

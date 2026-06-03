@@ -9,16 +9,14 @@
 }
 
 .is-section-title {
-    font-size: 10dp;
+    font-size: 12dp;
     font-weight: bold;
-    color: #89b4fa;
     margin-bottom: 2dp;
 }
 
 .is-hint {
     display: block;
-    font-size: 11dp;
-    color: #a6adc8;
+    font-size: 12dp;
     margin-bottom: 4dp;
 }
 
@@ -31,8 +29,7 @@
 
 .is-label {
     min-width: 100dp;
-    font-size: 10dp;
-    color: #cdd6f4;
+    font-size: 12dp;
 }
 
 .is-select {
@@ -49,11 +46,9 @@
 
 .is-binding-section {
     display: block;
-    font-size: 11dp;
+    font-size: 12dp;
     font-weight: bold;
-    color: #89b4fa;
     padding: 3dp 4dp;
-    background-color: rgba(137, 180, 250, 40);
     margin-top: 4dp;
 }
 
@@ -66,26 +61,20 @@
 
 .is-action-name {
     width: 160dp;
-    font-size: 10dp;
-    color: #cdd6f4;
+    font-size: 12dp;
     flex-shrink: 0;
 }
 
 .is-binding-desc {
     flex: 1;
-    font-size: 10dp;
-    color: #89b4fa;
+    font-size: 12dp;
     min-width: 0;
-}
-
-.is-binding-desc.is-capturing {
-    color: #f9e2af;
 }
 
 .is-rebind-btn {
     flex-shrink: 0;
     min-width: 60dp;
-    font-size: 11dp;
+    font-size: 12dp;
     padding: 1dp 6dp;
 }
 
@@ -103,4 +92,54 @@
 .is-disabled-overlay {
     opacity: 0.4;
     pointer-events: none;
+}
+
+/* ── Binding conflict confirmation ────────────────────── */
+
+.is-conflict-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 50;
+}
+
+.is-conflict-overlay.hidden {
+    display: none;
+}
+
+.is-conflict-dialog {
+    border-width: 1dp;
+    border-radius: 6dp;
+    padding: 14dp;
+    min-width: 280dp;
+    max-width: 380dp;
+}
+
+.is-conflict-title {
+    display: block;
+    font-size: 12dp;
+    font-weight: bold;
+    margin-bottom: 6dp;
+}
+
+.is-conflict-message {
+    display: block;
+    font-size: 12dp;
+    margin-bottom: 8dp;
+}
+
+.is-conflict-buttons {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8dp;
+    margin-top: 8dp;
+}
+
+.is-conflict-buttons .btn {
+    min-width: 80dp;
 }

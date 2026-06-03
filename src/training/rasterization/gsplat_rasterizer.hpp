@@ -35,6 +35,7 @@ namespace lfs::training {
         float* means2d_ptr = nullptr;        // [C, N, 2]
         float* depths_ptr = nullptr;         // [C, N]
         float* colors_ptr = nullptr;         // [C, N, channels]
+        float* dirs_ptr = nullptr;           // [C, N, 3]
         int32_t* tile_offsets_ptr = nullptr; // [C, tile_height, tile_width]
         int32_t* last_ids_ptr = nullptr;     // [C, H, W]
         float* compensations_ptr = nullptr;  // [C, N] or nullptr
@@ -49,7 +50,8 @@ namespace lfs::training {
         lfs::core::Tensor quats;     // [N, 4]
         lfs::core::Tensor scales;    // [N, 3]
         lfs::core::Tensor opacities; // [N]
-        lfs::core::Tensor sh_coeffs; // [N, K, 3]
+        lfs::core::Tensor sh0;       // [N, 1, 3]
+        lfs::core::Tensor shN;       // swizzled 1D SH-rest buffer
         lfs::core::Tensor bg_color;  // [3] or [C, 3]
 
         // Camera pointers (kept alive by K_tensor)
@@ -150,6 +152,26 @@ namespace lfs::training {
         auto& arena = core::GlobalArenaManager::instance().get_arena();
         arena.end_frame(result->second.frame_id);
         return result->first;
+    }
+
+    // Inference-only rasterization does not mutate the camera; this overload avoids
+    // forcing callers with const camera handles to cast away constness at the call site.
+    inline RenderOutput gsplat_rasterize(
+        const lfs::core::Camera& viewpoint_camera,
+        lfs::core::SplatData& gaussian_model,
+        lfs::core::Tensor& bg_color,
+        float scaling_modifier = 1.0f,
+        bool antialiased = false,
+        GsplatRenderMode render_mode = GsplatRenderMode::RGB,
+        bool use_gut = false) {
+        return gsplat_rasterize(
+            const_cast<lfs::core::Camera&>(viewpoint_camera),
+            gaussian_model,
+            bg_color,
+            scaling_modifier,
+            antialiased,
+            render_mode,
+            use_gut);
     }
 
 } // namespace lfs::training

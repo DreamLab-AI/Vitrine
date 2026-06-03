@@ -39,6 +39,10 @@ namespace lfs::io {
                               "Blender/NeRF dataset path does not exist", path);
         }
 
+        if (is_load_cancel_requested(options)) {
+            return make_error(ErrorCode::CANCELLED, "Blender/NeRF dataset load cancelled", path);
+        }
+
         // Report initial progress
         if (options.progress) {
             options.progress(0.0f, "Loading Blender/NeRF dataset...");
@@ -118,7 +122,8 @@ namespace lfs::io {
             LOG_INFO("Loading Blender/NeRF dataset from: {}", lfs::core::path_to_utf8(transforms_file));
 
             // Read transforms and create cameras
-            auto [camera_infos, scene_center, train_val_split] = read_transforms_cameras_and_images(transforms_file);
+            auto [camera_infos, scene_center, train_val_split] =
+                read_transforms_cameras_and_images(transforms_file, options);
 
             if (options.progress) {
                 options.progress(40.0f, std::format("Creating {} cameras...", camera_infos.size()));
@@ -132,13 +137,26 @@ namespace lfs::io {
 
             // Get base path for mask lookup
             std::filesystem::path base_path = transforms_file.parent_path();
-            MaskDirCache mask_cache(base_path);
+            MaskDirCache mask_cache(base_path, options.cancel_requested);
 
             for (size_t i = 0; i < camera_infos.size(); ++i) {
+                if ((i % 64) == 0) {
+                    throw_if_load_cancel_requested(options, "Blender/NeRF camera creation cancelled");
+                }
                 const auto& info = camera_infos[i];
 
                 try {
-                    std::filesystem::path mask_path = mask_cache.find(info._image_name);
+                    std::filesystem::path mask_path;
+                    if (auto mask_lookup = mask_cache.lookup(info._image_name); mask_lookup.found()) {
+                        mask_path = std::move(mask_lookup.path);
+                    } else if (mask_lookup.ambiguous()) {
+                        return make_error(
+                            ErrorCode::INVALID_DATASET,
+                            std::format("Mask for image '{}' is ambiguous across the dataset mask folders. "
+                                        "Keep masks in the same relative subdirectories as the images or rename them uniquely.",
+                                        info._image_name),
+                            base_path);
+                    }
 
                     // Validate mask dimensions match image dimensions
                     if (!mask_path.empty()) {
@@ -177,11 +195,13 @@ namespace lfs::io {
                 }
             }
 
-            const bool images_have_alpha = detect_camera_alpha(cameras);
+            const bool images_have_alpha = detect_camera_alpha(cameras, options.cancel_requested);
 
             if (options.progress) {
                 options.progress(60.0f, "Loading point cloud...");
             }
+
+            throw_if_load_cancel_requested(options, "Blender/NeRF point cloud load cancelled");
 
             // Check ply_file_path in transforms.json (nerfstudio format), fallback to pointcloud.ply
             std::filesystem::path pointcloud_path;
@@ -202,7 +222,9 @@ namespace lfs::io {
             std::shared_ptr<PointCloud> point_cloud;
             std::vector<std::string> warnings;
             if (std::filesystem::exists(pointcloud_path)) {
-                point_cloud = std::make_shared<PointCloud>(load_simple_ply_point_cloud(pointcloud_path));
+                auto loaded_point_cloud = load_simple_ply_point_cloud(pointcloud_path, options);
+                point_cloud = std::make_shared<PointCloud>(
+                    convert_transforms_point_cloud_to_colmap_world(std::move(loaded_point_cloud)));
                 LOG_INFO("Loaded {} points from {}", point_cloud->size(),
                          lfs::core::path_to_utf8(pointcloud_path.filename()));
             } else {
@@ -210,6 +232,9 @@ namespace lfs::io {
                 LOG_WARN("No PLY found, using {} random points", point_cloud->size());
                 warnings.emplace_back("No point cloud file found, using random initialization");
             }
+
+            // Centralize scene
+            scene_center = centralize_scene(cameras, point_cloud, options.centralize, scene_center);
 
             if (options.progress) {
                 options.progress(100.0f, "Blender/NeRF loading complete");
@@ -241,6 +266,8 @@ namespace lfs::io {
 
             return result;
 
+        } catch (const LoadCancelledError& e) {
+            return make_error(ErrorCode::CANCELLED, e.what(), path);
         } catch (const std::exception& e) {
             return make_error(ErrorCode::CORRUPTED_DATA,
                               std::format("Failed to load Blender/NeRF dataset: {}", e.what()), path);

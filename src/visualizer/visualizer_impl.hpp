@@ -19,6 +19,7 @@
 #include "training/training_manager.hpp"
 #include "visualizer/visualizer.hpp"
 #include "window/window_manager.hpp"
+#include <cassert>
 #include <chrono>
 #include <functional>
 #include <memory>
@@ -47,7 +48,9 @@ namespace lfs::vis {
         class SelectionTool;
     } // namespace tools
 
-    class VisualizerImpl : public Visualizer {
+    class LFS_VIS_API VisualizerImpl : public Visualizer {
+        friend class gui::GuiManager;
+
     public:
         explicit VisualizerImpl(const ViewerOptions& options);
         ~VisualizerImpl() override;
@@ -59,13 +62,18 @@ namespace lfs::vis {
         std::expected<void, std::string> loadDataset(const std::filesystem::path& path) override;
         std::expected<void, std::string> loadCheckpointForTraining(const std::filesystem::path& path) override;
         void consolidateModels() override;
-        void clearScene() override;
+        [[nodiscard]] std::expected<void, std::string> clearScene() override;
         core::Scene& getScene() override { return scene_manager_->getScene(); }
         bool postWork(WorkItem work) override;
+        bool postRenderWork(WorkItem work);
         [[nodiscard]] bool isOnViewerThread() const override {
             return std::this_thread::get_id() == viewer_thread_id_;
         }
         [[nodiscard]] bool acceptsPostedWork() const override;
+        [[nodiscard]] bool isProcessingRenderWork() const {
+            assert(isOnViewerThread());
+            return processing_render_work_;
+        }
         void setShutdownRequestedCallback(std::function<void()> callback) override;
         std::expected<void, std::string> startTraining() override;
         std::expected<std::filesystem::path, std::string> saveCheckpoint(
@@ -140,6 +148,7 @@ namespace lfs::vis {
         // GUI manager
         std::unique_ptr<gui::GuiManager> gui_manager_;
         friend class gui::GuiManager;
+        friend class VisualizerImplResetTest_ResetTrainingPreservesExplicitInitPath_Test;
 
         // Allow ToolContext to access GUI manager for logging
         friend class ToolContext;
@@ -151,6 +160,7 @@ namespace lfs::vis {
         void render();
         void shutdown();
         bool allowclose();
+        void wakeMainLoop() const;
 
         // Event system
         void setupEventHandlers();
@@ -158,8 +168,11 @@ namespace lfs::vis {
         void handleTrainingCompleted(const lfs::core::events::state::TrainingCompleted& event);
         void handleLoadFileCommand(const lfs::core::events::cmd::LoadFile& cmd);
         void handleLoadConfigFile(const std::filesystem::path& path);
+        void handleNewProject();
+        void performNewProject();
         void handleSwitchToLatestCheckpoint();
         void performReset();
+        void resetProjectState();
 
         // Tool initialization
         void initializeTools();
@@ -168,6 +181,40 @@ namespace lfs::vis {
         void setupPythonBridge();
         void setupViewContextBridge();
         void beginShutdown(std::string_view reason = "Viewer is shutting down");
+        void processRenderWorkQueue();
+        [[nodiscard]] bool hasPendingRenderWork();
+        [[nodiscard]] bool inputFrameRequestsRender() const;
+
+        struct FrameDemand {
+            bool viewport_export_locked = false;
+            bool scene_dirty = false;
+            bool continuous_input = false;
+            bool python_animation = false;
+            bool python_overlay = false;
+            bool python_redraw = false;
+            bool gui_animation = false;
+            bool input_event = false;
+            bool posted_work = false;
+            bool render_work = false;
+            bool store_dirty = false;
+
+            [[nodiscard]] bool shouldRenderFrame() const {
+                return viewport_export_locked || scene_dirty || continuous_input ||
+                       python_animation || python_overlay || python_redraw ||
+                       gui_animation || input_event || posted_work || render_work ||
+                       store_dirty;
+            }
+
+            [[nodiscard]] bool needsContinuousLoop() const {
+                return scene_dirty || continuous_input || python_animation ||
+                       python_overlay || python_redraw || gui_animation ||
+                       render_work || viewport_export_locked || store_dirty;
+            }
+        };
+
+        [[nodiscard]] FrameDemand collectFrameDemand(bool viewport_export_locked,
+                                                     bool drained_store_dirty = false);
+        void waitForNextEvent(bool is_training);
 
         class CallbackCleanup {
             std::vector<std::function<void()>> cleanups_;
@@ -210,9 +257,11 @@ namespace lfs::vis {
 
         mutable std::mutex work_queue_mutex_;
         std::vector<WorkItem> work_queue_;
+        std::vector<WorkItem> render_work_queue_;
         std::thread::id viewer_thread_id_;
         bool accepting_work_ = true;
         bool shutdown_started_ = false;
+        bool processing_render_work_ = false;
 
         std::mutex shutdown_callback_mutex_;
         std::function<void()> shutdown_requested_callback_;
@@ -226,8 +275,10 @@ namespace lfs::vis {
         bool tools_initialized_ = false;
         bool view_context_bridge_initialized_ = false;
         bool pending_auto_train_ = false;
+        bool pending_new_project_ = false;
         bool pending_reset_ = false;
         bool gui_frame_rendered_ = false;
+        bool update_work_processed_ = false;
         std::chrono::high_resolution_clock::time_point last_frame_time_ = std::chrono::high_resolution_clock::now();
         bool sequencer_ui_initialized_ = false;
         std::unique_ptr<python::SequencerUIStateData> sequencer_ui_state_;

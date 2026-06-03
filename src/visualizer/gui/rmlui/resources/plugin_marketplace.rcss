@@ -1,10 +1,7 @@
-/* Plugin Marketplace panel styles
- * No hardcoded colors — all colors inherit from theme pipeline. */
+/* Plugin Marketplace panel styles. Theme-dependent colors live in plugin_marketplace.theme.rcss. */
 
-/* Warning text — hardcoded fallback; no theme-generated .status-warning exists. */
 .mp-warning-text {
     display: block;
-    color: #f9e2af;
     font-size: 12dp;
     margin-bottom: 4dp;
 }
@@ -40,8 +37,16 @@
 .mp-controls {
     display: flex;
     align-items: center;
+    justify-content: space-between;
     gap: 6dp;
     margin-bottom: 6dp;
+}
+
+.mp-controls-main {
+    display: flex;
+    align-items: center;
+    gap: 6dp;
+    min-width: 0;
 }
 
 .mp-select {
@@ -54,6 +59,55 @@
 
 .mp-select-sort {
     min-width: 150dp;
+}
+
+.mp-view-toggle {
+    display: flex;
+    align-items: center;
+    gap: 4dp;
+    margin-left: auto;
+    flex-shrink: 0;
+}
+
+.mp-view-btn {
+    width: 22dp;
+    min-width: 22dp;
+    height: 20dp;
+    padding: 0;
+    line-height: 18dp;
+    font-size: 12dp;
+    text-align: center;
+}
+
+.mp-icon-grid {
+    display: inline-flex;
+    flex-wrap: wrap;
+    width: 11dp;
+    height: 11dp;
+    gap: 1dp;
+    vertical-align: middle;
+}
+
+.mp-icon-grid > span {
+    display: block;
+    width: 5dp;
+    height: 5dp;
+}
+
+.mp-icon-list {
+    display: inline-flex;
+    flex-direction: column;
+    justify-content: center;
+    width: 11dp;
+    height: 11dp;
+    gap: 2dp;
+    vertical-align: middle;
+}
+
+.mp-icon-list > span {
+    display: block;
+    width: 11dp;
+    height: 1.5dp;
 }
 
 /* ── Manual URL install ───────────────────────────────── */
@@ -99,6 +153,10 @@
     margin-bottom: 8dp;
 }
 
+.card-grid.card-grid--list {
+    border-width: 1dp;
+}
+
 .card-row {
     display: flex;
     align-items: flex-start;
@@ -124,7 +182,6 @@
     display: flex;
     flex-direction: column;
     transition: background-color 0.18s quadratic-out;
-    background-color: transparent;
 }
 
 .plugin-card--placeholder {
@@ -142,18 +199,10 @@
 }
 
 .status-item {
-    font-size: 10dp;
+    font-size: 12dp;
     margin-right: 16dp;
-    letter-spacing: 0.5dp;
+    letter-spacing: 0.2dp;
 }
-
-.plugin-card:hover {
-    background-color: rgba(137, 180, 250, 24);
-}
-
-.plugin-card.card--in-progress { border-color: #89b4fa; }
-.plugin-card.card--success     { border-color: #a6e3a1; }
-.plugin-card.card--error       { border-color: #f38ba8; }
 
 /* ── Card info area ───────────────────────────────────── */
 
@@ -183,18 +232,18 @@
 }
 
 .card-metrics {
-    font-size: 11dp;
+    font-size: 12dp;
     display: block;
     margin-top: 2dp;
 }
 
 .card-tags {
-    font-size: 11dp;
+    font-size: 12dp;
     display: block;
 }
 
 .card-local {
-    font-size: 11dp;
+    font-size: 12dp;
     display: block;
 }
 
@@ -240,7 +289,7 @@
 }
 
 .card-startup-label {
-    font-size: 11dp;
+    font-size: 12dp;
 }
 
 /* ── Card feedback ────────────────────────────────────── */
@@ -256,8 +305,162 @@
 }
 
 .card-progress-text {
-    font-size: 11dp;
+    font-size: 12dp;
     display: block;
+}
+
+/* ── List layout ──────────────────────────────────────── */
+
+.plugin-list-row {
+    display: block;
+    min-width: 0;
+    border-top-width: 1dp;
+    border-left-width: 2dp;
+    border-left-color: transparent;
+    transition: background-color 0.18s quadratic-out, border-left-color 0.18s quadratic-out;
+}
+
+.plugin-list-row:first-child {
+    border-top-width: 0;
+}
+
+.plugin-list-summary {
+    display: flex;
+    align-items: center;
+    gap: 6dp;
+    min-width: 0;
+    min-height: 24dp;
+    padding: 3dp 8dp 3dp 8dp;
+}
+
+.plugin-list-disclosure {
+    width: 14dp;
+    min-width: 14dp;
+    padding: 0;
+    border-width: 0;
+    background-color: transparent;
+    text-align: center;
+    line-height: 14dp;
+    flex-shrink: 0;
+}
+
+.plugin-list-name-btn {
+    display: flex;
+    align-items: center;
+    gap: 6dp;
+    flex: 1;
+    min-width: 0;
+    padding: 0;
+    border-width: 0;
+    background-color: transparent;
+    text-align: left;
+}
+
+.plugin-list-name {
+    font-size: 12dp;
+    font-weight: bold;
+    min-width: 0;
+}
+
+.plugin-list-version {
+    font-size: 12dp;
+    flex-shrink: 0;
+}
+
+.plugin-list-summary-right {
+    display: flex;
+    align-items: center;
+    gap: 10dp;
+    margin-left: auto;
+    flex-shrink: 0;
+}
+
+.plugin-list-summary-status {
+    min-width: 112dp;
+    font-size: 12dp;
+    text-align: right;
+}
+
+.plugin-list-marker {
+    width: 10dp;
+    min-width: 10dp;
+    font-size: 12dp;
+    text-align: center;
+}
+
+.plugin-list-details {
+    display: flex;
+    flex-direction: column;
+    gap: 6dp;
+    padding: 0 10dp 8dp 34dp;
+}
+
+.plugin-list-details.hidden {
+    display: none;
+}
+
+.plugin-list-detail-meta {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8dp;
+}
+
+.plugin-list-meta-item {
+    font-size: 12dp;
+}
+
+.plugin-list-link {
+    padding: 0 4dp;
+    border-width: 0;
+    background-color: transparent;
+    font-size: 12dp;
+}
+
+.plugin-list-description,
+.plugin-list-error {
+    display: block;
+    font-size: 12dp;
+}
+
+.plugin-list-feedback {
+    margin-top: 0;
+}
+
+.plugin-list-options {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8dp;
+}
+
+.plugin-list-option-row {
+    min-height: 18dp;
+}
+
+.plugin-list-option-row label {
+    display: flex;
+    align-items: center;
+    gap: 4dp;
+}
+
+.plugin-list-option-row input[type="checkbox"] {
+    margin: 0;
+}
+
+.plugin-list-option-label {
+    font-size: 12dp;
+}
+
+.plugin-list-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4dp;
+}
+
+.plugin-list-buttons .btn {
+    min-width: 64dp;
+    padding: 2dp 6dp;
 }
 
 /* ── Confirm overlay ──────────────────────────────────── */
@@ -268,7 +471,6 @@
     left: 0;
     right: 0;
     bottom: 0;
-    background-color: rgba(0, 0, 0, 120);
     backdrop-filter: blur(3dp);
     display: flex;
     justify-content: center;
@@ -289,7 +491,7 @@
 
 .confirm-message {
     display: block;
-    font-size: 11dp;
+    font-size: 12dp;
     text-align: center;
     margin-bottom: 8dp;
 }

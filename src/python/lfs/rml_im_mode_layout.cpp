@@ -360,8 +360,7 @@ namespace lfs::python {
         if (!slot.element) {
             auto el = doc_->CreateElement("p");
             el->SetClass("im-label", true);
-            el->SetProperty("text-align", "center");
-            el->SetProperty("width", "100%");
+            el->SetClass("im-label--centered", true);
             el->SetInnerRML(Rml::String(display));
             slot.element = line->AppendChild(std::move(el));
         } else {
@@ -431,8 +430,7 @@ namespace lfs::python {
         if (!slot.element) {
             auto el = doc_->CreateElement("p");
             el->SetClass("im-label", true);
-            el->SetProperty("text-align", "center");
-            el->SetProperty("width", "100%");
+            el->SetClass("im-label--centered", true);
             if (!css_color.empty())
                 el->SetProperty("color", Rml::String(css_color));
             el->SetInnerRML(Rml::String(display));
@@ -1020,7 +1018,7 @@ namespace lfs::python {
             auto input = doc_->CreateElement("input");
             input->SetAttribute("type", "text");
             input->SetAttribute("value", Rml::String(value));
-            input->SetProperty("flex", "1");
+            input->SetClass("im-control--fill", true);
 
             slot.events.string_value = value;
             input->AddEventListener(Rml::EventId::Change, new SlotEventListener(&slot.events));
@@ -1078,7 +1076,7 @@ namespace lfs::python {
             input->SetAttribute("type", "text");
             input->SetAttribute("value", Rml::String(std::format("{:.3f}", value)));
             input->SetClass("number-input", true);
-            input->SetProperty("flex", "1");
+            input->SetClass("im-control--fill", true);
 
             slot.events.float_value = value;
             slot.events.string_value = std::format("{:.3f}", value);
@@ -1129,7 +1127,7 @@ namespace lfs::python {
             input->SetAttribute("type", "text");
             input->SetAttribute("value", Rml::String(std::to_string(value)));
             input->SetClass("number-input", true);
-            input->SetProperty("flex", "1");
+            input->SetClass("im-control--fill", true);
 
             slot.events.string_value = std::to_string(value);
             input->AddEventListener(Rml::EventId::Change, new SlotEventListener(&slot.events));
@@ -1278,6 +1276,16 @@ namespace lfs::python {
         auto* line = ensure_line_container();
         auto& slot = ensure_slot(SlotType::Combo, build_slot_id("combo", &label));
 
+        // Build a cheap snapshot key: "item0\0item1\0item2\0..."
+        // Detects both renames and length changes.
+        std::string items_key;
+        for (const auto& s : items) {
+            items_key += s;
+            items_key += '\0';
+        }
+
+        const bool items_dirty = (items_key != slot.events.items_key);
+
         if (!slot.element) {
             auto wrapper = doc_->CreateElement("div");
             wrapper->SetClass("setting-row", true);
@@ -1287,7 +1295,7 @@ namespace lfs::python {
             lbl->SetInnerRML(Rml::String(strip_imgui_id(label)));
 
             auto select = doc_->CreateElement("select");
-            select->SetProperty("flex", "1");
+            select->SetClass("im-control--fill", true);
             for (int i = 0; i < static_cast<int>(items.size()); ++i) {
                 auto option = doc_->CreateElement("option");
                 option->SetAttribute("value", Rml::String(std::to_string(i)));
@@ -1298,6 +1306,7 @@ namespace lfs::python {
             }
 
             slot.events.int_value = current_idx;
+            slot.events.items_key = std::move(items_key);
             select->AddEventListener(Rml::EventId::Change, new SlotEventListener(&slot.events));
 
             wrapper->AppendChild(std::move(lbl));
@@ -1307,9 +1316,33 @@ namespace lfs::python {
         } else {
             if (slot.element->GetParentNode() != line)
                 line->AppendChild(slot.element->GetParentNode()->RemoveChild(slot.element));
+
             auto* select = slot.element->GetChild(1);
-            if (select && !slot.events.changed)
-                select->SetAttribute("value", Rml::String(std::to_string(current_idx)));
+            if (select) {
+                if (items_dirty) {
+                    // Replace the entire <select> element to avoid RmlUi
+                    // retaining stale internal form state from child removal.
+                    auto new_select = doc_->CreateElement("select");
+                    new_select->SetClass("im-control--fill", true);
+                    for (int i = 0; i < static_cast<int>(items.size()); ++i) {
+                        auto option = doc_->CreateElement("option");
+                        option->SetAttribute("value", Rml::String(std::to_string(i)));
+                        option->SetInnerRML(Rml::String(items[i]));
+                        if (i == current_idx)
+                            option->SetAttribute("selected", "");
+                        new_select->AppendChild(std::move(option));
+                    }
+                    new_select->AddEventListener(Rml::EventId::Change, new SlotEventListener(&slot.events));
+                    slot.element->RemoveChild(select);
+                    slot.element->AppendChild(std::move(new_select));
+
+                    slot.events.items_key = std::move(items_key);
+                    slot.events.int_value = current_idx;
+                    slot.events.changed = false;
+                } else if (!slot.events.changed) {
+                    select->SetAttribute("value", Rml::String(std::to_string(current_idx)));
+                }
+            }
         }
 
         last_element_ = slot.element;
@@ -1387,7 +1420,7 @@ namespace lfs::python {
 
         if (!slot.element) {
             auto el = doc_->CreateElement("div");
-            el->SetProperty("height", "8dp");
+            el->SetClass("im-spacing", true);
             slot.element = level.parent->AppendChild(std::move(el));
         } else if (slot.element->GetParentNode() != level.parent) {
             level.parent->AppendChild(slot.element->GetParentNode()->RemoveChild(slot.element));
@@ -1548,7 +1581,7 @@ namespace lfs::python {
             if (w > 0.0f)
                 cell->SetProperty("width", Rml::String(std::to_string(static_cast<int>(w)) + "dp"));
             else
-                cell->SetProperty("flex", "1");
+                cell->SetClass("im-table-cell--fill", true);
         }
 
         table_->current_cell = table_->current_row->AppendChild(std::move(cell));

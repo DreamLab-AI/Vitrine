@@ -4,12 +4,48 @@
 
 #include "core/events.hpp"
 #include "core/logger.hpp"
+#include "core/scene.hpp"
 #include "core/services.hpp"
 #include "rendering_manager.hpp"
+#include <algorithm>
 
 namespace lfs::vis {
 
     using namespace lfs::core::events;
+
+    namespace {
+        [[nodiscard]] constexpr bool hasSceneMutation(const uint32_t flags, const lfs::core::Scene::MutationType type) {
+            return (flags & static_cast<uint32_t>(type)) != 0;
+        }
+
+        [[nodiscard]] constexpr DirtyMask dirtyMaskForSceneMutations(const uint32_t flags) {
+            using Mutation = lfs::core::Scene::MutationType;
+
+            if (flags == 0 || hasSceneMutation(flags, Mutation::CLEARED)) {
+                return DirtyFlag::ALL;
+            }
+
+            DirtyMask dirty = 0;
+            if (hasSceneMutation(flags, Mutation::NODE_ADDED) ||
+                hasSceneMutation(flags, Mutation::NODE_REMOVED) ||
+                hasSceneMutation(flags, Mutation::VISIBILITY_CHANGED) ||
+                hasSceneMutation(flags, Mutation::MODEL_CHANGED)) {
+                dirty |= DirtyFlag::SPLATS | DirtyFlag::MESH | DirtyFlag::OVERLAY | DirtyFlag::SPLIT_VIEW;
+            }
+            if (hasSceneMutation(flags, Mutation::TRANSFORM_CHANGED) ||
+                hasSceneMutation(flags, Mutation::NODE_REPARENTED)) {
+                dirty |= DirtyFlag::MESH | DirtyFlag::OVERLAY;
+            }
+            if (hasSceneMutation(flags, Mutation::SELECTION_CHANGED)) {
+                dirty |= DirtyFlag::SELECTION | DirtyFlag::OVERLAY;
+            }
+            if (hasSceneMutation(flags, Mutation::NODE_RENAMED)) {
+                dirty |= DirtyFlag::OVERLAY | DirtyFlag::SPLIT_VIEW;
+            }
+
+            return dirty == 0 ? DirtyFlag::ALL : dirty;
+        }
+    } // namespace
 
     void RenderingManager::setupEventHandlers() {
         cmd::ToggleSplitView::when([this](const auto&) { handleToggleSplitView(); });
@@ -21,8 +57,10 @@ namespace lfs::vis {
         ui::WindowResized::when([this](const auto&) { handleWindowResized(); });
         ui::GridSettingsChanged::when([this](const auto& event) { handleGridSettingsChanged(event); });
         ui::NodeSelected::when([this](const auto&) { triggerSelectionFlash(); });
+        state::TrainingStarted::when([this](const auto&) { handleTrainingStarted(); });
+        state::TrainingCompleted::when([this](const auto&) { handleTrainingCompleted(); });
         state::SceneLoaded::when([this](const auto&) { handleSceneLoaded(); });
-        state::SceneChanged::when([this](const auto&) { handleSceneChanged(); });
+        state::SceneChanged::when([this](const auto& event) { handleSceneChanged(event.mutation_flags); });
         state::SceneCleared::when([this](const auto&) { handleSceneCleared(); });
         cmd::SetPLYVisibility::when([this](const auto&) { handlePLYVisibilityChanged(); });
         state::PLYAdded::when([this](const auto&) { handlePLYAdded(); });
@@ -52,6 +90,7 @@ namespace lfs::vis {
         {
             std::lock_guard<std::mutex> lock(settings_mutex_);
             result = split_view_service_.toggleMode(settings_, SplitViewMode::IndependentDual, event.viewport);
+            syncGridPlanesLocked(settings_.grid_plane);
             markDirty(DirtyFlag::SPLIT_VIEW | DirtyFlag::CAMERA);
         }
         applySplitModeChange(result);
@@ -70,6 +109,9 @@ namespace lfs::vis {
         }
 
         applySplitModeChange(result);
+        if (!splitViewUsesGTComparison(result.current_mode)) {
+            invalidateCameraMetricsRequests(true);
+        }
     }
 
     void RenderingManager::handleGoToCamView(const int cam_id) {
@@ -83,9 +125,9 @@ namespace lfs::vis {
 
     void RenderingManager::handleSplitPositionChanged(const float position) {
         std::lock_guard<std::mutex> lock(settings_mutex_);
-        settings_.split_position = position;
+        settings_.split_position = std::clamp(position, 0.0f, 1.0f);
         LOG_TRACE("Split position changed to: {}", position);
-        markDirty(DirtyFlag::SPLIT_VIEW);
+        markDirty(DirtyFlag::SPLIT_VIEW | frame_lifecycle_service_.deferViewportRefresh());
     }
 
     void RenderingManager::handleRenderSettingsChanged(const ui::RenderSettingsChanged& event) {
@@ -112,6 +154,7 @@ namespace lfs::vis {
         }
         if (event.equirectangular) {
             settings_.equirectangular = *event.equirectangular;
+            enforceProjectionBackend(settings_);
             LOG_TRACE("Equirectangular rendering: {}", settings_.equirectangular ? "enabled" : "disabled");
         }
         markDirty(DirtyFlag::SPLATS | DirtyFlag::CAMERA | DirtyFlag::BACKGROUND);
@@ -122,23 +165,35 @@ namespace lfs::vis {
         markDirty(DirtyFlag::VIEWPORT | DirtyFlag::CAMERA);
         viewport_artifact_service_.clearViewportOutput();
         frame_lifecycle_service_.resetViewportSize();
-        gt_texture_cache_.clear();
     }
 
     void RenderingManager::handleGridSettingsChanged(const ui::GridSettingsChanged& event) {
         std::lock_guard<std::mutex> lock(settings_mutex_);
         settings_.show_grid = event.enabled;
-        settings_.grid_plane = event.plane;
+        settings_.grid_plane = clampGridPlane(event.plane);
         settings_.grid_opacity = event.opacity;
+        if (split_view_service_.isIndependentDualActive(settings_)) {
+            panel_grid_planes_[splitViewPanelIndex(split_view_service_.focusedPanel())] = settings_.grid_plane;
+        } else {
+            syncGridPlanesLocked(settings_.grid_plane);
+        }
         LOG_TRACE("Grid settings updated - enabled: {}, plane: {}, opacity: {}",
-                  event.enabled, event.plane, event.opacity);
+                  event.enabled, settings_.grid_plane, event.opacity);
+        markDirty(DirtyFlag::OVERLAY);
+    }
+
+    void RenderingManager::handleTrainingStarted() {
+        markDirty(DirtyFlag::OVERLAY);
+    }
+
+    void RenderingManager::handleTrainingCompleted() {
         markDirty(DirtyFlag::OVERLAY);
     }
 
     void RenderingManager::handleSceneLoaded() {
         LOG_DEBUG("Scene loaded, marking render dirty");
         markDirty();
-        gt_texture_cache_.clear();
+        invalidateCameraMetricsRequests(true);
         camera_interaction_service_.clearCurrentCamera();
         camera_interaction_service_.clearHoveredCamera();
 
@@ -146,6 +201,7 @@ namespace lfs::vis {
         {
             std::lock_guard<std::mutex> lock(settings_mutex_);
             result = split_view_service_.handleSceneLoaded(settings_);
+            syncGridPlanesLocked(settings_.grid_plane);
         }
         applySplitModeChange(result);
         if (splitViewUsesGTComparison(result.previous_mode) && !splitViewUsesGTComparison(result.current_mode)) {
@@ -153,26 +209,21 @@ namespace lfs::vis {
         }
     }
 
-    void RenderingManager::handleSceneChanged() {
-        pass_graph_.resetPointCloudCache();
-        markDirty();
+    void RenderingManager::handleSceneChanged(const uint32_t mutation_flags) {
+        markDirty(dirtyMaskForSceneMutations(mutation_flags));
     }
 
     void RenderingManager::handleSceneCleared() {
-        viewport_artifact_service_.clearViewportOutput();
-        pass_graph_.resetPointCloudCache();
-        gt_texture_cache_.clear();
+        releaseSceneRenderResources();
+        invalidateCameraMetricsRequests(true);
         SplitViewService::ModeChangeResult result;
         {
             std::lock_guard<std::mutex> lock(settings_mutex_);
             result = split_view_service_.handleSceneCleared(settings_);
-        }
-        if (engine_) {
-            engine_->clearFrustumCache();
+            syncGridPlanesLocked(settings_.grid_plane);
         }
         camera_interaction_service_.clearCurrentCamera();
         camera_interaction_service_.clearHoveredCamera();
-        frame_lifecycle_service_.resetModelTracking();
         applySplitModeChange(result);
         markDirty();
     }

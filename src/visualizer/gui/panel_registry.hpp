@@ -16,6 +16,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -49,6 +50,28 @@ namespace lfs::vis::gui {
         bool is_training = false;
     };
 
+    struct FloatingPanelAnchor {
+        float x = 0.0f;
+        float y = 0.0f;
+        float width = 0.0f;
+        float height = 0.0f;
+    };
+
+    struct FloatingPanelPlacement {
+        float x = 0.0f;
+        float y = 0.0f;
+    };
+
+    [[nodiscard]] LFS_VIS_API FloatingPanelPlacement computeFloatingPanelPlacement(
+        const FloatingPanelAnchor& anchor,
+        float panel_width,
+        float panel_height,
+        float stored_x,
+        float stored_y,
+        bool auto_center,
+        float title_height,
+        float visible_fraction = 0.1f);
+
     class IPanel {
     public:
         virtual ~IPanel() = default;
@@ -76,6 +99,15 @@ namespace lfs::vis::gui {
             (void)h;
             draw(ctx);
         }
+        virtual bool drawDirectCached(float x, float y, float w, float h,
+                                      const PanelDrawContext& ctx) {
+            (void)x;
+            (void)y;
+            (void)w;
+            (void)h;
+            (void)ctx;
+            return false;
+        }
         virtual float getDirectDrawHeight() const { return 0.0f; }
         virtual void setInputClipY(float y_min, float y_max) {
             (void)y_min;
@@ -86,6 +118,8 @@ namespace lfs::vis::gui {
         virtual bool wantsKeyboard() const { return false; }
         virtual bool needsAnimationFrame() const { return false; }
         virtual bool wantsExternalFloatingShadow() const { return true; }
+        virtual void setPanelSpace(PanelSpace space) { (void)space; }
+        virtual void reloadRmlResources() {}
     };
 
     struct PanelInfo {
@@ -107,6 +141,7 @@ namespace lfs::vis::gui {
         float original_height = 0;
         float float_x = NAN;
         float float_y = NAN;
+        bool float_auto_center = true;
         uint64_t float_stack_order = 0;
         bool float_dragging = false;
         float float_drag_ox = 0;
@@ -130,6 +165,32 @@ namespace lfs::vis::gui {
 
         bool has_option(PanelOption opt) const {
             return (options & static_cast<uint32_t>(opt)) != 0;
+        }
+    };
+
+    struct PanelAnimationVisibility {
+        std::string_view active_main_tab;
+        bool ui_visible = true;
+        bool right_panel_visible = true;
+        bool bottom_dock_visible = true;
+    };
+
+    struct PanelAnimationDemand {
+        bool side_panel = false;
+        bool floating = false;
+        bool viewport_overlay = false;
+        bool main_panel_tab = false;
+        bool scene_header = false;
+        bool bottom_dock = false;
+        bool status_bar = false;
+
+        [[nodiscard]] bool rightPanel() const {
+            return main_panel_tab || scene_header;
+        }
+
+        [[nodiscard]] bool any() const {
+            return side_panel || floating || viewport_overlay || main_panel_tab ||
+                   scene_header || bottom_dock || status_bar;
         }
     };
 
@@ -202,14 +263,23 @@ namespace lfs::vis::gui {
         float draw_panels_direct(PanelSpace space, float x, float y, float w, float max_h,
                                  const PanelDrawContext& ctx,
                                  const PanelInputState* input = nullptr);
-        void preload_panels_direct(PanelSpace space, float w, float max_h,
-                                   const PanelDrawContext& ctx,
-                                   float clip_y_min = -1.0f, float clip_y_max = -1.0f,
-                                   const PanelInputState* input = nullptr);
+        float draw_panels_direct_cached(PanelSpace space, float x, float y, float w, float max_h,
+                                        const PanelDrawContext& ctx,
+                                        const PanelInputState* input = nullptr);
+        float preload_panels_direct(PanelSpace space, float w, float max_h,
+                                    const PanelDrawContext& ctx,
+                                    float clip_y_min = -1.0f, float clip_y_max = -1.0f,
+                                    const PanelInputState* input = nullptr);
         float draw_single_panel_direct(const std::string& id, float x, float y, float w, float h,
                                        const PanelDrawContext& ctx,
                                        float clip_y_min = -1.0f, float clip_y_max = -1.0f,
                                        const PanelInputState* input = nullptr);
+        float draw_single_panel_direct_cached(const std::string& id, float x, float y,
+                                              float w, float h,
+                                              const PanelDrawContext& ctx,
+                                              float clip_y_min = -1.0f,
+                                              float clip_y_max = -1.0f,
+                                              const PanelInputState* input = nullptr);
         float preload_single_panel_direct(const std::string& id, float w, float h,
                                           const PanelDrawContext& ctx,
                                           float clip_y_min = -1.0f, float clip_y_max = -1.0f,
@@ -222,6 +292,12 @@ namespace lfs::vis::gui {
                                        const PanelDrawContext& ctx,
                                        float clip_y_min = -1.0f, float clip_y_max = -1.0f,
                                        const PanelInputState* input = nullptr);
+        float draw_child_panels_direct_cached(const std::string& parent_id, float x,
+                                              float y, float w, float h,
+                                              const PanelDrawContext& ctx,
+                                              float clip_y_min = -1.0f,
+                                              float clip_y_max = -1.0f,
+                                              const PanelInputState* input = nullptr);
 
         std::vector<PanelSummary> get_panels_for_space(PanelSpace space);
         std::vector<std::string> get_panel_names(PanelSpace space) const;
@@ -232,11 +308,15 @@ namespace lfs::vis::gui {
         bool is_panel_enabled(const std::string& id) const;
         void rescale_floating_panels(float previous_scale, float new_scale);
         bool needsAnimationFrame() const;
+        PanelAnimationDemand animationDemandForVisiblePanels(
+            PanelAnimationVisibility visibility) const;
+        bool needsAnimationFrameForVisiblePanels(PanelAnimationVisibility visibility) const;
         bool set_panel_label(const std::string& id, const std::string& new_label);
         bool set_panel_order(const std::string& id, int new_order);
         bool set_panel_space(const std::string& id, PanelSpace new_space);
         bool set_panel_parent(const std::string& id, const std::string& parent_id);
         void invalidate_poll_cache(PollDependency changed = PollDependency::ALL);
+        void reload_rml_resources();
 
     private:
         PanelRegistry() = default;

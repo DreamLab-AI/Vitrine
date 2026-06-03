@@ -20,6 +20,7 @@
 #include "core/splat_data.hpp"
 #include "io/exporter.hpp"
 #include "io/loader.hpp"
+#include "io/ply_export_internal.hpp"
 #include "training/dataset.hpp"
 
 #include <filesystem>
@@ -74,7 +75,7 @@ namespace lfs::python {
 
             std::optional<PySplatData> get_splat_data() const {
                 if (splat_data)
-                    return PySplatData(splat_data.get());
+                    return PySplatData(splat_data);
                 return std::nullopt;
             }
 
@@ -95,6 +96,71 @@ namespace lfs::python {
 
             bool is_dataset() const { return !cameras.empty(); }
         };
+
+        core::Tensor tensor_from_python_attribute(const nb::handle& value) {
+            if (nb::isinstance<PyTensor>(value)) {
+                return nb::cast<PyTensor>(value).tensor();
+            }
+
+            if (nb::isinstance<nb::ndarray<>>(value)) {
+                return PyTensor::from_numpy(nb::cast<nb::ndarray<>>(value)).tensor();
+            }
+
+            throw std::runtime_error(
+                "extra_attributes values must be lichtfeld.Tensor or numpy.ndarray");
+        }
+
+        std::vector<io::PlyAttributeBlock> parse_extra_ply_attributes(const nb::object& extra_attributes,
+                                                                      const std::filesystem::path& output_path) {
+            if (!extra_attributes || extra_attributes.is_none()) {
+                return {};
+            }
+
+            if (!nb::isinstance<nb::dict>(extra_attributes)) {
+                throw std::runtime_error(
+                    "extra_attributes must be a dict[str, lichtfeld.Tensor | numpy.ndarray]");
+            }
+
+            nb::dict attributes = nb::cast<nb::dict>(extra_attributes);
+            std::vector<io::PlyAttributeBlock> blocks;
+            blocks.reserve(attributes.size());
+
+            for (const auto& item : attributes) {
+                const std::string name = nb::cast<std::string>(item.first);
+                if (name.empty()) {
+                    throw std::runtime_error("extra_attributes keys must not be empty");
+                }
+
+                auto values = tensor_from_python_attribute(item.second);
+                if (!values.is_valid() || values.numel() == 0) {
+                    throw std::runtime_error(std::format(
+                        "extra_attributes['{}'] must not be empty", name));
+                }
+
+                if (values.ndim() != 1 && values.ndim() != 2) {
+                    throw std::runtime_error(std::format(
+                        "extra_attributes['{}'] must be shaped [N] or [N,C]", name));
+                }
+
+                const size_t cols = values.ndim() == 1 ? 1 : static_cast<size_t>(values.size(1));
+                if (cols == 0) {
+                    throw std::runtime_error(std::format(
+                        "extra_attributes['{}'] must have at least one column", name));
+                }
+
+                auto names = io::make_ply_extra_attribute_names(name, cols);
+                if (auto result = io::validate_reserved_ply_extra_attribute_names(names, output_path); !result) {
+                    throw std::runtime_error(result.error().format());
+                }
+
+                blocks.push_back(io::PlyAttributeBlock{
+                    .values = std::move(values),
+                    .names = std::move(names),
+                });
+            }
+
+            return blocks;
+        }
 
     } // namespace
 
@@ -175,10 +241,12 @@ namespace lfs::python {
 
         m.def(
             "save_ply",
-            [](const PySplatData& data, const std::filesystem::path& path, bool binary, nb::object progress) {
+            [](const PySplatData& data, const std::filesystem::path& path, bool binary,
+               nb::object progress, nb::object extra_attributes) {
                 io::PlySaveOptions options;
                 options.output_path = path;
                 options.binary = binary;
+                options.extra_attributes = parse_extra_ply_attributes(extra_attributes, path);
 
                 if (progress && !progress.is_none()) {
                     PyExportProgressCallback py_progress{nb::cast<nb::object>(progress)};
@@ -192,22 +260,24 @@ namespace lfs::python {
                     throw std::runtime_error(std::format("Failed to save PLY: {}", result.error().format()));
             },
             nb::arg("data"), nb::arg("path"), nb::arg("binary") = true, nb::arg("progress") = nb::none(),
-            "Save splat data as PLY file");
+            nb::arg("extra_attributes") = nb::none(),
+            "Save splat data as PLY file with optional extra per-vertex float attributes");
 
         m.def(
             "save_point_cloud_ply",
-            [](const PyPointCloud& pc, const std::filesystem::path& path) {
+            [](const PyPointCloud& pc, const std::filesystem::path& path, nb::object extra_attributes) {
                 if (!pc.data())
                     throw std::runtime_error("Point cloud data must not be null");
                 io::PlySaveOptions options;
                 options.output_path = path;
                 options.binary = true;
+                options.extra_attributes = parse_extra_ply_attributes(extra_attributes, path);
                 auto result = io::save_ply(*pc.data(), options);
                 if (!result)
                     throw std::runtime_error(std::format("Failed to save point cloud PLY: {}", result.error().format()));
             },
-            nb::arg("point_cloud"), nb::arg("path"),
-            "Save a point cloud as PLY file (xyz + colors)");
+            nb::arg("point_cloud"), nb::arg("path"), nb::arg("extra_attributes") = nb::none(),
+            "Save a point cloud as PLY file (xyz + colors) with optional extra per-vertex float attributes");
 
         m.def(
             "save_sog",
@@ -260,6 +330,19 @@ namespace lfs::python {
             "Save splat data as OpenUSD gaussian file");
 
         m.def(
+            "save_nurec_usdz",
+            [](const PySplatData& data, const std::filesystem::path& path) {
+                io::NurecUsdzSaveOptions options;
+                options.output_path = path;
+
+                auto result = io::save_nurec_usdz(*data.data(), options);
+                if (!result)
+                    throw std::runtime_error(std::format("Failed to save NuRec USDZ: {}", result.error().format()));
+            },
+            nb::arg("data"), nb::arg("path"),
+            "Save splat data as NuRec USDZ compatible with PLY_to_USD / Omniverse");
+
+        m.def(
             "export_html",
             [](const PySplatData& data, const std::filesystem::path& path, int kmeans_iterations, nb::object progress) {
                 io::HtmlExportOptions options;
@@ -267,9 +350,9 @@ namespace lfs::python {
                 options.kmeans_iterations = kmeans_iterations;
 
                 if (progress && !progress.is_none()) {
-                    PyProgressCallback py_progress{nb::cast<nb::object>(progress)};
-                    options.progress_callback = [py_progress](float p, const std::string& stage) {
-                        py_progress(p, stage);
+                    PyExportProgressCallback py_progress{nb::cast<nb::object>(progress)};
+                    options.progress_callback = [py_progress](float p, const std::string& stage) -> bool {
+                        return py_progress(p, stage);
                     };
                 }
 
@@ -285,6 +368,12 @@ namespace lfs::python {
             [](const std::filesystem::path& path) { return io::Loader::isDatasetPath(path); },
             nb::arg("path"),
             "Check if path is a dataset directory");
+
+        m.def(
+            "is_gaussian_splat_ply",
+            [](const std::filesystem::path& path) { return io::is_gaussian_splat_ply(path); },
+            nb::arg("path"),
+            "Check if PLY file is a 3D Gaussian splat (has opacity, scale_0, rot_0 properties)");
 
         m.def(
             "get_supported_formats", []() {

@@ -19,10 +19,16 @@
 #include "training/components/ppisp_controller_pool.hpp"
 #include <expected>
 #include <filesystem>
+#include <glm/vec2.hpp>
 #include <mutex>
 #include <optional>
+#include <thread>
 
 namespace lfs::vis {
+
+    namespace op {
+        class SceneSnapshot;
+    }
 
     // Forward declarations
     class Trainer;
@@ -120,6 +126,7 @@ namespace lfs::vis {
         void selectNode(const std::string& name);
         void selectNodes(const std::vector<std::string>& names);
         void addToSelection(const std::string& name);
+        void removeFromSelection(const std::string& name);
         void clearSelection();
         [[nodiscard]] std::string getSelectedNodeName() const;
         [[nodiscard]] std::vector<std::string> getSelectedNodeNames() const;
@@ -148,12 +155,13 @@ namespace lfs::vis {
 
         // Full transform for selected node (includes rotation and scale)
         void setSelectedNodeTransform(const glm::mat4& transform);
-        glm::mat4 getSelectedNodeTransform() const;      // Returns local transform
-        glm::mat4 getSelectedNodeWorldTransform() const; // Returns world transform
+        glm::mat4 getSelectedNodeTransform() const; // Returns local transform
+        [[nodiscard]] glm::mat4 getSelectedNodeVisualizerWorldTransform() const;
 
         // Multi-selection support
         [[nodiscard]] glm::vec3 getSelectionCenter() const;
-        [[nodiscard]] glm::vec3 getSelectionWorldCenter() const;
+        [[nodiscard]] glm::vec3 getSelectionWorldCenter() const; // Deprecated legacy data-world center for compatibility
+        [[nodiscard]] glm::vec3 getSelectionVisualizerWorldCenter() const;
 
         // Cropbox operations for selected node
         core::NodeId getSelectedNodeCropBoxId() const;
@@ -187,7 +195,7 @@ namespace lfs::vis {
 
         void loadCheckpointForTraining(const std::filesystem::path& path,
                                        const lfs::core::param::TrainingParameters& params);
-        void clear();
+        [[nodiscard]] bool clear();
         void switchToEditMode(); // Keep trained model, discard dataset
 
         // For rendering - gets appropriate model
@@ -212,6 +220,14 @@ namespace lfs::vis {
         void updatePlyPath(const std::string& ply_name, const std::filesystem::path& ply_path);
         bool reparentNode(const std::string& node_name, const std::string& new_parent_name);
         std::string addGroupNode(const std::string& name, const std::string& parent_name = "");
+        std::string addPlySequenceNode(const std::string& name, const std::string& parent_name = "", size_t frame_count = 0);
+
+        // Allocator that backs splat tensors with Vulkan-external interop storage (the
+        // form the rasterizer can bind zero-copy). Returns an empty allocator when interop
+        // is unavailable. The PLY-sequence streaming player uses this on the main thread to
+        // upload background-decoded frames into render-ready storage.
+        [[nodiscard]] lfs::io::SplatTensorAllocator makeExternalSplatAllocator() const;
+
         std::string duplicateNodeTree(const std::string& name);
         std::string mergeGroupNode(const std::string& name);
 
@@ -231,6 +247,7 @@ namespace lfs::vis {
         /// Mirror selected gaussians along specified axis
         bool executeMirror(lfs::core::MirrorAxis axis);
 
+        [[nodiscard]] std::expected<void, std::string> softDeleteSelectedGaussians();
         void deleteSelectedGaussians();
         void invertSelection();
         void deselectAllGaussians();
@@ -241,12 +258,16 @@ namespace lfs::vis {
                                                   int camera_index = 0);
         [[nodiscard]] SelectionResult selectRect(float x0, float y0, float x1, float y1, const std::string& mode,
                                                  int camera_index = 0);
-        [[nodiscard]] SelectionResult selectPolygon(const std::vector<float>& points, const std::string& mode,
+        [[nodiscard]] SelectionResult selectPolygon(const std::vector<glm::vec2>& points, const std::string& mode,
                                                     int camera_index = 0);
-        [[nodiscard]] SelectionResult selectLasso(const std::vector<float>& points, const std::string& mode,
+        [[nodiscard]] SelectionResult selectLasso(const std::vector<glm::vec2>& points, const std::string& mode,
                                                   int camera_index = 0);
         [[nodiscard]] SelectionResult selectRing(float x, float y, const std::string& mode, int camera_index = 0);
         [[nodiscard]] SelectionResult applySelectionMask(const std::vector<uint8_t>& mask);
+        [[nodiscard]] SelectionResult applySelectionMask(const lfs::core::Tensor& mask);
+        [[nodiscard]] SelectionResult previewSelectionMask(const lfs::core::Tensor& mask);
+        void commitSelectionPreview();
+        void cancelSelectionPreview();
 
         void initSelectionService();
         [[nodiscard]] SelectionService* getSelectionService() { return selection_service_.get(); }
@@ -264,6 +285,12 @@ namespace lfs::vis {
     private:
         void resetToEmptyState(bool trainer_already_cleared = false);
         void setupEventHandlers();
+        void finalizeDatasetSceneLoad(const std::filesystem::path& dataset_path,
+                                      const std::filesystem::path& scene_path,
+                                      lfs::core::events::state::SceneLoaded::Type type,
+                                      size_t num_gaussians,
+                                      int checkpoint_iteration = 0);
+        void syncDatasetCameraFrustumsToRenderSettings();
         void syncCropToolRenderSettings(const core::SceneNode* node);
         void loadPPISPCompanion(const std::filesystem::path& ppisp_path);
         void handleCropActivePly(const lfs::geometry::BoundingBox& crop_box, bool inverse);
@@ -275,6 +302,7 @@ namespace lfs::vis {
         void handleResetEllipsoid();
         void updateCropBoxToFitScene(bool use_percentile);
         void updateEllipsoidToFitScene(bool use_percentile);
+        void scheduleConsolidatedCompaction();
 
         core::Scene scene_;
         // Lock ordering: state_mutex_ before selection_.mutex() when both needed
@@ -315,8 +343,16 @@ namespace lfs::vis {
         std::unique_ptr<lfs::training::PPISP> appearance_ppisp_;
         std::unique_ptr<lfs::training::PPISPControllerPool> appearance_controller_pool_;
 
+        void beginSelectionPreview();
+
         // Selection service (GPU-based rect/polygon/brush selection)
         std::unique_ptr<SelectionService> selection_service_;
+        std::unique_ptr<op::SceneSnapshot> selection_preview_snapshot_;
+        std::optional<core::Scene::SelectionStateSnapshot> selection_preview_before_;
+        std::mutex consolidated_compaction_mutex_;
+        std::jthread consolidated_compaction_thread_;
+        bool consolidated_compaction_running_ = false;
+        bool consolidated_compaction_pending_ = false;
     };
 
 } // namespace lfs::vis

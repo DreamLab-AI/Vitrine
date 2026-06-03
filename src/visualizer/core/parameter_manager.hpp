@@ -28,6 +28,9 @@ namespace lfs::vis {
         // Reset current to session defaults
         void resetToDefaults(std::string_view strategy = "");
 
+        // Restore built-in defaults and clear cached dataset configuration.
+        void clearSession();
+
         // Set or replace session defaults from explicit params.
         void setSessionDefaults(const lfs::core::param::TrainingParameters& params);
 

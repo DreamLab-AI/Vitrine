@@ -2,22 +2,23 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
-// glad must be included before OpenGL headers
-// clang-format off
-#include <glad/glad.h>
-// clang-format on
-
 #include "gui/sequencer_ui_manager.hpp"
 #include "core/event_bridge/localization_manager.hpp"
 #include "core/events.hpp"
 #include "core/logger.hpp"
 #include "core/path_utils.hpp"
+#include "core/splat_data.hpp"
+#include "core/tensor/internal/cuda_stream_context.hpp"
 #include "gui/gui_focus_state.hpp"
 #include "gui/panel_input_utils.hpp"
 #include "gui/rml_sequencer_overlay.hpp"
+#include "gui/rotation_gizmo.hpp"
 #include "gui/string_keys.hpp"
+#include "gui/translation_gizmo.hpp"
 #include "gui/utils/native_file_dialog.hpp"
+#include "io/loader.hpp"
 #include "io/video/video_export_options.hpp"
+#include "rendering/coordinate_conventions.hpp"
 #include "rendering/rendering.hpp"
 #include "rendering/rendering_manager.hpp"
 #include "scene/scene_manager.hpp"
@@ -28,13 +29,20 @@
 #include "visualizer_impl.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <cstdlib>
+#include <cuda_runtime.h>
+#include <filesystem>
 #include <format>
-#include <glm/gtc/type_ptr.hpp>
+#include <fstream>
+#include <memory>
+#include <stdexcept>
 #include <string_view>
+#include <system_error>
+#include <utility>
+#include <variant>
 #include <vector>
-#include <imgui.h>
-#include <ImGuizmo.h>
 
 namespace lfs::vis::gui {
 
@@ -42,16 +50,201 @@ namespace lfs::vis::gui {
         constexpr size_t MIN_PATH_RENDER_SAMPLES = 128;
         constexpr size_t MAX_PATH_RENDER_SAMPLES = 4096;
         constexpr float PATH_SAMPLES_PER_VIEWPORT_PIXEL = 2.0f;
+        constexpr uint32_t PLY_SEQUENCE_CACHE_MAGIC = 0x4C465351; // "LFSQ"
+        constexpr uint32_t PLY_SEQUENCE_CACHE_VERSION = 1;
 
-        [[nodiscard]] std::string formatTimelineTime(const float seconds) {
-            const int mins = static_cast<int>(seconds) / 60;
-            const float secs = seconds - static_cast<float>(mins * 60);
-            return std::format("{}:{:05.2f}", mins, secs);
+        struct PlySequenceCacheHeader {
+            uint32_t magic = PLY_SEQUENCE_CACHE_MAGIC;
+            uint32_t version = PLY_SEQUENCE_CACHE_VERSION;
+            uint64_t source_size = 0;
+            int64_t source_mtime_ns = 0;
+            uint64_t source_key = 0;
+        };
+
+        [[nodiscard]] uint64_t fnv1a64(std::string_view text) {
+            uint64_t hash = 14695981039346656037ull;
+            for (const unsigned char c : text) {
+                hash ^= static_cast<uint64_t>(c);
+                hash *= 1099511628211ull;
+            }
+            return hash;
         }
 
-        void drawGuideLine(ImDrawList* const dl, const float x, const float top, const float bottom,
-                           const ImU32 color, const float thickness) {
-            dl->AddLine({std::round(x), top}, {std::round(x), bottom}, color, thickness);
+        [[nodiscard]] int64_t fileTimeNs(const std::filesystem::path& path) {
+            std::error_code ec;
+            const auto write_time = std::filesystem::last_write_time(path, ec);
+            if (ec)
+                return 0;
+            return std::chrono::duration_cast<std::chrono::nanoseconds>(
+                       write_time.time_since_epoch())
+                .count();
+        }
+
+        [[nodiscard]] std::filesystem::path stableAbsolutePath(const std::filesystem::path& path) {
+            std::error_code ec;
+            auto absolute = std::filesystem::weakly_canonical(path, ec);
+            if (!ec && !absolute.empty())
+                return absolute;
+            absolute = std::filesystem::absolute(path, ec);
+            return ec ? path : absolute;
+        }
+
+        [[nodiscard]] std::filesystem::path plySequenceCacheRoot() {
+            if (const char* explicit_dir = std::getenv("LFS_PLY_SEQUENCE_CACHE_DIR");
+                explicit_dir && *explicit_dir) {
+                return lfs::core::utf8_to_path(explicit_dir);
+            }
+#ifdef _WIN32
+            if (const char* local_app_data = std::getenv("LOCALAPPDATA");
+                local_app_data && *local_app_data) {
+                return lfs::core::utf8_to_path(local_app_data) / "LichtFeld" / "ply_sequence_cache";
+            }
+            if (const char* temp = std::getenv("TEMP"); temp && *temp) {
+                return lfs::core::utf8_to_path(temp) / "LichtFeld" / "ply_sequence_cache";
+            }
+            return std::filesystem::path("C:/Temp/LichtFeld/ply_sequence_cache");
+#else
+            if (const char* xdg_cache = std::getenv("XDG_CACHE_HOME");
+                xdg_cache && *xdg_cache) {
+                return lfs::core::utf8_to_path(xdg_cache) / "lichtfeld" / "ply_sequence_cache";
+            }
+            if (const char* home = std::getenv("HOME"); home && *home) {
+                return lfs::core::utf8_to_path(home) / ".cache" / "lichtfeld" / "ply_sequence_cache";
+            }
+            return std::filesystem::temp_directory_path() / "lichtfeld" / "ply_sequence_cache";
+#endif
+        }
+
+        [[nodiscard]] std::optional<PlySequenceCacheHeader> makePlySequenceCacheHeader(
+            const std::filesystem::path& source_path) {
+            std::error_code ec;
+            const uint64_t source_size = std::filesystem::file_size(source_path, ec);
+            if (ec)
+                return std::nullopt;
+
+            const auto absolute = stableAbsolutePath(source_path);
+            const int64_t source_mtime_ns = fileTimeNs(source_path);
+            const std::string key_text = std::format("{}|{}|{}",
+                                                     lfs::core::path_to_utf8(absolute),
+                                                     source_size,
+                                                     source_mtime_ns);
+            return PlySequenceCacheHeader{
+                .magic = PLY_SEQUENCE_CACHE_MAGIC,
+                .version = PLY_SEQUENCE_CACHE_VERSION,
+                .source_size = source_size,
+                .source_mtime_ns = source_mtime_ns,
+                .source_key = fnv1a64(key_text)};
+        }
+
+        [[nodiscard]] std::filesystem::path plySequenceCachePath(
+            const PlySequenceCacheHeader& header) {
+            return plySequenceCacheRoot() / std::format("{:016x}.lfs_splat", header.source_key);
+        }
+
+        [[nodiscard]] bool cacheHeaderMatches(const PlySequenceCacheHeader& actual,
+                                              const PlySequenceCacheHeader& expected) {
+            return actual.magic == PLY_SEQUENCE_CACHE_MAGIC &&
+                   actual.version == PLY_SEQUENCE_CACHE_VERSION &&
+                   actual.source_size == expected.source_size &&
+                   actual.source_mtime_ns == expected.source_mtime_ns &&
+                   actual.source_key == expected.source_key;
+        }
+
+        [[nodiscard]] std::unique_ptr<lfs::core::SplatData> loadPlySequenceCache(
+            const std::filesystem::path& source_path,
+            const lfs::io::SplatTensorAllocator& allocator,
+            std::string& error) {
+            const auto expected_header = makePlySequenceCacheHeader(source_path);
+            if (!expected_header) {
+                error = "source metadata unavailable";
+                return nullptr;
+            }
+
+            const auto cache_path = plySequenceCachePath(*expected_header);
+            std::ifstream file;
+            if (!lfs::core::open_file_for_read(cache_path, std::ios::binary, file)) {
+                error = "cache miss";
+                return nullptr;
+            }
+
+            PlySequenceCacheHeader actual_header{};
+            file.read(reinterpret_cast<char*>(&actual_header), sizeof(actual_header));
+            if (!file || !cacheHeaderMatches(actual_header, *expected_header)) {
+                error = "stale cache";
+                std::error_code ec;
+                std::filesystem::remove(cache_path, ec);
+                return nullptr;
+            }
+
+            try {
+                auto model = std::make_unique<lfs::core::SplatData>();
+                model->deserialize(file, allocator);
+                if (!file) {
+                    error = "truncated cache";
+                    std::error_code ec;
+                    std::filesystem::remove(cache_path, ec);
+                    return nullptr;
+                }
+                return model;
+            } catch (const std::exception& e) {
+                error = e.what();
+                std::error_code ec;
+                std::filesystem::remove(cache_path, ec);
+                return nullptr;
+            }
+        }
+
+        [[nodiscard]] bool writePlySequenceCache(const std::filesystem::path& source_path,
+                                                 const lfs::core::SplatData& model,
+                                                 std::string& error) {
+            const auto header = makePlySequenceCacheHeader(source_path);
+            if (!header) {
+                error = "source metadata unavailable";
+                return false;
+            }
+
+            const auto cache_path = plySequenceCachePath(*header);
+            std::error_code ec;
+            std::filesystem::create_directories(cache_path.parent_path(), ec);
+            if (ec) {
+                error = ec.message();
+                return false;
+            }
+
+            const auto tmp_path = cache_path.parent_path() /
+                                  (cache_path.filename().string() + ".tmp");
+            std::ofstream file;
+            if (!lfs::core::open_file_for_write(tmp_path,
+                                                std::ios::binary | std::ios::trunc,
+                                                file)) {
+                error = "open failed";
+                return false;
+            }
+
+            try {
+                file.write(reinterpret_cast<const char*>(&*header), sizeof(*header));
+                model.serialize(file);
+            } catch (const std::exception& e) {
+                error = e.what();
+                std::filesystem::remove(tmp_path, ec);
+                return false;
+            }
+            file.close();
+            if (!file) {
+                error = "write failed";
+                std::filesystem::remove(tmp_path, ec);
+                return false;
+            }
+
+            std::filesystem::remove(cache_path, ec);
+            ec.clear();
+            std::filesystem::rename(tmp_path, cache_path, ec);
+            if (ec) {
+                error = ec.message();
+                std::filesystem::remove(tmp_path, ec);
+                return false;
+            }
+            return true;
         }
 
     } // namespace
@@ -64,30 +257,47 @@ namespace lfs::vis::gui {
           overlay_(std::make_unique<RmlSequencerOverlay>(controller_, rml_manager)),
           scene_sync_(std::make_unique<KeyframeSceneSync>(controller_, viewer)) {}
 
-    SequencerUIManager::~SequencerUIManager() = default;
+    SequencerUIManager::~SequencerUIManager() {
+        stopPlySequenceStreaming();
+    }
 
-    void SequencerUIManager::destroyGLResources() {
-        pip_fbo_ = {};
-        pip_texture_ = {};
-        pip_depth_rbo_ = {};
-        pip_initialized_ = false;
-        line_renderer_.destroyGLResources();
-        film_strip_.destroyGLResources();
+    void SequencerUIManager::destroyGraphicsResources() {
+        stopPlySequenceStreaming();
+        last_ply_sequence_frame_ = std::nullopt;
+        loaded_ply_sequence_frames_.clear();
         if (panel_)
-            panel_->destroyGLResources();
+            panel_->destroyGraphicsResources();
         if (overlay_)
-            overlay_->destroyGLResources();
+            overlay_->destroyGraphicsResources();
+        pip_texture_.reset();
+        pip_initialized_ = false;
+        line_renderer_.destroyResources();
+        film_strip_.destroyGraphicsResources();
+    }
+
+    void SequencerUIManager::reloadRmlResources() {
+        if (panel_)
+            panel_->reloadResources();
+        if (overlay_)
+            overlay_->reloadResources();
+        pip_needs_update_ = true;
     }
 
     void SequencerUIManager::setSequencerEnabled(const bool enabled) {
         if (enabled)
             return;
 
+        if (panel_)
+            panel_->clearPendingComposite();
+
         if (ui_state_.show_pip_preview)
             ui_state_.show_pip_preview = false;
 
+        viewport_edit_mode_ = SequencerViewportEditMode::None;
+        keyframe_gizmo_active_ = false;
         pip_last_keyframe_ = std::nullopt;
         pip_needs_update_ = true;
+        last_panel_frame_time_ = std::chrono::steady_clock::now();
         endViewportKeyframeEdit();
     }
 
@@ -100,7 +310,8 @@ namespace lfs::vis::gui {
         if (auto* sm = viewer_->getSceneManager())
             sm->clearSelection();
         viewport_keyframe_edit_snapshot_ = *keyframe;
-        keyframe_gizmo_op_ = ImGuizmo::OPERATION(0);
+        viewport_edit_mode_ = SequencerViewportEditMode::None;
+        keyframe_gizmo_active_ = false;
         edit_entered_mouse_down_ = true;
     }
 
@@ -141,22 +352,32 @@ namespace lfs::vis::gui {
 
         cmd::SequencerAddKeyframe::when([this](const auto&) {
             const auto& cam = viewer_->getViewport().camera;
-
-            const float interval = ui_state_.snap_to_grid ? ui_state_.snap_interval : 1.0f;
-            const float time = controller_.timeline().realKeyframeCount() == 0
-                                   ? 0.0f
-                                   : controller_.timeline().realEndTime() + interval;
+            const float time = controller_.playhead();
+            const glm::vec3 position = cam.t;
+            const glm::quat rotation = glm::quat_cast(cam.R);
 
             auto* const rm = viewer_->getRenderingManager();
             const float focal_mm = rm ? rm->getFocalLengthMm() : lfs::rendering::DEFAULT_FOCAL_LENGTH_MM;
 
-            lfs::sequencer::Keyframe kf;
-            kf.time = time;
-            kf.position = cam.t;
-            kf.rotation = glm::quat_cast(cam.R);
-            kf.focal_length_mm = focal_mm;
-            controller_.addKeyframeAtTime(kf, time);
-            controller_.seek(time);
+            // Match Blender / After Effects / Maya: clicking + at a time that already has a
+            // keyframe overwrites that keyframe with the current pose instead of stacking.
+            constexpr float REPLACE_EPSILON_S = 0.01f;
+            const auto& keyframes = controller_.timeline().keyframes();
+            const auto existing = std::find_if(keyframes.begin(), keyframes.end(),
+                                               [time](const lfs::sequencer::Keyframe& kf) {
+                                                   return !kf.is_loop_point &&
+                                                          std::abs(kf.time - time) < REPLACE_EPSILON_S;
+                                               });
+            if (existing != keyframes.end()) {
+                controller_.updateKeyframeById(existing->id, position, rotation, focal_mm);
+            } else {
+                lfs::sequencer::Keyframe kf;
+                kf.time = time;
+                kf.position = position;
+                kf.rotation = rotation;
+                kf.focal_length_mm = focal_mm;
+                controller_.addKeyframeAtTime(kf, time);
+            }
             state::KeyframeListChanged{.count = controller_.timeline().realKeyframeCount()}.emit();
         });
 
@@ -192,13 +413,35 @@ namespace lfs::vis::gui {
             controller_.togglePlayPause();
         });
 
+        cmd::SequencerLoadPlySequence::when([this](const auto& event) {
+            if (event.fps > 0.0f)
+                ui_state_.sequence_fps = std::clamp(event.fps, MIN_SEQUENCE_FPS, MAX_SEQUENCE_FPS);
+            loadPlySequenceFromDirectory(std::filesystem::path(event.directory));
+        });
+
         state::KeyframeListChanged::when([this](const auto&) {
             film_strip_.invalidateAll();
         });
 
+        // File → New Project (and any dataset swap) emits SceneCleared. Drop the camera path
+        // and film-strip thumbs by wiping the timeline; the keyframes belong to the old scene.
+        state::SceneCleared::when([this](const auto&) {
+            if (controller_.timeline().realKeyframeCount() == 0 &&
+                !controller_.timeline().hasAnimationClip() &&
+                !controller_.hasPlySequence())
+                return;
+            stopPlySequenceStreaming();
+            controller_.clear();
+            last_ply_sequence_frame_ = std::nullopt;
+            loaded_ply_sequence_frames_.clear();
+            film_strip_.invalidateAll();
+            state::KeyframeListChanged{.count = 0}.emit();
+        });
+
         ui::NodeSelected::when([this](const auto& e) {
             if (e.type != "KEYFRAME") {
-                keyframe_gizmo_op_ = ImGuizmo::OPERATION(0);
+                viewport_edit_mode_ = SequencerViewportEditMode::None;
+                keyframe_gizmo_active_ = false;
                 endViewportKeyframeEdit();
             }
         });
@@ -206,7 +449,21 @@ namespace lfs::vis::gui {
         scene_sync_->setupEvents();
     }
 
-    void SequencerUIManager::render(const UIContext& ctx, const ViewportLayout& viewport) {
+    void SequencerUIManager::setFloating(const bool floating) {
+        if (panel_)
+            panel_->setFloating(floating);
+    }
+
+    float SequencerUIManager::preferredFloatingHeight() const {
+        const float dp = std::max(1.0f, getThemeDpiScale());
+        const float strip_h = ui_state_.show_film_strip ? FilmStripRenderer::STRIP_HEIGHT : 0.0f;
+        return (panel_config::HEIGHT + panel_config::EASING_STRIPE_HEIGHT) * dp + strip_h;
+    }
+
+    void SequencerUIManager::render(const UIContext& ctx, const ViewportLayout& viewport,
+                                    const float panel_x, const float panel_y,
+                                    const float panel_width, const float panel_height,
+                                    const PanelInputState& panel_input) {
         const auto* const gui = viewer_->getGuiManager();
         const bool sequencer_enabled = gui && gui->panelLayout().isShowSequencer();
         if (!sequencer_enabled) {
@@ -257,7 +514,7 @@ namespace lfs::vis::gui {
             guiFocusState().want_capture_mouse = true;
 
         const bool actively_following =
-            ui_state_.follow_playback && controller_.isPlaying() &&
+            ui_state_.follow_playback &&
             controller_.timeline().realKeyframeCount() > 0;
 
         if (ui_state_.show_camera_path && !actively_following) {
@@ -265,31 +522,17 @@ namespace lfs::vis::gui {
             renderKeyframeGizmo(ctx, viewport);
         }
         renderKeyframePreview(ctx);
-        renderSequencerPanel(ctx, viewport);
-        {
-            const float dp = panel_->cachedDpRatio();
-            const float px = panel_->cachedPanelX();
-            const float pw = panel_->cachedPanelWidth();
-            tl_geo_ = {
-                px + panel_config::INNER_PADDING_H * dp,
-                pw - panel_config::INNER_PADDING_H * 2.0f * dp,
-                px, pw, panel_->cachedPanelY(), dp};
-        }
-        timeline_tooltip_active_ = false;
-        timeline_tooltip_text_.clear();
-        renderFilmStrip(ctx);
-        drawEasingCurves();
-        drawTimelineGuides();
-        drawTimelineTooltip();
-        drawPipPreviewWindow(viewport);
+        renderSequencerPanel(ctx, viewport, panel_x, panel_y, panel_width, panel_height, panel_input);
+        syncPipPreviewWindow(viewport);
 
         overlay_->render(sdl_buf.window_w, sdl_buf.window_h);
     }
 
-    void SequencerUIManager::compositeOverlays(const int screen_w, const int screen_h) const {
-        if (!overlay_)
-            return;
-        overlay_->compositeToScreen(screen_w, screen_h);
+    void SequencerUIManager::compositeOverlays(const int screen_w, const int screen_h) {
+        if (panel_)
+            panel_->compositeToScreen(screen_w, screen_h);
+        if (overlay_)
+            overlay_->compositeToScreen(screen_w, screen_h);
     }
 
     bool SequencerUIManager::blocksPointer(const double x, const double y) const {
@@ -302,39 +545,685 @@ namespace lfs::vis::gui {
         return overlay_ && (overlay_->isContextMenuOpen() || overlay_->isPopupOpen());
     }
 
-    void SequencerUIManager::renderSequencerPanel(const UIContext& /*ctx*/, const ViewportLayout& viewport) {
-        const auto& io = ImGui::GetIO();
-        controller_.update(io.DeltaTime);
+    bool SequencerUIManager::needsAnimationFrame() const {
+        return controller_.isPlaying() ||
+               controller_.state() == PlaybackState::SCRUBBING ||
+               plySequenceStreamHasWork() ||
+               keyframe_gizmo_active_ ||
+               viewport_keyframe_edit_snapshot_.has_value() ||
+               (ui_state_.show_pip_preview && pip_needs_update_) ||
+               (overlay_ && (overlay_->wantsInput() ||
+                             overlay_->isContextMenuOpen() ||
+                             overlay_->isPopupOpen()));
+    }
+
+    bool SequencerUIManager::plySequenceStreamHasWork() const {
+        std::lock_guard lock(ply_stream_mutex_);
+        return ply_stream_inflight_ ||
+               !ply_stream_requests_.empty() ||
+               !ply_stream_completed_.empty();
+    }
+
+    bool SequencerUIManager::isPlySequenceFrameResident(const size_t frame_index) const {
+        std::lock_guard lock(ply_stream_mutex_);
+        return frame_index < ply_stream_states_.size() &&
+               ply_stream_states_[frame_index] == PlyStreamFrameState::Resident;
+    }
+
+    size_t SequencerUIManager::plySequenceFrameDistance(const size_t lhs,
+                                                        const size_t rhs,
+                                                        const size_t frame_count) const {
+        if (frame_count == 0)
+            return 0;
+
+        const size_t direct = lhs > rhs ? lhs - rhs : rhs - lhs;
+        if (controller_.loopMode() != LoopMode::LOOP)
+            return direct;
+        return std::min(direct, frame_count - direct);
+    }
+
+    bool SequencerUIManager::isPlySequenceFrameInWindow(const size_t frame_index,
+                                                        const size_t center_frame,
+                                                        const size_t frame_count) const {
+        return isPlySequenceFrameInWindow(frame_index,
+                                          center_frame,
+                                          frame_count,
+                                          controller_.loopMode() == LoopMode::LOOP);
+    }
+
+    bool SequencerUIManager::isPlySequenceFrameInWindow(const size_t frame_index,
+                                                        const size_t center_frame,
+                                                        const size_t frame_count,
+                                                        const bool loop) const {
+        if (frame_count == 0 || frame_index >= frame_count || center_frame >= frame_count)
+            return false;
+        if (frame_count <= MAX_STREAM_RESIDENT_FRAMES)
+            return true;
+        if (frame_index == center_frame)
+            return true;
+
+        if (loop) {
+            const size_t forward = (frame_index + frame_count - center_frame) % frame_count;
+            const size_t backward = (center_frame + frame_count - frame_index) % frame_count;
+            return forward <= STREAM_PREFETCH_AHEAD || backward <= STREAM_PREFETCH_BEHIND;
+        }
+
+        if (frame_index > center_frame)
+            return frame_index - center_frame <= STREAM_PREFETCH_AHEAD;
+        return center_frame - frame_index <= STREAM_PREFETCH_BEHIND;
+    }
+
+    std::optional<size_t> SequencerUIManager::selectPlySequenceDisplayFrame(const size_t requested_frame) const {
+        const auto* const sequence = controller_.plySequence();
+        if (!sequence || requested_frame >= sequence->frames.size())
+            return std::nullopt;
+
+        std::lock_guard lock(ply_stream_mutex_);
+        if (requested_frame < ply_stream_states_.size() &&
+            ply_stream_states_[requested_frame] == PlyStreamFrameState::Resident) {
+            return requested_frame;
+        }
+
+        const size_t frame_count = sequence->frames.size();
+        const bool playing = controller_.isPlaying();
+        std::optional<size_t> best_frame;
+        size_t best_score = 0;
+        for (size_t frame = 0; frame < ply_stream_states_.size() && frame < frame_count; ++frame) {
+            if (ply_stream_states_[frame] != PlyStreamFrameState::Resident)
+                continue;
+
+            size_t score = 0;
+            if (!playing) {
+                score = plySequenceFrameDistance(frame, requested_frame, frame_count);
+            } else if (controller_.loopMode() == LoopMode::LOOP) {
+                score = (frame + frame_count - requested_frame) % frame_count;
+            } else if (frame >= requested_frame) {
+                score = frame - requested_frame;
+            } else {
+                score = STREAM_PREFETCH_AHEAD + 1 + requested_frame - frame;
+            }
+
+            if (!best_frame.has_value() || score < best_score) {
+                best_frame = frame;
+                best_score = score;
+            }
+        }
+
+        return best_frame;
+    }
+
+    void SequencerUIManager::requestPlySequenceFrame(const size_t frame_index, const bool priority) {
+        std::lock_guard lock(ply_stream_mutex_);
+        if (frame_index >= ply_stream_states_.size())
+            return;
+
+        auto& state = ply_stream_states_[frame_index];
+        if (state == PlyStreamFrameState::Resident || state == PlyStreamFrameState::Loading)
+            return;
+
+        if (state == PlyStreamFrameState::Queued) {
+            if (priority) {
+                std::erase(ply_stream_requests_, frame_index);
+                ply_stream_requests_.push_front(frame_index);
+            }
+            return;
+        }
+
+        state = PlyStreamFrameState::Queued;
+        if (priority)
+            ply_stream_requests_.push_front(frame_index);
+        else
+            ply_stream_requests_.push_back(frame_index);
+        ply_stream_cv_.notify_one();
+    }
+
+    void SequencerUIManager::prunePlySequenceRequests(const size_t frame_index) {
+        const auto* const sequence = controller_.plySequence();
+        if (!sequence || sequence->frames.size() <= MAX_STREAM_RESIDENT_FRAMES)
+            return;
+
+        const size_t count = sequence->frames.size();
+        std::lock_guard lock(ply_stream_mutex_);
+        for (auto it = ply_stream_requests_.begin(); it != ply_stream_requests_.end();) {
+            const size_t queued_frame = *it;
+            if (isPlySequenceFrameInWindow(queued_frame, frame_index, count)) {
+                ++it;
+                continue;
+            }
+            if (queued_frame < ply_stream_states_.size() &&
+                ply_stream_states_[queued_frame] == PlyStreamFrameState::Queued) {
+                ply_stream_states_[queued_frame] = PlyStreamFrameState::Empty;
+            }
+            it = ply_stream_requests_.erase(it);
+            ++ply_stream_stale_request_drop_count_;
+        }
+    }
+
+    void SequencerUIManager::requestPlySequenceWindow(const size_t frame_index) {
+        const auto* const sequence = controller_.plySequence();
+        if (!sequence || sequence->frames.empty())
+            return;
+
+        const size_t count = sequence->frames.size();
+        ply_stream_target_frame_.store(frame_index, std::memory_order_release);
+        ply_stream_target_loop_.store(controller_.loopMode() == LoopMode::LOOP, std::memory_order_release);
+        prunePlySequenceRequests(frame_index);
+        requestPlySequenceFrame(frame_index, true);
+
+        if (count <= MAX_STREAM_RESIDENT_FRAMES) {
+            for (size_t frame = 0; frame < count; ++frame)
+                requestPlySequenceFrame(frame, frame == frame_index);
+            return;
+        }
+
+        for (size_t offset = 1; offset <= STREAM_PREFETCH_AHEAD && offset < count; ++offset) {
+            const size_t next = controller_.loopMode() == LoopMode::LOOP
+                                    ? (frame_index + offset) % count
+                                    : frame_index + offset;
+            if (next >= count)
+                break;
+            requestPlySequenceFrame(next, false);
+        }
+
+        for (size_t offset = 1; offset <= STREAM_PREFETCH_BEHIND && offset < count; ++offset) {
+            if (controller_.loopMode() == LoopMode::LOOP) {
+                requestPlySequenceFrame((frame_index + count - offset) % count, false);
+            } else if (offset <= frame_index) {
+                requestPlySequenceFrame(frame_index - offset, false);
+            } else {
+                break;
+            }
+        }
+    }
+
+    void SequencerUIManager::plySequenceStreamWorker(const uint64_t generation) {
+        auto loader = lfs::io::Loader::create();
+
+        while (!ply_stream_stop_.load(std::memory_order_acquire) &&
+               ply_stream_generation_.load(std::memory_order_acquire) == generation) {
+            size_t frame_index = 0;
+            std::filesystem::path path;
+            lfs::io::SplatTensorAllocator allocator;
+
+            {
+                std::unique_lock lock(ply_stream_mutex_);
+                ply_stream_cv_.wait(lock, [this, generation] {
+                    return ply_stream_stop_.load(std::memory_order_acquire) ||
+                           ply_stream_generation_.load(std::memory_order_acquire) != generation ||
+                           !ply_stream_requests_.empty();
+                });
+
+                if (ply_stream_stop_.load(std::memory_order_acquire) ||
+                    ply_stream_generation_.load(std::memory_order_acquire) != generation)
+                    return;
+
+                frame_index = ply_stream_requests_.front();
+                ply_stream_requests_.pop_front();
+                if (frame_index >= ply_stream_states_.size() ||
+                    frame_index >= ply_stream_paths_.size() ||
+                    ply_stream_states_[frame_index] != PlyStreamFrameState::Queued) {
+                    continue;
+                }
+
+                ply_stream_states_[frame_index] = PlyStreamFrameState::Loading;
+                ply_stream_inflight_ = true;
+                ply_stream_inflight_frame_ = frame_index;
+                path = ply_stream_paths_[frame_index];
+                allocator = ply_stream_allocator_;
+            }
+
+            const auto start = std::chrono::steady_clock::now();
+            PlyStreamResult completed{};
+            completed.generation = generation;
+            completed.frame_index = frame_index;
+
+            try {
+                std::string cache_error;
+                completed.model = loadPlySequenceCache(path, allocator, cache_error);
+                completed.cache_hit = completed.model != nullptr;
+                completed.cache_miss = !completed.cache_hit;
+
+                if (!completed.model) {
+                    const lfs::io::LoadOptions load_options{
+                        .resize_factor = -1,
+                        .max_width = 0,
+                        .images_folder = "images",
+                        .validate_only = false,
+                        .cancel_requested = [this, generation, frame_index, frame_count = ply_stream_paths_.size()] {
+                            if (ply_stream_stop_.load(std::memory_order_acquire) ||
+                                ply_stream_generation_.load(std::memory_order_acquire) != generation) {
+                                return true;
+                            }
+                            if (frame_count <= MAX_STREAM_RESIDENT_FRAMES)
+                                return false;
+
+                            const size_t target = ply_stream_target_frame_.load(std::memory_order_acquire);
+                            if (target >= frame_count)
+                                return false;
+                            const bool loop = ply_stream_target_loop_.load(std::memory_order_acquire);
+                            return !isPlySequenceFrameInWindow(frame_index, target, frame_count, loop);
+                        },
+                        .splat_tensor_allocator = allocator};
+
+                    auto load_result = loader->load(path, load_options);
+                    if (!load_result)
+                        throw std::runtime_error(load_result.error().format());
+
+                    auto* splat_data = std::get_if<std::shared_ptr<lfs::core::SplatData>>(&load_result->data);
+                    if (!splat_data || !*splat_data)
+                        throw std::runtime_error("sequence frame is not a gaussian splat PLY");
+
+                    completed.model = std::make_unique<lfs::core::SplatData>(std::move(**splat_data));
+                    std::string write_error;
+                    if (writePlySequenceCache(path, *completed.model, write_error)) {
+                        completed.cache_written = true;
+                    } else {
+                        completed.cache_write_failed = true;
+                        LOG_DEBUG("Failed to write PLY sequence cache for '{}': {}",
+                                  lfs::core::path_to_utf8(path),
+                                  write_error);
+                    }
+                }
+            } catch (const lfs::io::LoadCancelledError& e) {
+                completed.cancelled = true;
+                completed.error = e.what();
+            } catch (const std::exception& e) {
+                completed.error = e.what();
+            }
+
+            completed.load_ms =
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+
+            {
+                std::lock_guard lock(ply_stream_mutex_);
+                if (ply_stream_generation_.load(std::memory_order_acquire) == generation) {
+                    ply_stream_completed_.push_back(std::move(completed));
+                }
+                ply_stream_inflight_ = false;
+                ply_stream_cv_.notify_one();
+            }
+        }
+    }
+
+    void SequencerUIManager::startPlySequenceStreaming(std::vector<std::filesystem::path> paths,
+                                                       lfs::io::SplatTensorAllocator allocator) {
+        stopPlySequenceStreaming();
+
+        const uint64_t generation = ply_stream_generation_.fetch_add(1, std::memory_order_acq_rel) + 1;
+        {
+            std::lock_guard lock(ply_stream_mutex_);
+            ply_stream_paths_ = std::move(paths);
+            ply_stream_allocator_ = std::move(allocator);
+            ply_stream_states_.assign(ply_stream_paths_.size(), PlyStreamFrameState::Empty);
+            ply_stream_requests_.clear();
+            ply_stream_completed_.clear();
+            ply_stream_inflight_ = false;
+            ply_stream_inflight_frame_ = 0;
+            ply_stream_last_load_ms_ = 0.0;
+            ply_stream_failed_count_ = 0;
+            ply_stream_miss_count_ = 0;
+            ply_stream_fallback_count_ = 0;
+            ply_stream_eviction_count_ = 0;
+            ply_stream_stale_request_drop_count_ = 0;
+            ply_stream_cache_hit_count_ = 0;
+            ply_stream_cache_miss_count_ = 0;
+            ply_stream_cache_write_count_ = 0;
+            ply_stream_cache_write_fail_count_ = 0;
+        }
+        ply_stream_target_frame_.store(0, std::memory_order_release);
+        ply_stream_target_loop_.store(controller_.loopMode() == LoopMode::LOOP, std::memory_order_release);
+
+        ply_stream_stop_.store(false, std::memory_order_release);
+        ply_stream_thread_ = std::thread([this, generation] {
+            plySequenceStreamWorker(generation);
+        });
+
+        requestPlySequenceWindow(0);
+    }
+
+    void SequencerUIManager::stopPlySequenceStreaming() {
+        ply_stream_stop_.store(true, std::memory_order_release);
+        ply_stream_generation_.fetch_add(1, std::memory_order_acq_rel);
+        ply_stream_cv_.notify_all();
+        if (ply_stream_thread_.joinable())
+            ply_stream_thread_.join();
+
+        std::lock_guard lock(ply_stream_mutex_);
+        ply_stream_paths_.clear();
+        ply_stream_allocator_ = {};
+        ply_stream_states_.clear();
+        ply_stream_requests_.clear();
+        ply_stream_completed_.clear();
+        ply_stream_inflight_ = false;
+        ply_stream_inflight_frame_ = 0;
+        ply_stream_last_load_ms_ = 0.0;
+        ply_stream_failed_count_ = 0;
+        ply_stream_miss_count_ = 0;
+        ply_stream_fallback_count_ = 0;
+        ply_stream_eviction_count_ = 0;
+        ply_stream_stale_request_drop_count_ = 0;
+        ply_stream_cache_hit_count_ = 0;
+        ply_stream_cache_miss_count_ = 0;
+        ply_stream_cache_write_count_ = 0;
+        ply_stream_cache_write_fail_count_ = 0;
+        ply_stream_target_frame_.store(0, std::memory_order_release);
+        ply_stream_target_loop_.store(false, std::memory_order_release);
+    }
+
+    void SequencerUIManager::drainPlySequenceStream() {
+        auto* const scene_manager = viewer_->getSceneManager();
+        const auto* const sequence = controller_.plySequence();
+        if (!scene_manager || !sequence)
+            return;
+
+        std::deque<PlyStreamResult> completed;
+        {
+            std::lock_guard lock(ply_stream_mutex_);
+            completed.swap(ply_stream_completed_);
+        }
+
+        if (completed.empty())
+            return;
+
+        auto& scene = scene_manager->getScene();
+        const uint64_t active_generation = ply_stream_generation_.load(std::memory_order_acquire);
+        bool current_frame_loaded = false;
+        const auto current_frame = controller_.currentPlySequenceFrameIndex();
+
+        while (!completed.empty()) {
+            auto result = std::move(completed.front());
+            completed.pop_front();
+            if (result.generation != active_generation ||
+                result.frame_index >= sequence->frames.size()) {
+                continue;
+            }
+
+            const std::string& node_name = sequence->frames[result.frame_index].node_name;
+            if (!result.model) {
+                if (result.cancelled) {
+                    std::lock_guard lock(ply_stream_mutex_);
+                    if (result.frame_index < ply_stream_states_.size())
+                        ply_stream_states_[result.frame_index] = PlyStreamFrameState::Empty;
+                    ply_stream_last_load_ms_ = result.load_ms;
+                    continue;
+                }
+
+                LOG_ERROR("Failed to stream PLY sequence frame {}: {}",
+                          result.frame_index,
+                          result.error.empty() ? "unknown error" : result.error);
+                std::lock_guard lock(ply_stream_mutex_);
+                if (result.frame_index < ply_stream_states_.size())
+                    ply_stream_states_[result.frame_index] = PlyStreamFrameState::Failed;
+                ++ply_stream_failed_count_;
+                ply_stream_last_load_ms_ = result.load_ms;
+                continue;
+            }
+
+            const size_t gaussian_count = result.model->size();
+            auto old_model = scene.swapNodeModel(node_name, std::move(result.model));
+            old_model.reset();
+            scene.setNodeVisibility(node_name, false);
+            scene_manager->setPlyPath(node_name, sequence->frames[result.frame_index].path);
+
+            {
+                std::lock_guard lock(ply_stream_mutex_);
+                if (result.frame_index < ply_stream_states_.size())
+                    ply_stream_states_[result.frame_index] = PlyStreamFrameState::Resident;
+                std::erase(loaded_ply_sequence_frames_, result.frame_index);
+                loaded_ply_sequence_frames_.push_back(result.frame_index);
+                ply_stream_last_load_ms_ = result.load_ms;
+                if (result.cache_hit)
+                    ++ply_stream_cache_hit_count_;
+                if (result.cache_miss)
+                    ++ply_stream_cache_miss_count_;
+                if (result.cache_written)
+                    ++ply_stream_cache_write_count_;
+                if (result.cache_write_failed)
+                    ++ply_stream_cache_write_fail_count_;
+            }
+
+            LOG_INFO("Streamed PLY sequence frame {} '{}' ({} gaussians, {:.1f}ms, cache={})",
+                     result.frame_index,
+                     node_name,
+                     gaussian_count,
+                     result.load_ms,
+                     result.cache_hit ? "hit" : "miss");
+            current_frame_loaded = current_frame.has_value() && *current_frame == result.frame_index;
+        }
+
+        if (current_frame_loaded)
+            last_ply_sequence_frame_ = std::nullopt;
+        if (auto* const rm = viewer_->getRenderingManager())
+            rm->markDirty(DirtyFlag::SPLATS);
+        if (current_frame.has_value())
+            evictPlySequenceFrames(*current_frame);
+    }
+
+    void SequencerUIManager::evictPlySequenceFrames(const size_t keep_frame_index) {
+        const auto* const sequence = controller_.plySequence();
+        auto* const scene_manager = viewer_->getSceneManager();
+        if (!sequence || !scene_manager)
+            return;
+
+        auto& scene = scene_manager->getScene();
+        const size_t frame_count = sequence->frames.size();
+        const size_t budget = std::min(MAX_STREAM_RESIDENT_FRAMES, frame_count);
+        while (loaded_ply_sequence_frames_.size() > budget) {
+            auto victim_it = loaded_ply_sequence_frames_.end();
+            bool victim_outside_window = false;
+            size_t victim_distance = 0;
+
+            for (auto it = loaded_ply_sequence_frames_.begin(); it != loaded_ply_sequence_frames_.end(); ++it) {
+                const size_t candidate = *it;
+                if (candidate == keep_frame_index ||
+                    (last_ply_sequence_frame_.has_value() && candidate == *last_ply_sequence_frame_) ||
+                    candidate >= frame_count) {
+                    continue;
+                }
+
+                const bool outside_window = !isPlySequenceFrameInWindow(candidate, keep_frame_index, frame_count);
+                const size_t distance = plySequenceFrameDistance(candidate, keep_frame_index, frame_count);
+                if (victim_it == loaded_ply_sequence_frames_.end() ||
+                    (outside_window && !victim_outside_window) ||
+                    (outside_window == victim_outside_window && distance > victim_distance)) {
+                    victim_it = it;
+                    victim_outside_window = outside_window;
+                    victim_distance = distance;
+                }
+            }
+
+            if (victim_it == loaded_ply_sequence_frames_.end())
+                return;
+
+            const size_t victim = *victim_it;
+            loaded_ply_sequence_frames_.erase(victim_it);
+            if (victim >= frame_count)
+                continue;
+
+            const std::string& victim_name = sequence->frames[victim].node_name;
+            auto old_model = scene.swapNodeModel(victim_name, nullptr);
+            old_model.reset();
+            scene.setNodeVisibility(victim_name, false);
+            std::lock_guard lock(ply_stream_mutex_);
+            if (victim < ply_stream_states_.size())
+                ply_stream_states_[victim] = PlyStreamFrameState::Empty;
+            ++ply_stream_eviction_count_;
+        }
+    }
+
+    float SequencerUIManager::advancePanelClock() {
+        const auto now = std::chrono::steady_clock::now();
+        float delta_time = std::chrono::duration<float>(now - last_panel_frame_time_).count();
+        last_panel_frame_time_ = now;
+        if (!std::isfinite(delta_time) || delta_time < 0.0f)
+            delta_time = 0.0f;
+        delta_time = std::min(delta_time, 0.1f);
+        panel_elapsed_time_ += delta_time;
+        last_panel_delta_time_ = delta_time;
+        return delta_time;
+    }
+
+    float SequencerUIManager::advancePlaybackClock() {
+        const auto now = std::chrono::steady_clock::now();
+        if (!last_playback_tick_time_.has_value()) {
+            last_playback_tick_time_ = now;
+            return 0.0f;
+        }
+
+        float delta_time = std::chrono::duration<float>(now - *last_playback_tick_time_).count();
+        last_playback_tick_time_ = now;
+        if (!std::isfinite(delta_time) || delta_time < 0.0f)
+            delta_time = 0.0f;
+        if (!controller_.hasPlySequence())
+            delta_time = std::min(delta_time, 0.1f);
+        return delta_time;
+    }
+
+    float SequencerUIManager::playbackDelta(const float delta_time) const {
+        return delta_time;
+    }
+
+    void SequencerUIManager::applyPlaybackCameraFollow() {
+        auto* const rm = viewer_->getRenderingManager();
+        if (!rm)
+            return;
 
         const bool is_playing = controller_.isPlaying() && controller_.timeline().realKeyframeCount() > 0;
+        rm->setOverlayAnimationActive(is_playing);
+        if (ui_state_.follow_playback && controller_.timeline().realKeyframeCount() > 0) {
+            rm->markDirty(DirtyFlag::CAMERA);
+            const auto state = controller_.currentCameraState();
+            auto& vp = viewer_->getViewport();
+            vp.camera.R = glm::mat3_cast(state.rotation);
+            vp.camera.t = state.position;
+            rm->setFocalLength(state.focal_length_mm);
+        }
+    }
 
-        if (auto* const rm = viewer_->getRenderingManager()) {
-            rm->setOverlayAnimationActive(is_playing);
-            if (is_playing && ui_state_.follow_playback) {
-                rm->markDirty(DirtyFlag::CAMERA);
-                const auto state = controller_.currentCameraState();
-                auto& vp = viewer_->getViewport();
-                vp.camera.R = glm::mat3_cast(state.rotation);
-                vp.camera.t = state.position;
-                rm->setFocalLength(state.focal_length_mm);
+    void SequencerUIManager::advancePlayback(const float delta_time) {
+        controller_.update(playbackDelta(delta_time));
+        applyPlaybackCameraFollow();
+        applyPlySequenceFrame();
+    }
+
+    void SequencerUIManager::tickPlaybackBeforeSceneRender() {
+        if (!controller_.isPlaying()) {
+            last_playback_tick_time_ = std::nullopt;
+            drainPlySequenceStream();
+            applyPlySequenceFrame();
+            return;
+        }
+
+        advancePanelClock();
+        advancePlayback(advancePlaybackClock());
+        playback_ticked_before_scene_ = true;
+    }
+
+    std::string SequencerUIManager::plyPlayerStatusJson() const {
+        const auto* const sequence = controller_.plySequence();
+        if (!sequence)
+            return {};
+        const auto current_frame = controller_.currentPlySequenceFrameIndex();
+
+        size_t resident = 0;
+        size_t queued = 0;
+        size_t failed = 0;
+        bool inflight = false;
+        double last_load_ms = 0.0;
+        size_t misses = 0;
+        size_t fallbacks = 0;
+        size_t evictions = 0;
+        size_t stale_drops = 0;
+        size_t cache_hits = 0;
+        size_t cache_misses = 0;
+        size_t cache_writes = 0;
+        size_t cache_write_failures = 0;
+        {
+            std::lock_guard lock(ply_stream_mutex_);
+            for (const auto state : ply_stream_states_) {
+                switch (state) {
+                case PlyStreamFrameState::Resident: ++resident; break;
+                case PlyStreamFrameState::Queued: ++queued; break;
+                case PlyStreamFrameState::Loading: break;
+                case PlyStreamFrameState::Failed: ++failed; break;
+                case PlyStreamFrameState::Empty: break;
+                }
             }
+            queued = std::max(queued, ply_stream_requests_.size());
+            inflight = ply_stream_inflight_;
+            failed = std::max(failed, ply_stream_failed_count_);
+            last_load_ms = ply_stream_last_load_ms_;
+            misses = ply_stream_miss_count_;
+            fallbacks = ply_stream_fallback_count_;
+            evictions = ply_stream_eviction_count_;
+            stale_drops = ply_stream_stale_request_drop_count_;
+            cache_hits = ply_stream_cache_hit_count_;
+            cache_misses = ply_stream_cache_miss_count_;
+            cache_writes = ply_stream_cache_write_count_;
+            cache_write_failures = ply_stream_cache_write_fail_count_;
+        }
+
+        return std::format(
+            "{{\"frame_count\":{},\"displayed_frame\":{},\"requested_frame\":{},\"on_target\":{},"
+            "\"resident\":{},\"slots\":{},\"max_slots\":{},\"decode_queue\":{},"
+            "\"inflight\":{},\"failed\":{},\"last_swap_ms\":{:.3f},"
+            "\"last_load_ms\":{:.3f},\"misses\":{},\"fallbacks\":{},"
+            "\"evictions\":{},\"stale_queue_drops\":{},\"cache_hits\":{},"
+            "\"cache_misses\":{},\"cache_writes\":{},\"cache_write_failures\":{},"
+            "\"streaming\":true}}",
+            sequence->frames.size(),
+            last_ply_sequence_frame_.has_value() ? static_cast<long long>(*last_ply_sequence_frame_) : -1ll,
+            current_frame.has_value() ? static_cast<long long>(*current_frame) : -1ll,
+            last_ply_sequence_frame_.has_value() && current_frame.has_value() &&
+                    *last_ply_sequence_frame_ == *current_frame
+                ? "true"
+                : "false",
+            resident,
+            resident,
+            std::min(MAX_STREAM_RESIDENT_FRAMES, sequence->frames.size()),
+            queued,
+            inflight ? 1 : 0,
+            failed,
+            0.0,
+            last_load_ms,
+            misses,
+            fallbacks,
+            evictions,
+            stale_drops,
+            cache_hits,
+            cache_misses,
+            cache_writes,
+            cache_write_failures);
+    }
+
+    void SequencerUIManager::renderSequencerPanel(const UIContext& /*ctx*/, const ViewportLayout& viewport,
+                                                  const float panel_x, const float panel_y,
+                                                  const float panel_width, const float panel_height,
+                                                  const PanelInputState& panel_input) {
+        (void)viewport;
+        const bool already_ticked = playback_ticked_before_scene_;
+        const float delta_time = already_ticked ? last_panel_delta_time_ : advancePanelClock();
+        playback_ticked_before_scene_ = false;
+        if (!already_ticked) {
+            if (controller_.isPlaying()) {
+                advancePlayback(advancePlaybackClock());
+            } else {
+                last_playback_tick_time_ = std::nullopt;
+                advancePlayback(delta_time);
+            }
+        } else if (!controller_.isPlaying()) {
+            last_playback_tick_time_ = std::nullopt;
         }
 
         panel_->setFilmStripAttached(ui_state_.show_film_strip);
 
-        lfs::vis::PanelInputState input =
-            buildSequencerPanelInputFromSDL(viewer_->getWindowManager()->frameInput());
-        if (const ImGuiViewport* const main_viewport = ImGui::GetMainViewport()) {
-            input.screen_x = main_viewport->Pos.x;
-            input.screen_y = main_viewport->Pos.y;
-        }
-        input.time = static_cast<float>(ImGui::GetTime());
-        input.delta_time = io.DeltaTime;
-        input.want_capture_mouse = guiFocusState().want_capture_mouse;
+        panel_input_ = toSequencerPanelInput(panel_input);
+        panel_input_.time = panel_elapsed_time_;
+        panel_input_.delta_time = delta_time;
+        panel_input_.want_capture_mouse = guiFocusState().want_capture_mouse;
 
-        const float strip_offset = ui_state_.show_film_strip ? FilmStripRenderer::STRIP_HEIGHT : 0.0f;
-        panel_->render(viewport.pos.x, viewport.size.x,
-                       viewport.pos.y + viewport.size.y - strip_offset, input);
+        panel_->render(panel_x, panel_y, panel_width, panel_height, panel_input_,
+                       viewer_->getRenderingManager(), viewer_->getSceneManager(), film_strip_);
 
         if (panel_->isHovered())
             guiFocusState().want_capture_mouse = true;
@@ -343,8 +1232,8 @@ namespace lfs::vis::gui {
 
         const auto timeline_menu = panel_->consumeContextMenu();
         if (timeline_menu.open) {
-            overlay_->showContextMenu(input.mouse_x, input.mouse_y,
-                                      timeline_menu.keyframe, timeline_menu.time, keyframe_gizmo_op_);
+            overlay_->showContextMenu(panel_input_.mouse_x, panel_input_.mouse_y,
+                                      timeline_menu.keyframe, timeline_menu.time, viewport_edit_mode_);
         }
 
         const auto time_req = panel_->consumeTimeEditRequest();
@@ -382,6 +1271,26 @@ namespace lfs::vis::gui {
             }
         }
 
+        if (panel_->consumeLoadSequenceRequest()) {
+            const auto path = gui::PickFolderDialog();
+            if (!path.empty())
+                loadPlySequenceFromDirectory(path);
+        }
+
+        if (panel_->consumeDockToggleRequest()) {
+            const PanelSpace target = panel_->isFloating() ? PanelSpace::BottomDock : PanelSpace::Floating;
+            if (!PanelRegistry::instance().set_panel_space("native.sequencer", target)) {
+                LOG_ERROR("Failed to move sequencer panel to {}",
+                          target == PanelSpace::Floating ? "floating" : "bottom dock");
+            }
+        }
+
+        if (panel_->consumeClosePanelRequest()) {
+            if (auto* const gui = viewer_->getGuiManager())
+                gui->panelLayout().setShowSequencer(false);
+            setSequencerEnabled(false);
+        }
+
         if (panel_->consumeExportRequest() && controller_.timeline().realKeyframeCount() > 0) {
             const auto info = lfs::io::video::getPresetInfo(ui_state_.preset);
             const int w = ui_state_.preset == lfs::io::video::VideoPreset::CUSTOM
@@ -399,10 +1308,14 @@ namespace lfs::vis::gui {
         }
 
         if (panel_->consumeClearRequest() &&
-            (controller_.timeline().realKeyframeCount() > 0 || controller_.timeline().hasAnimationClip())) {
+            (controller_.timeline().realKeyframeCount() > 0 || controller_.timeline().hasAnimationClip() ||
+             controller_.hasPlySequence())) {
+            stopPlySequenceStreaming();
             controller_.clear();
+            last_ply_sequence_frame_ = std::nullopt;
+            loaded_ply_sequence_frames_.clear();
             lfs::core::events::state::KeyframeListChanged{.count = 0}.emit();
-            LOG_INFO("All keyframes cleared");
+            LOG_INFO("Sequencer cleared");
         }
 
         auto ctx_req = panel_->consumeTransportContextMenu();
@@ -422,7 +1335,6 @@ namespace lfs::vis::gui {
                                      std::format("snap_{}", snap_values[i]),
                                      false, false, false, active});
                 }
-                active_transport_menu_ = TransportMenuType::SNAP;
                 break;
             }
             case Target::PREVIEW: {
@@ -435,7 +1347,6 @@ namespace lfs::vis::gui {
                                      std::format("scale_{}", scale_values[i]),
                                      false, false, false, active});
                 }
-                active_transport_menu_ = TransportMenuType::PREVIEW;
                 break;
             }
             case Target::FORMAT: {
@@ -449,72 +1360,62 @@ namespace lfs::vis::gui {
                                      std::format("preset_{}", p),
                                      false, false, false, active});
                 }
-                active_transport_menu_ = TransportMenuType::FORMAT;
                 break;
             }
             case Target::CLEAR: {
                 items.push_back({LOC("context_menu.clear_confirm"), "", false, true});
                 items.push_back({LOC("context_menu.confirm"), "clear_confirm"});
                 items.push_back({LOC("context_menu.cancel"), "clear_cancel"});
-                active_transport_menu_ = TransportMenuType::CLEAR_CONFIRM;
                 break;
             }
             default:
                 break;
             }
 
-            if (!items.empty())
-                cm.request(std::move(items), ctx_req.screen_x, ctx_req.screen_y);
-        }
-
-        if (active_transport_menu_ != TransportMenuType::NONE) {
-            auto& cm = viewer_->getGuiManager()->globalContextMenu();
-            auto action = cm.pollResult();
-            if (!action.empty()) {
-                switch (active_transport_menu_) {
-                case TransportMenuType::SNAP: {
-                    if (action.starts_with("snap_")) {
-                        float val = std::stof(action.substr(5));
-                        ui_state_.snap_interval = val;
-                    }
-                    break;
-                }
-                case TransportMenuType::PREVIEW: {
-                    if (action.starts_with("scale_")) {
-                        float val = std::stof(action.substr(6));
-                        ui_state_.pip_preview_scale = val;
-                    }
-                    break;
-                }
-                case TransportMenuType::FORMAT: {
-                    if (action.starts_with("preset_")) {
-                        using lfs::io::video::VideoPreset;
-                        int idx = std::stoi(action.substr(7));
-                        ui_state_.preset = static_cast<VideoPreset>(idx);
-                        const auto info = lfs::io::video::getPresetInfo(ui_state_.preset);
-                        ui_state_.custom_width = info.width;
-                        ui_state_.custom_height = info.height;
-                        ui_state_.framerate = info.framerate;
-                    }
-                    break;
-                }
-                case TransportMenuType::CLEAR_CONFIRM: {
-                    if (action == "clear_confirm" &&
-                        (controller_.timeline().realKeyframeCount() > 0 || controller_.timeline().hasAnimationClip())) {
-                        controller_.clear();
-                        lfs::core::events::state::KeyframeListChanged{.count = 0}.emit();
-                        LOG_INFO("All keyframes cleared");
-                    }
-                    break;
-                }
-                default:
-                    break;
-                }
-                active_transport_menu_ = TransportMenuType::NONE;
-            } else if (!cm.isOpen()) {
-                active_transport_menu_ = TransportMenuType::NONE;
+            if (!items.empty()) {
+                const auto target = ctx_req.target;
+                cm.request(std::move(items), ctx_req.screen_x, ctx_req.screen_y,
+                           [this, target](std::string_view action) {
+                               switch (target) {
+                               case Target::SNAP:
+                                   if (action.starts_with("snap_"))
+                                       ui_state_.snap_interval = std::stof(std::string(action.substr(5)));
+                                   break;
+                               case Target::PREVIEW:
+                                   if (action.starts_with("scale_"))
+                                       ui_state_.pip_preview_scale = std::stof(std::string(action.substr(6)));
+                                   break;
+                               case Target::FORMAT:
+                                   if (action.starts_with("preset_")) {
+                                       using lfs::io::video::VideoPreset;
+                                       const int idx = std::stoi(std::string(action.substr(7)));
+                                       ui_state_.preset = static_cast<VideoPreset>(idx);
+                                       const auto info = lfs::io::video::getPresetInfo(ui_state_.preset);
+                                       ui_state_.custom_width = info.width;
+                                       ui_state_.custom_height = info.height;
+                                       ui_state_.framerate = info.framerate;
+                                   }
+                                   break;
+                               case Target::CLEAR:
+                                   if (action == "clear_confirm" &&
+                                       (controller_.timeline().realKeyframeCount() > 0 || controller_.timeline().hasAnimationClip() ||
+                                        controller_.hasPlySequence())) {
+                                       stopPlySequenceStreaming();
+                                       controller_.clear();
+                                       last_ply_sequence_frame_ = std::nullopt;
+                                       loaded_ply_sequence_frames_.clear();
+                                       lfs::core::events::state::KeyframeListChanged{.count = 0}.emit();
+                                       LOG_INFO("Sequencer cleared");
+                                   }
+                                   break;
+                               case Target::NONE:
+                                   break;
+                               }
+                           });
             }
         }
+
+        applyPlySequenceFrame();
     }
 
     void SequencerUIManager::renderCameraPath(const ViewportLayout& viewport) {
@@ -528,42 +1429,169 @@ namespace lfs::vis::gui {
         constexpr float HIT_RADIUS = 15.0f;
 
         const auto& timeline = controller_.timeline();
+        if (timeline.empty())
+            return;
+
         const auto& vp = viewer_->getViewport();
         auto* const rm = viewer_->getRenderingManager();
         if (!rm)
             return;
         const auto& settings = rm->getSettings();
         const glm::ivec2 vp_size(static_cast<int>(viewport.size.x), static_cast<int>(viewport.size.y));
-        const glm::mat4 projection = lfs::rendering::createProjectionMatrixFromFocal(
-            vp_size, settings.focal_length_mm, settings.orthographic, settings.ortho_scale);
-        const glm::mat4 view_proj = projection * vp.getViewMatrix();
+        const auto* const rendering_manager = static_cast<const RenderingManager*>(rm);
 
-        const auto projectToScreen = [&](const glm::vec3& pos) -> glm::vec2 {
-            const glm::vec4 clip = view_proj * glm::vec4(pos, 1.0f);
-            if (clip.w <= 0.0f)
+        struct CameraPathPanel {
+            SplitViewPanelId panel_id = SplitViewPanelId::Left;
+            const Viewport* viewport = nullptr;
+            glm::vec2 projection_pos{0.0f};
+            glm::vec2 projection_size{0.0f};
+            glm::ivec2 render_size{0};
+            gui::ClipRect clip_rect{};
+
+            [[nodiscard]] bool valid() const {
+                return viewport != nullptr &&
+                       projection_size.x > 0.0f &&
+                       projection_size.y > 0.0f &&
+                       render_size.x > 0 &&
+                       render_size.y > 0 &&
+                       clip_rect.width > 0 &&
+                       clip_rect.height > 0;
+            }
+
+            [[nodiscard]] bool contains(const float x, const float y) const {
+                return x >= static_cast<float>(clip_rect.x) &&
+                       x <= static_cast<float>(clip_rect.x + clip_rect.width) &&
+                       y >= static_cast<float>(clip_rect.y) &&
+                       y <= static_cast<float>(clip_rect.y + clip_rect.height);
+            }
+        };
+
+        std::vector<CameraPathPanel> panels;
+        panels.reserve(2);
+
+        const auto add_viewer_panel = [&](const std::optional<RenderingManager::ViewerPanelInfo>& info_opt) {
+            if (!info_opt || !info_opt->valid())
+                return;
+            const auto& info = *info_opt;
+            panels.push_back(CameraPathPanel{
+                .panel_id = info.panel,
+                .viewport = info.viewport,
+                .projection_pos = {info.x, info.y},
+                .projection_size = {info.width, info.height},
+                .render_size = {info.render_width, info.render_height},
+                .clip_rect = {
+                    static_cast<int>(std::round(info.x)),
+                    static_cast<int>(std::round(info.y)),
+                    static_cast<int>(std::round(info.width)),
+                    static_cast<int>(std::round(info.height)),
+                },
+            });
+        };
+
+        if (rm->isIndependentSplitViewActive()) {
+            add_viewer_panel(rendering_manager->resolveViewerPanel(
+                vp, viewport.pos, viewport.size, std::nullopt, SplitViewPanelId::Left));
+            add_viewer_panel(rendering_manager->resolveViewerPanel(
+                vp, viewport.pos, viewport.size, std::nullopt, SplitViewPanelId::Right));
+        }
+
+        if (panels.empty()) {
+            const int clip_x = static_cast<int>(std::round(viewport.pos.x));
+            const int clip_y = static_cast<int>(std::round(viewport.pos.y));
+            const int clip_w = static_cast<int>(std::round(viewport.size.x));
+            const int clip_h = static_cast<int>(std::round(viewport.size.y));
+            std::vector<gui::ClipRect> clip_rects;
+            clip_rects.reserve(2);
+
+            if (const auto divider_x = rm->getSplitDividerScreenX(viewport.pos, viewport.size);
+                divider_x.has_value()) {
+                const int divider =
+                    std::clamp(static_cast<int>(std::round(*divider_x)), clip_x, clip_x + clip_w);
+                if (divider > clip_x)
+                    clip_rects.push_back({clip_x, clip_y, divider - clip_x, clip_h});
+                if (divider < clip_x + clip_w)
+                    clip_rects.push_back({divider, clip_y, clip_x + clip_w - divider, clip_h});
+            }
+
+            if (clip_rects.empty())
+                clip_rects.push_back({clip_x, clip_y, clip_w, clip_h});
+
+            for (size_t i = 0; i < clip_rects.size(); ++i) {
+                panels.push_back(CameraPathPanel{
+                    .panel_id = (i == 0) ? SplitViewPanelId::Left : SplitViewPanelId::Right,
+                    .viewport = &vp,
+                    .projection_pos = viewport.pos,
+                    .projection_size = viewport.size,
+                    .render_size = vp_size,
+                    .clip_rect = clip_rects[i],
+                });
+            }
+        }
+
+        if (panels.empty())
+            return;
+
+        if (viewport_edit_mode_ != SequencerViewportEditMode::None) {
+            const auto selected = controller_.selectedKeyframe();
+            const auto* const selected_keyframe =
+                selected.has_value() && *selected < timeline.size()
+                    ? timeline.getKeyframe(*selected)
+                    : nullptr;
+            if (!selected_keyframe || selected_keyframe->is_loop_point) {
+                viewport_edit_mode_ = SequencerViewportEditMode::None;
+                keyframe_gizmo_active_ = false;
+            }
+        }
+
+        const auto projectToScreen = [&](const CameraPathPanel& panel,
+                                         const glm::vec3& pos) -> glm::vec2 {
+            const auto projected = lfs::rendering::projectWorldPoint(
+                panel.viewport->getRotationMatrix(),
+                panel.viewport->getTranslation(),
+                panel.render_size,
+                pos,
+                settings.focal_length_mm,
+                settings.orthographic,
+                settings.ortho_scale);
+            if (!projected)
                 return {-10000.0f, -10000.0f};
-            const glm::vec3 ndc = glm::vec3(clip) / clip.w;
-            return {viewport.pos.x + (ndc.x * 0.5f + 0.5f) * viewport.size.x,
-                    viewport.pos.y + (1.0f - (ndc.y * 0.5f + 0.5f)) * viewport.size.y};
+            const float scale_x =
+                panel.projection_size.x / static_cast<float>(std::max(panel.render_size.x, 1));
+            const float scale_y =
+                panel.projection_size.y / static_cast<float>(std::max(panel.render_size.y, 1));
+            return {
+                panel.projection_pos.x + projected->x * scale_x,
+                panel.projection_pos.y + projected->y * scale_y,
+            };
         };
 
-        const auto isVisible = [&](const glm::vec3& pos) -> bool {
-            const glm::vec4 clip = view_proj * glm::vec4(pos, 1.0f);
-            if (clip.w <= 0.0f)
+        const auto isVisible = [&](const CameraPathPanel& panel,
+                                   const glm::vec3& pos) -> bool {
+            const auto projected = lfs::rendering::projectWorldPoint(
+                panel.viewport->getRotationMatrix(),
+                panel.viewport->getTranslation(),
+                panel.render_size,
+                pos,
+                settings.focal_length_mm,
+                settings.orthographic,
+                settings.ortho_scale);
+            if (!projected)
                 return false;
-            const glm::vec3 ndc = glm::vec3(clip) / clip.w;
-            return std::abs(ndc.x) <= NDC_CULL_MARGIN && std::abs(ndc.y) <= NDC_CULL_MARGIN;
+            const float margin_x =
+                (NDC_CULL_MARGIN - 1.0f) * 0.5f * static_cast<float>(panel.render_size.x);
+            const float margin_y =
+                (NDC_CULL_MARGIN - 1.0f) * 0.5f * static_cast<float>(panel.render_size.y);
+            return projected->x >= -margin_x &&
+                   projected->x <= static_cast<float>(panel.render_size.x) + margin_x &&
+                   projected->y >= -margin_y &&
+                   projected->y <= static_cast<float>(panel.render_size.y) + margin_y;
         };
 
-        const auto toColor = [](const ImVec4& c, float alpha) -> glm::vec4 {
+        const auto toColor = [](const ImVec4& c, const float alpha) -> glm::vec4 {
             return {c.x, c.y, c.z, alpha};
         };
 
         const auto& t = theme();
-
-        if (timeline.empty())
-            return;
-
         const auto* const wm = viewer_->getWindowManager();
         const glm::ivec2 screen_size = wm ? wm->getWindowSize() : glm::ivec2{};
         const glm::ivec2 framebuffer_size = wm ? wm->getFramebufferSize() : glm::ivec2{};
@@ -571,13 +1599,6 @@ namespace lfs::vis::gui {
         const int screen_h = screen_size.y;
         const int fb_w = framebuffer_size.x;
         const int fb_h = framebuffer_size.y;
-        line_renderer_.begin(
-            screen_w, screen_h, fb_w, fb_h,
-            gui::ClipRect{
-                static_cast<int>(std::round(viewport.pos.x)),
-                static_cast<int>(std::round(viewport.pos.y)),
-                static_cast<int>(std::round(viewport.size.x)),
-                static_cast<int>(std::round(viewport.size.y))});
 
         const int path_framerate = std::max(ui_state_.framerate, 1);
         const float base_path_time_step = 1.0f / static_cast<float>(path_framerate);
@@ -592,34 +1613,17 @@ namespace lfs::vis::gui {
                 : base_path_time_step;
         const float path_time_step = std::max(base_path_time_step, capped_path_time_step);
         const auto path_points = timeline.generatePathAtTimeStep(path_time_step);
-        if (path_points.size() >= 2) {
-            const glm::vec4 path_color = toColor(t.palette.primary, 0.8f);
-            const glm::vec4 sample_color = toColor(t.palette.primary, 0.45f);
-            for (size_t i = 0; i + 1 < path_points.size(); ++i) {
-                if (!isVisible(path_points[i]) && !isVisible(path_points[i + 1]))
-                    continue;
-                line_renderer_.addLine(projectToScreen(path_points[i]), projectToScreen(path_points[i + 1]),
-                                       path_color, PATH_THICKNESS);
-            }
-
-            const size_t marker_stride =
-                std::max<size_t>(path_points.size() / MAX_PATH_SAMPLE_MARKERS, 1);
-            for (size_t i = 0; i < path_points.size(); i += marker_stride) {
-                if (!isVisible(path_points[i]))
-                    continue;
-                line_renderer_.addCircleFilled(projectToScreen(path_points[i]),
-                                               PATH_SAMPLE_RADIUS,
-                                               sample_color, 10);
-            }
-        }
 
         const auto& input = viewer_->getWindowManager()->frameInput();
         const float mouse_x = input.mouse_x;
         const float mouse_y = input.mouse_y;
-        const bool mouse_in_viewport = mouse_x >= viewport.pos.x &&
-                                       mouse_x <= viewport.pos.x + viewport.size.x &&
-                                       mouse_y >= viewport.pos.y &&
-                                       mouse_y <= viewport.pos.y + viewport.size.y;
+        const CameraPathPanel* mouse_panel = nullptr;
+        for (const auto& panel : panels) {
+            if (panel.contains(mouse_x, mouse_y)) {
+                mouse_panel = &panel;
+                break;
+            }
+        }
 
         std::optional<size_t> hovered_keyframe;
         float closest_dist = HIT_RADIUS;
@@ -628,16 +1632,15 @@ namespace lfs::vis::gui {
         const glm::vec4 hovered_frustum_color = toColor(lighten(t.palette.primary, 0.15f), 0.85f);
         const glm::vec4 selected_frustum_color = toColor(lighten(t.palette.primary, 0.3f), 0.9f);
 
-        for (size_t i = 0; i < timeline.keyframes().size(); ++i) {
-            const auto& kf = timeline.keyframes()[i];
-            if (kf.is_loop_point)
-                continue;
-            if (!isVisible(kf.position))
-                continue;
+        if (mouse_panel) {
+            for (size_t i = 0; i < timeline.keyframes().size(); ++i) {
+                const auto& kf = timeline.keyframes()[i];
+                if (kf.is_loop_point)
+                    continue;
+                if (!isVisible(*mouse_panel, kf.position))
+                    continue;
 
-            const glm::vec2 s_apex = projectToScreen(kf.position);
-
-            if (mouse_in_viewport) {
+                const glm::vec2 s_apex = projectToScreen(*mouse_panel, kf.position);
                 const float dx = mouse_x - s_apex.x;
                 const float dy = mouse_y - s_apex.y;
                 const float dist = std::sqrt(dx * dx + dy * dy);
@@ -646,110 +1649,153 @@ namespace lfs::vis::gui {
                     hovered_keyframe = i;
                 }
             }
-
-            const bool selected = controller_.selectedKeyframe() == i;
-            const bool hovered = hovered_keyframe == i;
-            glm::vec4 color = frustum_color;
-            if (selected)
-                color = selected_frustum_color;
-            else if (hovered)
-                color = hovered_frustum_color;
-            const float thickness = selected ? FRUSTUM_THICKNESS * 1.5f : FRUSTUM_THICKNESS;
-
-            const float half_vfov = rendering::focalLengthToVFovRad(kf.focal_length_mm) * 0.5f;
-            const float half_h = std::tan(half_vfov) * FRUSTUM_DEPTH;
-            const float half_w = half_h * SENSOR_ASPECT;
-
-            const glm::mat3 rot_mat = glm::mat3_cast(kf.rotation);
-            const glm::vec3 forward = rot_mat[2];
-            const glm::vec3 up = -rot_mat[1];
-            const glm::vec3 right = rot_mat[0];
-
-            const glm::vec3 apex = kf.position;
-
-            const glm::vec3 base_center = apex + forward * FRUSTUM_DEPTH;
-            const glm::vec3 tl = base_center + up * half_h - right * half_w;
-            const glm::vec3 tr = base_center + up * half_h + right * half_w;
-            const glm::vec3 bl = base_center - up * half_h - right * half_w;
-            const glm::vec3 br = base_center - up * half_h + right * half_w;
-
-            const glm::vec2 s_tl = projectToScreen(tl);
-            const glm::vec2 s_tr = projectToScreen(tr);
-            const glm::vec2 s_bl = projectToScreen(bl);
-            const glm::vec2 s_br = projectToScreen(br);
-
-            line_renderer_.addLine(s_apex, s_tl, color, thickness);
-            line_renderer_.addLine(s_apex, s_tr, color, thickness);
-            line_renderer_.addLine(s_apex, s_bl, color, thickness);
-            line_renderer_.addLine(s_apex, s_br, color, thickness);
-
-            line_renderer_.addLine(s_tl, s_tr, color, thickness);
-            line_renderer_.addLine(s_tr, s_br, color, thickness);
-            line_renderer_.addLine(s_br, s_bl, color, thickness);
-            line_renderer_.addLine(s_bl, s_tl, color, thickness);
-
-            const glm::vec3 up_tip = base_center + up * half_h * 1.3f;
-            const glm::vec2 s_up = projectToScreen(up_tip);
-            line_renderer_.addTriangleFilled(s_up, s_tl, s_tr, color);
         }
 
-        if (!controller_.isStopped()) {
-            const auto state = controller_.currentCameraState();
-            if (isVisible(state.position)) {
-                const glm::vec4 playhead_color = toColor(t.palette.error, 1.0f);
-                constexpr float PLAYHEAD_FRUSTUM_DEPTH = 0.20f;
+        const auto drawOverlay = [&](const CameraPathPanel& panel) {
+            if (path_points.size() >= 2) {
+                const glm::vec4 path_color = toColor(t.palette.primary, 0.8f);
+                const glm::vec4 sample_color = toColor(t.palette.primary, 0.45f);
+                for (size_t i = 0; i + 1 < path_points.size(); ++i) {
+                    if (!isVisible(panel, path_points[i]) && !isVisible(panel, path_points[i + 1]))
+                        continue;
+                    line_renderer_.addLine(projectToScreen(panel, path_points[i]),
+                                           projectToScreen(panel, path_points[i + 1]),
+                                           path_color, PATH_THICKNESS);
+                }
 
-                const float ph_half_vfov = rendering::focalLengthToVFovRad(state.focal_length_mm) * 0.5f;
-                const float ph_half_h = std::tan(ph_half_vfov) * PLAYHEAD_FRUSTUM_DEPTH;
-                const float ph_half_w = ph_half_h * SENSOR_ASPECT;
-
-                const glm::mat3 rot_mat = glm::mat3_cast(state.rotation);
-                const glm::vec3 forward = rot_mat[2];
-                const glm::vec3 up = -rot_mat[1];
-                const glm::vec3 right = rot_mat[0];
-
-                const glm::vec3 apex = state.position;
-                const glm::vec3 base_center = apex + forward * PLAYHEAD_FRUSTUM_DEPTH;
-                const glm::vec3 tl = base_center + up * ph_half_h - right * ph_half_w;
-                const glm::vec3 tr = base_center + up * ph_half_h + right * ph_half_w;
-                const glm::vec3 bl = base_center - up * ph_half_h - right * ph_half_w;
-                const glm::vec3 br = base_center - up * ph_half_h + right * ph_half_w;
-
-                const glm::vec2 s_apex = projectToScreen(apex);
-                const glm::vec2 s_tl = projectToScreen(tl);
-                const glm::vec2 s_tr = projectToScreen(tr);
-                const glm::vec2 s_bl = projectToScreen(bl);
-                const glm::vec2 s_br = projectToScreen(br);
-
-                line_renderer_.addLine(s_apex, s_tl, playhead_color, FRUSTUM_THICKNESS);
-                line_renderer_.addLine(s_apex, s_tr, playhead_color, FRUSTUM_THICKNESS);
-                line_renderer_.addLine(s_apex, s_bl, playhead_color, FRUSTUM_THICKNESS);
-                line_renderer_.addLine(s_apex, s_br, playhead_color, FRUSTUM_THICKNESS);
-
-                line_renderer_.addLine(s_tl, s_tr, playhead_color, FRUSTUM_THICKNESS);
-                line_renderer_.addLine(s_tr, s_br, playhead_color, FRUSTUM_THICKNESS);
-                line_renderer_.addLine(s_br, s_bl, playhead_color, FRUSTUM_THICKNESS);
-                line_renderer_.addLine(s_bl, s_tl, playhead_color, FRUSTUM_THICKNESS);
-
-                const glm::vec3 up_tip = base_center + up * ph_half_h * 1.3f;
-                const glm::vec2 s_up = projectToScreen(up_tip);
-                line_renderer_.addTriangleFilled(s_up, s_tl, s_tr, playhead_color);
+                const size_t marker_stride =
+                    std::max<size_t>(path_points.size() / MAX_PATH_SAMPLE_MARKERS, 1);
+                for (size_t i = 0; i < path_points.size(); i += marker_stride) {
+                    if (!isVisible(panel, path_points[i]))
+                        continue;
+                    line_renderer_.addCircleFilled(projectToScreen(panel, path_points[i]),
+                                                   PATH_SAMPLE_RADIUS,
+                                                   sample_color, 10);
+                }
             }
+
+            for (size_t i = 0; i < timeline.keyframes().size(); ++i) {
+                const auto& kf = timeline.keyframes()[i];
+                if (kf.is_loop_point)
+                    continue;
+                if (!isVisible(panel, kf.position))
+                    continue;
+
+                const glm::vec2 s_apex = projectToScreen(panel, kf.position);
+                const bool selected = controller_.selectedKeyframe() == i;
+                const bool hovered = mouse_panel == &panel && hovered_keyframe == i;
+                glm::vec4 color = frustum_color;
+                if (selected)
+                    color = selected_frustum_color;
+                else if (hovered)
+                    color = hovered_frustum_color;
+                const float thickness = selected ? FRUSTUM_THICKNESS * 1.5f : FRUSTUM_THICKNESS;
+
+                const float half_vfov = rendering::focalLengthToVFovRad(kf.focal_length_mm) * 0.5f;
+                const float half_h = std::tan(half_vfov) * FRUSTUM_DEPTH;
+                const float half_w = half_h * SENSOR_ASPECT;
+
+                const glm::mat3 rot_mat = glm::mat3_cast(kf.rotation);
+                const glm::vec3 forward = rendering::cameraForward(rot_mat);
+                const glm::vec3 up = rendering::cameraUp(rot_mat);
+                const glm::vec3 right = rendering::cameraRight(rot_mat);
+
+                const glm::vec3 apex = kf.position;
+                const glm::vec3 base_center = apex + forward * FRUSTUM_DEPTH;
+                const glm::vec3 tl = base_center + up * half_h - right * half_w;
+                const glm::vec3 tr = base_center + up * half_h + right * half_w;
+                const glm::vec3 bl = base_center - up * half_h - right * half_w;
+                const glm::vec3 br = base_center - up * half_h + right * half_w;
+
+                const glm::vec2 s_tl = projectToScreen(panel, tl);
+                const glm::vec2 s_tr = projectToScreen(panel, tr);
+                const glm::vec2 s_bl = projectToScreen(panel, bl);
+                const glm::vec2 s_br = projectToScreen(panel, br);
+
+                line_renderer_.addLine(s_apex, s_tl, color, thickness);
+                line_renderer_.addLine(s_apex, s_tr, color, thickness);
+                line_renderer_.addLine(s_apex, s_bl, color, thickness);
+                line_renderer_.addLine(s_apex, s_br, color, thickness);
+
+                line_renderer_.addLine(s_tl, s_tr, color, thickness);
+                line_renderer_.addLine(s_tr, s_br, color, thickness);
+                line_renderer_.addLine(s_br, s_bl, color, thickness);
+                line_renderer_.addLine(s_bl, s_tl, color, thickness);
+
+                const glm::vec3 up_tip = base_center + up * half_h * 1.3f;
+                const glm::vec2 s_up = projectToScreen(panel, up_tip);
+                line_renderer_.addTriangleFilled(s_up, s_tl, s_tr, color);
+            }
+
+            if (!controller_.isStopped()) {
+                const auto state = controller_.currentCameraState();
+                if (isVisible(panel, state.position)) {
+                    const glm::vec4 playhead_color = toColor(t.palette.error, 1.0f);
+                    constexpr float PLAYHEAD_FRUSTUM_DEPTH = 0.20f;
+
+                    const float ph_half_vfov = rendering::focalLengthToVFovRad(state.focal_length_mm) * 0.5f;
+                    const float ph_half_h = std::tan(ph_half_vfov) * PLAYHEAD_FRUSTUM_DEPTH;
+                    const float ph_half_w = ph_half_h * SENSOR_ASPECT;
+
+                    const glm::mat3 rot_mat = glm::mat3_cast(state.rotation);
+                    const glm::vec3 forward = rendering::cameraForward(rot_mat);
+                    const glm::vec3 up = rendering::cameraUp(rot_mat);
+                    const glm::vec3 right = rendering::cameraRight(rot_mat);
+
+                    const glm::vec3 apex = state.position;
+                    const glm::vec3 base_center = apex + forward * PLAYHEAD_FRUSTUM_DEPTH;
+                    const glm::vec3 tl = base_center + up * ph_half_h - right * ph_half_w;
+                    const glm::vec3 tr = base_center + up * ph_half_h + right * ph_half_w;
+                    const glm::vec3 bl = base_center - up * ph_half_h - right * ph_half_w;
+                    const glm::vec3 br = base_center - up * ph_half_h + right * ph_half_w;
+
+                    const glm::vec2 s_apex = projectToScreen(panel, apex);
+                    const glm::vec2 s_tl = projectToScreen(panel, tl);
+                    const glm::vec2 s_tr = projectToScreen(panel, tr);
+                    const glm::vec2 s_bl = projectToScreen(panel, bl);
+                    const glm::vec2 s_br = projectToScreen(panel, br);
+
+                    line_renderer_.addLine(s_apex, s_tl, playhead_color, FRUSTUM_THICKNESS);
+                    line_renderer_.addLine(s_apex, s_tr, playhead_color, FRUSTUM_THICKNESS);
+                    line_renderer_.addLine(s_apex, s_bl, playhead_color, FRUSTUM_THICKNESS);
+                    line_renderer_.addLine(s_apex, s_br, playhead_color, FRUSTUM_THICKNESS);
+
+                    line_renderer_.addLine(s_tl, s_tr, playhead_color, FRUSTUM_THICKNESS);
+                    line_renderer_.addLine(s_tr, s_br, playhead_color, FRUSTUM_THICKNESS);
+                    line_renderer_.addLine(s_br, s_bl, playhead_color, FRUSTUM_THICKNESS);
+                    line_renderer_.addLine(s_bl, s_tl, playhead_color, FRUSTUM_THICKNESS);
+
+                    const glm::vec3 up_tip = base_center + up * ph_half_h * 1.3f;
+                    const glm::vec2 s_up = projectToScreen(panel, up_tip);
+                    line_renderer_.addTriangleFilled(s_up, s_tl, s_tr, playhead_color);
+                }
+            }
+        };
+
+        for (const auto& panel : panels) {
+            line_renderer_.begin(screen_w, screen_h, fb_w, fb_h, panel.clip_rect);
+            drawOverlay(panel);
+            line_renderer_.end();
         }
 
-        line_renderer_.end();
+        const bool overlay_blocks_mouse =
+            overlay_->wantsInput() || overlay_->isMouseOverEditOverlay(mouse_x, mouse_y);
+        const bool mouse_blocked_by_ui =
+            overlay_blocks_mouse ||
+            guiFocusState().want_capture_mouse;
 
-        if (mouse_in_viewport && !ImGui::IsAnyItemHovered() &&
-            !overlay_->wantsInput() && hovered_keyframe.has_value() && !ImGuizmo::IsOver()) {
+        if (mouse_panel && !mouse_blocked_by_ui && hovered_keyframe.has_value()) {
             const auto* const hovered = timeline.getKeyframe(*hovered_keyframe);
             if (hovered && !hovered->is_loop_point) {
-                if (input.mouse_clicked[0]) {
+                if (input.mouse_clicked[0] &&
+                    !isRotationGizmoHovered() &&
+                    !isTranslationGizmoHovered()) {
                     beginViewportKeyframeEdit(*hovered_keyframe);
                     guiFocusState().want_capture_mouse = true;
                 }
                 if (input.mouse_clicked[1]) {
                     overlay_->showContextMenu(mouse_x, mouse_y, hovered_keyframe,
-                                              hovered->time, keyframe_gizmo_op_);
+                                              hovered->time, viewport_edit_mode_);
                     guiFocusState().want_capture_mouse = true;
                 }
             }
@@ -757,77 +1803,340 @@ namespace lfs::vis::gui {
     }
 
     void SequencerUIManager::renderKeyframeGizmo(const UIContext& ctx, const ViewportLayout& viewport) {
-        if (keyframe_gizmo_op_ == ImGuizmo::OPERATION(0))
+        if (viewport_edit_mode_ == SequencerViewportEditMode::None)
             return;
 
         const auto selected = controller_.selectedKeyframe();
-        if (!selected.has_value()) {
-            keyframe_gizmo_op_ = ImGuizmo::OPERATION(0);
+        const auto selected_id = controller_.selectedKeyframeId();
+        if (!selected.has_value() || !selected_id.has_value()) {
+            viewport_edit_mode_ = SequencerViewportEditMode::None;
+            keyframe_gizmo_active_ = false;
             return;
         }
 
         const auto& timeline = controller_.timeline();
-        if (*selected >= timeline.size())
-            return;
-
-        const auto* kf = timeline.getKeyframe(*selected);
+        const auto* const kf = timeline.getKeyframe(*selected);
         if (!kf || kf->is_loop_point) {
-            keyframe_gizmo_op_ = ImGuizmo::OPERATION(0);
+            viewport_edit_mode_ = SequencerViewportEditMode::None;
+            keyframe_gizmo_active_ = false;
             return;
         }
 
-        auto* const rendering_manager = ctx.viewer->getRenderingManager();
+        auto* const rendering_manager = viewer_ ? viewer_->getRenderingManager() : nullptr;
         if (!rendering_manager)
             return;
 
+        auto& primary_viewport = ctx.viewer ? ctx.viewer->getViewport() : viewer_->getViewport();
         const auto& settings = rendering_manager->getSettings();
-        auto& vp = ctx.viewer->getViewport();
-        const glm::mat4 view = vp.getViewMatrix();
-        const glm::ivec2 vp_size(static_cast<int>(viewport.size.x), static_cast<int>(viewport.size.y));
-        const glm::mat4 projection = lfs::rendering::createProjectionMatrix(
-            vp_size, lfs::rendering::focalLengthToVFov(settings.focal_length_mm), settings.orthographic, settings.ortho_scale);
+
+        const auto& input = viewer_->getWindowManager()->frameInput();
+        std::optional<glm::vec2> screen_point;
+        if (input.mouse_x >= viewport.pos.x &&
+            input.mouse_x <= viewport.pos.x + viewport.size.x &&
+            input.mouse_y >= viewport.pos.y &&
+            input.mouse_y <= viewport.pos.y + viewport.size.y) {
+            screen_point = glm::vec2(input.mouse_x, input.mouse_y);
+        }
+
+        const Viewport* gizmo_viewport = &primary_viewport;
+        glm::vec2 rect_pos = viewport.pos;
+        glm::vec2 rect_size = viewport.size;
+        glm::ivec2 render_size(static_cast<int>(std::round(viewport.size.x)),
+                               static_cast<int>(std::round(viewport.size.y)));
+
+        if (rendering_manager->isIndependentSplitViewActive()) {
+            auto panel = rendering_manager->resolveViewerPanel(
+                primary_viewport, viewport.pos, viewport.size, screen_point, std::nullopt);
+            if (!panel || !panel->valid()) {
+                panel = rendering_manager->resolveViewerPanel(
+                    primary_viewport,
+                    viewport.pos,
+                    viewport.size,
+                    std::nullopt,
+                    rendering_manager->getFocusedSplitPanel());
+            }
+            if (panel && panel->valid()) {
+                gizmo_viewport = panel->viewport;
+                rect_pos = {panel->x, panel->y};
+                rect_size = {panel->width, panel->height};
+                render_size = {panel->render_width, panel->render_height};
+            }
+        }
+
+        if (!gizmo_viewport || rect_size.x <= 0.0f || rect_size.y <= 0.0f ||
+            render_size.x <= 0 || render_size.y <= 0) {
+            return;
+        }
+
+        const glm::mat4 view = gizmo_viewport->getViewMatrix();
+        const glm::mat4 projection = lfs::rendering::createProjectionMatrixFromFocal(
+            render_size,
+            settings.focal_length_mm,
+            settings.orthographic,
+            settings.ortho_scale);
 
         const glm::mat3 rot_mat = glm::mat3_cast(kf->rotation);
         glm::mat4 gizmo_matrix(rot_mat);
         gizmo_matrix[3] = glm::vec4(kf->position, 1.0f);
 
-        ImGuizmo::SetOrthographic(settings.orthographic);
-        ImGuizmo::SetRect(viewport.pos.x, viewport.pos.y, viewport.size.x, viewport.size.y);
+        const bool rotate_mode = viewport_edit_mode_ == SequencerViewportEditMode::Rotate;
 
-        ImDrawList* const dl = ImGui::GetForegroundDrawList();
-        const ImVec2 clip_min(viewport.pos.x, viewport.pos.y);
-        const ImVec2 clip_max(clip_min.x + viewport.size.x, clip_min.y + viewport.size.y);
-        dl->PushClipRect(clip_min, clip_max, true);
-        ImGuizmo::SetDrawlist(dl);
+        NativeOverlayDrawList draw_list;
+        const glm::vec2 clip_min(rect_pos.x, rect_pos.y);
+        const glm::vec2 clip_max(rect_pos.x + rect_size.x, rect_pos.y + rect_size.y);
+        draw_list.PushClipRect(clip_min, clip_max, true);
+        const auto& frame_input = viewer_->getWindowManager()->frameInput();
+        const NativeGizmoInput gizmo_input{
+            .mouse_pos = {frame_input.mouse_x, frame_input.mouse_y},
+            .mouse_left_down = frame_input.mouse_down[0],
+            .mouse_left_clicked = frame_input.mouse_clicked[0],
+        };
+        const bool snap_modifier = (frame_input.key_mods & SDL_KMOD_CTRL) != 0;
 
-        const ImGuizmo::MODE mode = (keyframe_gizmo_op_ == ImGuizmo::ROTATE) ? ImGuizmo::LOCAL : ImGuizmo::WORLD;
-        glm::mat4 delta;
-        const bool changed = ImGuizmo::Manipulate(
-            glm::value_ptr(view), glm::value_ptr(projection),
-            keyframe_gizmo_op_, mode,
-            glm::value_ptr(gizmo_matrix), glm::value_ptr(delta), nullptr);
+        bool changed = false;
+        bool is_using = false;
+        glm::mat3 rotation_delta(1.0f);
 
-        const bool is_using = ImGuizmo::IsUsing();
+        if (rotate_mode) {
+            RotationGizmoConfig rotation_config;
+            rotation_config.id = 4000;
+            rotation_config.viewport_pos = rect_pos;
+            rotation_config.viewport_size = rect_size;
+            rotation_config.view = view;
+            rotation_config.projection = projection;
+            rotation_config.pivot_world = kf->position;
+            rotation_config.orientation_world = rot_mat;
+            rotation_config.draw_list = &draw_list;
+            rotation_config.input = gizmo_input;
+            rotation_config.snap = snap_modifier;
+            rotation_config.snap_degrees = 5.0f;
 
-        if (is_using && !keyframe_gizmo_active_) {
-            keyframe_gizmo_active_ = true;
-            keyframe_pos_before_drag_ = kf->position;
-            keyframe_rot_before_drag_ = kf->rotation;
+            const auto rotation_result = drawRotationGizmo(rotation_config);
+            changed = rotation_result.changed;
+            is_using = rotation_result.active;
+            rotation_delta = rotation_result.delta_rotation;
+            if (rotation_result.hovered || rotation_result.active)
+                guiFocusState().want_capture_mouse = true;
+        } else {
+            TranslationGizmoConfig translation_config;
+            translation_config.id = 4000;
+            translation_config.viewport_pos = rect_pos;
+            translation_config.viewport_size = rect_size;
+            translation_config.view = view;
+            translation_config.projection = projection;
+            translation_config.pivot_world = kf->position;
+            translation_config.orientation_world = glm::mat3(1.0f);
+            translation_config.draw_list = &draw_list;
+            translation_config.input = gizmo_input;
+            translation_config.snap = snap_modifier;
+            translation_config.snap_units = 0.1f;
+
+            const auto translation_result = drawTranslationGizmo(translation_config);
+            changed = translation_result.changed;
+            is_using = translation_result.active;
+            if (translation_result.active) {
+                const glm::vec3 translated_position = kf->position + translation_result.delta_translation;
+                gizmo_matrix[3] = glm::vec4(translated_position, 1.0f);
+            }
+            if (translation_result.hovered || translation_result.active)
+                guiFocusState().want_capture_mouse = true;
         }
+
+        if (is_using)
+            guiFocusState().want_capture_mouse = true;
+
+        if (is_using && !keyframe_gizmo_active_)
+            keyframe_gizmo_active_ = true;
 
         if (changed) {
             const glm::vec3 new_pos(gizmo_matrix[3]);
-            const glm::quat new_rot = glm::quat_cast(glm::mat3(gizmo_matrix));
-            controller_.updateKeyframe(*selected, new_pos, new_rot, kf->focal_length_mm);
-            pip_needs_update_ = true;
+            const glm::quat new_rot = rotate_mode
+                                          ? glm::normalize(glm::quat_cast(rotation_delta * rot_mat))
+                                          : glm::normalize(glm::quat_cast(glm::mat3(gizmo_matrix)));
+            if (controller_.updateKeyframeById(
+                    *selected_id,
+                    new_pos,
+                    new_rot,
+                    kf->focal_length_mm)) {
+                pip_needs_update_ = true;
+                rendering_manager->markDirty(DirtyFlag::OVERLAY);
+            }
         }
 
         if (!is_using && keyframe_gizmo_active_) {
             keyframe_gizmo_active_ = false;
-            lfs::core::events::state::KeyframeListChanged{.count = controller_.timeline().realKeyframeCount()}.emit();
+            lfs::core::events::state::KeyframeListChanged{
+                .count = controller_.timeline().realKeyframeCount()}
+                .emit();
         }
 
-        dl->PopClipRect();
+        draw_list.PopClipRect();
+    }
+
+    void SequencerUIManager::loadPlySequenceFromDirectory(const std::filesystem::path& directory) {
+        auto* const scene_manager = viewer_->getSceneManager();
+        if (!scene_manager)
+            return;
+
+        std::error_code ec;
+        if (!std::filesystem::is_directory(directory, ec)) {
+            LOG_ERROR("PLY sequence path is not a directory: {}", lfs::core::path_to_utf8(directory));
+            return;
+        }
+        last_ply_sequence_frame_ = std::nullopt;
+        loaded_ply_sequence_frames_.clear();
+
+        std::vector<std::filesystem::path> paths;
+        const std::filesystem::directory_iterator entries(directory, ec);
+        if (ec) {
+            LOG_ERROR("Failed to read PLY sequence directory {}: {}",
+                      lfs::core::path_to_utf8(directory),
+                      ec.message());
+            return;
+        }
+        for (const auto& entry : entries) {
+            if (ec) {
+                LOG_ERROR("Failed to read PLY sequence directory {}: {}",
+                          lfs::core::path_to_utf8(directory),
+                          ec.message());
+                return;
+            }
+            if (!entry.is_regular_file(ec))
+                continue;
+            auto ext = entry.path().extension().string();
+            std::transform(ext.begin(), ext.end(), ext.begin(),
+                           [](const unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (ext == ".ply")
+                paths.push_back(entry.path());
+        }
+
+        std::sort(paths.begin(), paths.end());
+        if (paths.empty()) {
+            LOG_WARN("No PLY files found in sequence directory: {}", lfs::core::path_to_utf8(directory));
+            return;
+        }
+
+        // A PLY sequence replaces the scene. Each file gets a real scene-graph
+        // child immediately; the heavy SplatData is streamed into those nodes.
+        if (scene_manager->getContentType() != SceneManager::ContentType::Empty) {
+            if (!scene_manager->clear())
+                return;
+        }
+
+        const std::string sequence_prefix = lfs::core::path_to_utf8(directory.filename().empty()
+                                                                        ? directory.parent_path().filename()
+                                                                        : directory.filename());
+        const std::string sequence_name = sequence_prefix.empty() ? "PLY Sequence" : sequence_prefix;
+        const std::string sequence_node = scene_manager->addPlySequenceNode(sequence_name, "", paths.size());
+        if (sequence_node.empty()) {
+            LOG_ERROR("Failed to create PLY sequence node for {}",
+                      lfs::core::path_to_utf8(directory));
+            return;
+        }
+
+        std::vector<std::filesystem::path> loaded_paths;
+        std::vector<std::string> node_names;
+        loaded_paths.reserve(paths.size());
+        node_names.reserve(paths.size());
+        auto splat_allocator = scene_manager->makeExternalSplatAllocator();
+        auto& scene = scene_manager->getScene();
+        scene.setCombinedModelAllocator(splat_allocator);
+        const core::NodeId sequence_id = scene.getNodeIdByName(sequence_node);
+        if (sequence_id == core::NULL_NODE) {
+            LOG_ERROR("Failed to resolve PLY sequence node '{}'", sequence_node);
+            return;
+        }
+
+        for (size_t i = 0; i < paths.size(); ++i) {
+            const std::string stem = lfs::core::path_to_utf8(paths[i].stem());
+            const std::string base_name = std::format("{}_{:04}_{}", sequence_node, i, stem);
+            std::string node_name = base_name;
+            for (int suffix = 1; scene.getNode(node_name); ++suffix)
+                node_name = std::format("{}_{}", base_name, suffix);
+
+            if (scene.addSplatPlaceholder(node_name, sequence_id) == core::NULL_NODE) {
+                LOG_ERROR("Failed to create PLY sequence frame placeholder '{}'", node_name);
+                if (!scene_manager->clear())
+                    LOG_WARN("Failed to clear partial PLY sequence after placeholder failure");
+                return;
+            }
+            scene.setNodeVisibility(node_name, false);
+            scene_manager->setPlyPath(node_name, paths[i]);
+            loaded_paths.push_back(paths[i]);
+            node_names.push_back(node_name);
+            LOG_DEBUG("Added PLY sequence placeholder '{}'", node_name);
+        }
+
+        ui_state_.sequence_fps = std::clamp(ui_state_.sequence_fps, MIN_SEQUENCE_FPS, MAX_SEQUENCE_FPS);
+        controller_.setPlySequence(directory, sequence_node, std::move(loaded_paths), std::move(node_names), ui_state_.sequence_fps);
+        ui_state_.sequence_fps = controller_.plySequenceFps();
+        last_ply_sequence_frame_ = std::nullopt;
+        startPlySequenceStreaming(paths, std::move(splat_allocator));
+        applyPlySequenceFrame();
+
+        if (const auto* sequence = controller_.plySequence()) {
+            scene_manager->selectNode(sequence->node_name);
+            LOG_INFO("Registered PLY sequence '{}' with {} frames at {} fps",
+                     lfs::core::path_to_utf8(directory),
+                     sequence->frames.size(),
+                     sequence->fps);
+        }
+
+        lfs::core::events::state::KeyframeListChanged{
+            .count = controller_.timeline().realKeyframeCount()}
+            .emit();
+    }
+
+    void SequencerUIManager::applyPlySequenceFrame() {
+        drainPlySequenceStream();
+        auto* const scene_manager = viewer_->getSceneManager();
+        const auto* const sequence = controller_.plySequence();
+        const auto frame_index = controller_.currentPlySequenceFrameIndex();
+        if (!scene_manager || !sequence || !frame_index.has_value()) {
+            last_ply_sequence_frame_ = std::nullopt;
+            return;
+        }
+        if (*frame_index >= sequence->frames.size())
+            return;
+
+        const size_t requested_frame = *frame_index;
+        requestPlySequenceWindow(requested_frame);
+        const auto display_frame = selectPlySequenceDisplayFrame(requested_frame);
+        if (!display_frame.has_value()) {
+            std::lock_guard lock(ply_stream_mutex_);
+            ++ply_stream_miss_count_;
+            return;
+        }
+        if (*display_frame != requested_frame) {
+            std::lock_guard lock(ply_stream_mutex_);
+            ++ply_stream_miss_count_;
+            ++ply_stream_fallback_count_;
+        }
+        if (last_ply_sequence_frame_ == display_frame)
+            return;
+
+        auto& scene = scene_manager->getScene();
+        if (last_ply_sequence_frame_.has_value() &&
+            *last_ply_sequence_frame_ < sequence->frames.size()) {
+            const std::string& previous = sequence->frames[*last_ply_sequence_frame_].node_name;
+            if (scene.getNode(previous))
+                scene.setNodeVisibility(previous, false);
+        } else {
+            for (const size_t loaded_frame : loaded_ply_sequence_frames_) {
+                if (loaded_frame == *display_frame || loaded_frame >= sequence->frames.size())
+                    continue;
+                const std::string& loaded_name = sequence->frames[loaded_frame].node_name;
+                if (scene.getNode(loaded_name))
+                    scene.setNodeVisibility(loaded_name, false);
+            }
+        }
+
+        const std::string& active = sequence->frames[*display_frame].node_name;
+        if (scene.getNode(active))
+            scene.setNodeVisibility(active, true);
+        last_ply_sequence_frame_ = display_frame;
+        if (auto* const rm = viewer_->getRenderingManager())
+            rm->markDirty(DirtyFlag::SPLATS);
     }
 
     void SequencerUIManager::handleOverlayActions() {
@@ -852,33 +2161,44 @@ namespace lfs::vis::gui {
                 pip_needs_update_ = true;
             } break;
             case Action::UPDATE_KEYFRAME:
+                viewport_edit_mode_ = SequencerViewportEditMode::None;
+                keyframe_gizmo_active_ = false;
                 endViewportKeyframeEdit();
                 cmd::SequencerSelectKeyframe{.keyframe_index = action->keyframe_index}.emit();
                 cmd::SequencerUpdateKeyframe{}.emit();
                 break;
             case Action::GOTO_KEYFRAME:
+                viewport_edit_mode_ = SequencerViewportEditMode::None;
+                keyframe_gizmo_active_ = false;
                 endViewportKeyframeEdit();
                 cmd::SequencerGoToKeyframe{.keyframe_index = action->keyframe_index}.emit();
                 break;
             case Action::EDIT_FOCAL_LENGTH:
+                keyframe_gizmo_active_ = false;
                 endViewportKeyframeEdit();
                 panel_->openFocalLengthEdit(
                     action->keyframe_index,
                     controller_.timeline().keyframes()[action->keyframe_index].focal_length_mm);
                 break;
             case Action::SET_TRANSLATE:
+                keyframe_gizmo_active_ = false;
                 endViewportKeyframeEdit();
                 cmd::SequencerSelectKeyframe{.keyframe_index = action->keyframe_index}.emit();
-                keyframe_gizmo_op_ = (keyframe_gizmo_op_ == ImGuizmo::TRANSLATE)
-                                         ? ImGuizmo::OPERATION(0)
-                                         : ImGuizmo::TRANSLATE;
+                viewport_edit_mode_ = (viewport_edit_mode_ == SequencerViewportEditMode::Translate)
+                                          ? SequencerViewportEditMode::None
+                                          : SequencerViewportEditMode::Translate;
+                if (auto* const rm = viewer_->getRenderingManager())
+                    rm->markDirty(DirtyFlag::OVERLAY);
                 break;
             case Action::SET_ROTATE:
+                keyframe_gizmo_active_ = false;
                 endViewportKeyframeEdit();
                 cmd::SequencerSelectKeyframe{.keyframe_index = action->keyframe_index}.emit();
-                keyframe_gizmo_op_ = (keyframe_gizmo_op_ == ImGuizmo::ROTATE)
-                                         ? ImGuizmo::OPERATION(0)
-                                         : ImGuizmo::ROTATE;
+                viewport_edit_mode_ = (viewport_edit_mode_ == SequencerViewportEditMode::Rotate)
+                                          ? SequencerViewportEditMode::None
+                                          : SequencerViewportEditMode::Rotate;
+                if (auto* const rm = viewer_->getRenderingManager())
+                    rm->markDirty(DirtyFlag::OVERLAY);
                 break;
             case Action::SET_EASING: {
                 const auto easing = static_cast<sequencer::EasingType>(action->easing_value);
@@ -887,12 +2207,16 @@ namespace lfs::vis::gui {
                 break;
             }
             case Action::DELETE_KEYFRAME:
+                viewport_edit_mode_ = SequencerViewportEditMode::None;
+                keyframe_gizmo_active_ = false;
                 endViewportKeyframeEdit();
                 cmd::SequencerSelectKeyframe{.keyframe_index = action->keyframe_index}.emit();
                 controller_.removeSelectedKeyframe();
                 state::KeyframeListChanged{.count = controller_.timeline().realKeyframeCount()}.emit();
                 break;
             case Action::CLOSE_EDIT_PANEL:
+                viewport_edit_mode_ = SequencerViewportEditMode::None;
+                keyframe_gizmo_active_ = false;
                 endViewportKeyframeEdit();
                 break;
             case Action::APPLY_EDIT:
@@ -939,414 +2263,7 @@ namespace lfs::vis::gui {
         }
     }
 
-    void SequencerUIManager::renderFilmStrip(const UIContext& ctx) {
-        if (!ui_state_.show_film_strip) {
-            if (film_strip_scrubbing_) {
-                film_strip_scrubbing_ = false;
-                controller_.endScrub();
-            }
-            return;
-        }
-
-        auto* const rm = ctx.viewer->getRenderingManager();
-        auto* const sm = ctx.viewer->getSceneManager();
-
-        const float timeline_x = tl_geo_.timeline_x;
-        const float timeline_width = tl_geo_.timeline_width;
-        const float px = tl_geo_.panel_x;
-        const float pw = tl_geo_.panel_width;
-        if (timeline_width <= 0.0f)
-            return;
-
-        const float strip_y = tl_geo_.panel_y + (panel_config::HEIGHT + panel_config::EASING_STRIPE_HEIGHT - panel_config::BORDER_OVERLAP) * tl_geo_.dp;
-
-        std::optional<float> selected_keyframe_time;
-        if (const auto selected = controller_.selectedKeyframe(); selected.has_value()) {
-            if (const auto* const keyframe = controller_.timeline().getKeyframe(*selected))
-                selected_keyframe_time = keyframe->time;
-        }
-
-        std::optional<float> hovered_keyframe_time;
-        if (const auto hovered_id = panel_->hoveredKeyframeId(); hovered_id.has_value()) {
-            if (const auto* const keyframe = controller_.timeline().getKeyframeById(*hovered_id))
-                hovered_keyframe_time = keyframe->time;
-        }
-
-        FilmStripRenderer::RenderOptions options;
-        options.panel_x = px;
-        options.panel_width = pw;
-        options.timeline_x = timeline_x;
-        options.timeline_width = timeline_width;
-        options.strip_y = strip_y;
-        const auto& input = viewer_->getWindowManager()->frameInput();
-        options.mouse_x = input.mouse_x;
-        options.mouse_y = input.mouse_y;
-        options.zoom_level = panel_->zoomLevel();
-        options.pan_offset = panel_->panOffset();
-        options.display_end_time = panel_->getDisplayEndTime();
-        options.selected_keyframe_id = controller_.selectedKeyframeId();
-        options.hovered_keyframe_id = panel_->hoveredKeyframeId();
-        options.selected_keyframe_time = selected_keyframe_time;
-        options.hovered_keyframe_time = hovered_keyframe_time;
-        film_strip_.render(controller_, rm, sm, options);
-
-        const bool can_scrub = controller_.timeline().size() >= 2;
-        const float scrub_time = can_scrub
-                                     ? std::clamp(
-                                           sequencer_ui::screenXToTime(input.mouse_x, timeline_x, timeline_width,
-                                                                       panel_->getDisplayEndTime(), panel_->panOffset()),
-                                           controller_.timeline().startTime(), controller_.timeline().endTime())
-                                     : 0.0f;
-
-        if (film_strip_scrubbing_) {
-            if (input.mouse_down[0] && can_scrub) {
-                controller_.scrub(scrub_time);
-            } else {
-                film_strip_scrubbing_ = false;
-                controller_.endScrub();
-            }
-        }
-
-        if (const auto& hover = film_strip_.hoverState(); hover.has_value()) {
-            guiFocusState().want_capture_mouse = true;
-
-            if (can_scrub && !overlay_->wantsInput() && !film_strip_scrubbing_ && input.mouse_clicked[0]) {
-                film_strip_scrubbing_ = true;
-                controller_.beginScrub();
-                controller_.scrub(scrub_time);
-            }
-
-            std::string tooltip = std::format("Time {}", formatTimelineTime(hover->exact_time));
-            if (hover->over_thumbnail) {
-                tooltip += std::format("\nSample {}", formatTimelineTime(hover->sample_time));
-                tooltip += std::format("\nCovers {} - {}",
-                                       formatTimelineTime(hover->interval_start_time),
-                                       formatTimelineTime(hover->interval_end_time));
-            }
-            timeline_tooltip_active_ = true;
-            timeline_tooltip_pos_ = {input.mouse_x, input.mouse_y};
-            timeline_tooltip_text_ = std::move(tooltip);
-        }
-    }
-
-    void SequencerUIManager::drawEasingCurves() {
-        const float dp = tl_geo_.dp;
-        const float px = tl_geo_.panel_x;
-        const float pw = tl_geo_.panel_width;
-        const float panel_y = tl_geo_.panel_y;
-        const float timeline_x = tl_geo_.timeline_x;
-        const float timeline_width = tl_geo_.timeline_width;
-        if (timeline_width <= 0.0f)
-            return;
-
-        const float stripe_y = panel_y + panel_config::HEIGHT * dp;
-        const float stripe_h = panel_config::EASING_STRIPE_HEIGHT * dp;
-        const float y_center = stripe_y + stripe_h * 0.5f;
-
-        auto* dl = ImGui::GetForegroundDrawList();
-
-        const auto& t = theme();
-        dl->AddRectFilled({px, stripe_y}, {px + pw, stripe_y + stripe_h},
-                          toU32WithAlpha(t.palette.surface, 0.85f),
-                          0.0f);
-        dl->AddLine({px, stripe_y}, {px + pw, stripe_y},
-                    toU32WithAlpha(t.palette.border, 0.3f));
-
-        const auto& timeline = controller_.timeline();
-        const auto& keyframes = timeline.keyframes();
-        if (keyframes.size() < 2)
-            return;
-
-        constexpr int CURVE_SAMPLES = 20;
-        constexpr float CURVE_THICKNESS = 1.5f;
-        constexpr float DOT_RADIUS = 3.0f;
-        constexpr float INDICATOR_SIZE = 4.0f;
-
-        const float pan = panel_->panOffset();
-        const float display_end = panel_->getDisplayEndTime();
-        const float amplitude = stripe_h * 0.35f;
-
-        const auto localTimeToX = [&](float time) -> float {
-            return sequencer_ui::timeToScreenX(time, timeline_x, timeline_width, display_end, pan);
-        };
-
-        dl->PushClipRect({timeline_x, stripe_y}, {timeline_x + timeline_width, stripe_y + stripe_h}, true);
-        const ImU32 colors[2] = {
-            toU32WithAlpha(t.palette.primary, 0.8f),
-            toU32WithAlpha(t.palette.secondary, 0.8f),
-        };
-        const ImU32 segment_fills[2] = {
-            toU32WithAlpha(t.palette.primary, 0.25f),
-            toU32WithAlpha(t.palette.secondary, 0.25f),
-        };
-        const ImU32 curve_color = toU32WithAlpha(t.palette.primary, 0.5f);
-
-        for (size_t i = 0; i + 1 < keyframes.size(); ++i) {
-            const float x0 = localTimeToX(keyframes[i].time);
-            const float x1 = localTimeToX(keyframes[i + 1].time);
-            dl->AddRectFilled({x0, stripe_y}, {x1, stripe_y + stripe_h}, segment_fills[i % 2]);
-        }
-
-        for (size_t i = 0; i + 1 < keyframes.size(); ++i) {
-            const auto& kf_a = keyframes[i];
-            const auto& kf_b = keyframes[i + 1];
-            const auto easing = kf_a.easing;
-            const float x0 = localTimeToX(kf_a.time);
-            const float x1 = localTimeToX(kf_b.time);
-
-            if (easing == sequencer::EasingType::LINEAR) {
-                dl->AddLine({x0, y_center}, {x1, y_center}, curve_color, CURVE_THICKNESS);
-                continue;
-            }
-
-            ImVec2 points[CURVE_SAMPLES + 1];
-            for (int s = 0; s <= CURVE_SAMPLES; ++s) {
-                const float t_norm = static_cast<float>(s) / static_cast<float>(CURVE_SAMPLES);
-                const float eased = sequencer::applyEasing(t_norm, easing);
-                const float x = x0 + t_norm * (x1 - x0);
-                const float y = y_center - (eased - t_norm) * amplitude;
-                points[s] = {x, y};
-            }
-            dl->AddPolyline(points, CURVE_SAMPLES + 1, curve_color, ImDrawFlags_None, CURVE_THICKNESS);
-        }
-
-        for (size_t i = 0; i < keyframes.size(); ++i) {
-            const float kx = localTimeToX(keyframes[i].time);
-            const ImU32 kf_color = colors[i % 2];
-            dl->AddCircleFilled({kx, y_center}, DOT_RADIUS, kf_color);
-
-            const auto easing = keyframes[i].easing;
-            if (easing == sequencer::EasingType::LINEAR)
-                continue;
-
-            const float iy = y_center - stripe_h * 0.3f;
-            switch (easing) {
-            case sequencer::EasingType::EASE_IN:
-                dl->AddTriangleFilled(
-                    {kx, iy},
-                    {kx + INDICATOR_SIZE, iy - INDICATOR_SIZE},
-                    {kx - INDICATOR_SIZE, iy - INDICATOR_SIZE},
-                    kf_color);
-                break;
-            case sequencer::EasingType::EASE_OUT:
-                dl->AddTriangleFilled(
-                    {kx - INDICATOR_SIZE, iy},
-                    {kx + INDICATOR_SIZE, iy},
-                    {kx, iy - INDICATOR_SIZE},
-                    kf_color);
-                break;
-            case sequencer::EasingType::EASE_IN_OUT:
-                dl->AddQuadFilled(
-                    {kx, iy - INDICATOR_SIZE},
-                    {kx + INDICATOR_SIZE, iy - INDICATOR_SIZE * 0.5f},
-                    {kx, iy},
-                    {kx - INDICATOR_SIZE, iy - INDICATOR_SIZE * 0.5f},
-                    kf_color);
-                break;
-            default:
-                break;
-            }
-        }
-
-        dl->PopClipRect();
-
-        const auto& input = viewer_->getWindowManager()->frameInput();
-        const float mx = input.mouse_x;
-        const float my = input.mouse_y;
-        if (mx >= timeline_x && mx <= timeline_x + timeline_width &&
-            my >= stripe_y && my <= stripe_y + stripe_h) {
-            guiFocusState().want_capture_mouse = true;
-
-            if (input.mouse_clicked[1]) {
-                std::optional<size_t> nearest;
-                float best_dist = panel_config::KEYFRAME_RADIUS * 3.0f * dp;
-                for (size_t i = 0; i < keyframes.size(); ++i) {
-                    const float dist = std::abs(mx - localTimeToX(keyframes[i].time));
-                    if (dist < best_dist) {
-                        best_dist = dist;
-                        nearest = i;
-                    }
-                }
-                overlay_->showContextMenu(mx, my, nearest,
-                                          nearest.has_value() ? keyframes[*nearest].time : controller_.playhead(),
-                                          keyframe_gizmo_op_);
-            }
-
-            if (input.mouse_clicked[0]) {
-                std::optional<size_t> nearest;
-                float best_dist = panel_config::KEYFRAME_RADIUS * 2.0f * dp;
-                for (size_t i = 0; i < keyframes.size(); ++i) {
-                    const float dist = std::abs(mx - localTimeToX(keyframes[i].time));
-                    if (dist < best_dist) {
-                        best_dist = dist;
-                        nearest = i;
-                    }
-                }
-                if (nearest.has_value())
-                    lfs::core::events::cmd::SequencerSelectKeyframe{.keyframe_index = *nearest}.emit();
-            }
-        }
-    }
-
-    void SequencerUIManager::drawTimelineGuides() {
-        if (tl_geo_.timeline_width <= 0.0f)
-            return;
-
-        const float dp = tl_geo_.dp;
-        const float panel_y = tl_geo_.panel_y;
-        const float line_top = panel_y + (panel_config::TRANSPORT_ROW_HEIGHT + panel_config::INNER_PADDING) * dp;
-        const float strip_offset = ui_state_.show_film_strip ? FilmStripRenderer::STRIP_HEIGHT : 0.0f;
-        const float line_bottom = panel_y + (panel_config::HEIGHT + panel_config::EASING_STRIPE_HEIGHT - panel_config::BORDER_OVERLAP) * dp + strip_offset;
-
-        auto* dl = ImGui::GetForegroundDrawList();
-        const auto& t = theme();
-        const float display_end = panel_->getDisplayEndTime();
-        const float pan = panel_->panOffset();
-
-        const auto timeToX = [&](const float time) -> float {
-            return sequencer_ui::timeToScreenX(time, tl_geo_.timeline_x, tl_geo_.timeline_width, display_end, pan);
-        };
-        const auto drawTimedGuide = [&](const float time, const ImU32 color, const float thickness) {
-            const float x = timeToX(time);
-            if (x < tl_geo_.timeline_x || x > tl_geo_.timeline_x + tl_geo_.timeline_width)
-                return;
-            drawGuideLine(dl, x, line_top, line_bottom, color, thickness);
-        };
-
-        if (ui_state_.show_film_strip) {
-            if (const auto& hover = film_strip_.hoverState(); hover.has_value()) {
-                drawGuideLine(dl, hover->guide_x, line_top, line_bottom,
-                              toU32WithAlpha(t.palette.text_dim, 0.55f), 1.0f);
-            }
-        }
-
-        if (const auto hovered_id = panel_->hoveredKeyframeId(); hovered_id.has_value()) {
-            if (const auto* const keyframe = controller_.timeline().getKeyframeById(*hovered_id)) {
-                drawTimedGuide(keyframe->time, toU32WithAlpha(t.palette.secondary, 0.75f), 1.5f);
-            }
-        }
-
-        if (const auto selected = controller_.selectedKeyframe(); selected.has_value()) {
-            if (const auto* const keyframe = controller_.timeline().getKeyframe(*selected)) {
-                drawTimedGuide(keyframe->time, toU32WithAlpha(t.palette.primary, 0.85f), 2.0f);
-            }
-        }
-
-        if (panel_->isPlayheadInRange()) {
-            drawGuideLine(dl, panel_->cachedPlayheadScreenX(), line_top, line_bottom,
-                          theme().error_u32(), panel_config::PLAYHEAD_WIDTH);
-        }
-    }
-
-    void SequencerUIManager::drawTimelineTooltip() {
-        if (!timeline_tooltip_active_ || timeline_tooltip_text_.empty())
-            return;
-
-        auto* const dl = ImGui::GetForegroundDrawList();
-        const auto& t = theme();
-        const float dp = std::max(tl_geo_.dp, 1.0f);
-        const float pad_x = 10.0f * dp;
-        const float pad_y = 7.0f * dp;
-        const float line_gap = 2.0f * dp;
-        const float offset_x = 14.0f * dp;
-        const float offset_y = -10.0f * dp;
-
-        std::vector<std::string_view> lines;
-        size_t start = 0;
-        while (start <= timeline_tooltip_text_.size()) {
-            const size_t end = timeline_tooltip_text_.find('\n', start);
-            if (end == std::string::npos) {
-                lines.emplace_back(timeline_tooltip_text_.data() + start, timeline_tooltip_text_.size() - start);
-                break;
-            }
-            lines.emplace_back(timeline_tooltip_text_.data() + start, end - start);
-            start = end + 1;
-        }
-
-        float max_width = 0.0f;
-        float total_height = pad_y * 2.0f;
-        for (size_t i = 0; i < lines.size(); ++i) {
-            const ImVec2 size = ImGui::CalcTextSize(lines[i].data(), lines[i].data() + lines[i].size());
-            max_width = std::max(max_width, size.x);
-            total_height += size.y;
-            if (i + 1 < lines.size())
-                total_height += line_gap;
-        }
-
-        const glm::ivec2 display_size = viewer_->getWindowManager()->getWindowSize();
-        const ImVec2 display(static_cast<float>(display_size.x),
-                             static_cast<float>(display_size.y));
-        ImVec2 box_min(timeline_tooltip_pos_.x + offset_x, timeline_tooltip_pos_.y + offset_y - total_height);
-        ImVec2 box_max(box_min.x + max_width + pad_x * 2.0f, box_min.y + total_height);
-
-        if (box_max.x > display.x - 8.0f * dp) {
-            const float shift = box_max.x - (display.x - 8.0f * dp);
-            box_min.x -= shift;
-            box_max.x -= shift;
-        }
-        if (box_min.x < 8.0f * dp) {
-            const float shift = 8.0f * dp - box_min.x;
-            box_min.x += shift;
-            box_max.x += shift;
-        }
-        if (box_min.y < 8.0f * dp) {
-            const float shift = (timeline_tooltip_pos_.y + 18.0f * dp) - box_min.y;
-            box_min.y += shift;
-            box_max.y += shift;
-        }
-
-        dl->AddRectFilled({box_min.x + 2.0f * dp, box_min.y + 3.0f * dp},
-                          {box_max.x + 2.0f * dp, box_max.y + 3.0f * dp},
-                          IM_COL32(0, 0, 0, 60), 8.0f * dp);
-        dl->AddRectFilled(box_min, box_max,
-                          toU32WithAlpha(t.palette.surface, 0.96f), 8.0f * dp);
-        dl->AddRect(box_min, box_max,
-                    toU32WithAlpha(t.palette.border, 0.75f), 8.0f * dp, 0, 1.0f);
-
-        float text_y = box_min.y + pad_y;
-        for (size_t i = 0; i < lines.size(); ++i) {
-            const ImVec2 size = ImGui::CalcTextSize(lines[i].data(), lines[i].data() + lines[i].size());
-            const ImU32 color = (i == 0)
-                                    ? t.text_u32()
-                                    : toU32WithAlpha(t.palette.text_dim, 0.95f);
-            dl->AddText({box_min.x + pad_x, text_y}, color,
-                        lines[i].data(), lines[i].data() + lines[i].size());
-            text_y += size.y + line_gap;
-        }
-    }
-
     void SequencerUIManager::initPipPreview() {
-        if (pip_initialized_ || pip_init_failed_)
-            return;
-
-        glGenFramebuffers(1, pip_fbo_.ptr());
-        glGenTextures(1, pip_texture_.ptr());
-        glGenRenderbuffers(1, pip_depth_rbo_.ptr());
-
-        glBindTexture(GL_TEXTURE_2D, pip_texture_.get());
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, PREVIEW_WIDTH, PREVIEW_HEIGHT, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glBindTexture(GL_TEXTURE_2D, 0);
-
-        glBindRenderbuffer(GL_RENDERBUFFER, pip_depth_rbo_.get());
-        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, PREVIEW_WIDTH, PREVIEW_HEIGHT);
-        glBindRenderbuffer(GL_RENDERBUFFER, 0);
-
-        glBindFramebuffer(GL_FRAMEBUFFER, pip_fbo_.get());
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, pip_texture_.get(), 0);
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, pip_depth_rbo_.get());
-
-        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-            LOG_ERROR("PiP preview FBO incomplete");
-            glBindFramebuffer(GL_FRAMEBUFFER, 0);
-            pip_init_failed_ = true;
-            return;
-        }
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
         pip_initialized_ = true;
     }
 
@@ -1413,8 +2330,10 @@ namespace lfs::vis::gui {
             }
         }
 
-        if (rm->renderPreviewFrame(sm, cam_rot, cam_pos, cam_focal_length_mm,
-                                   pip_fbo_, pip_texture_, PREVIEW_WIDTH, PREVIEW_HEIGHT)) {
+        const auto image = rm->renderPreviewImage(sm, cam_rot, cam_pos, cam_focal_length_mm,
+                                                  PREVIEW_WIDTH, PREVIEW_HEIGHT);
+        // Vulkan preview readback is already in the orientation RmlUi samples.
+        if (image && pip_texture_.upload(*image, PREVIEW_WIDTH, PREVIEW_HEIGHT, /*flip_y=*/false)) {
             pip_last_render_time_ = now;
             if (!is_playing) {
                 pip_last_keyframe_ = selected;
@@ -1423,54 +2342,45 @@ namespace lfs::vis::gui {
         }
     }
 
-    void SequencerUIManager::drawPipPreviewWindow(const ViewportLayout& viewport) {
-        if (!ui_state_.show_pip_preview)
+    void SequencerUIManager::syncPipPreviewWindow(const ViewportLayout& viewport) {
+        if (!overlay_)
             return;
+
+        if (!ui_state_.show_pip_preview) {
+            overlay_->hidePreviewWindow();
+            return;
+        }
 
         const bool is_playing = !controller_.isStopped();
         const auto selected = controller_.selectedKeyframe();
 
-        if (!pip_initialized_ || pip_texture_ == 0)
+        if (!pip_initialized_ || !pip_texture_.valid()) {
+            overlay_->hidePreviewWindow();
             return;
+        }
 
         if (!is_playing && selected.has_value()) {
             const auto& timeline = controller_.timeline();
-            if (*selected >= timeline.size())
+            if (*selected >= timeline.size()) {
+                overlay_->hidePreviewWindow();
                 return;
+            }
             const auto* const kf = timeline.getKeyframe(*selected);
-            if (!kf || kf->is_loop_point)
+            if (!kf || kf->is_loop_point) {
+                overlay_->hidePreviewWindow();
                 return;
+            }
         }
 
-        const auto& t = theme();
         const float scale = ui_state_.pip_preview_scale;
         constexpr float MARGIN = 16.0f;
-        const float dp = panel_->cachedDpRatio();
-        const float panel_height = (panel_config::HEIGHT + panel_config::PADDING_BOTTOM +
-                                    panel_config::EASING_STRIPE_HEIGHT) *
-                                       dp +
-                                   (ui_state_.show_film_strip ? FilmStripRenderer::STRIP_HEIGHT : 0.0f);
-        constexpr float PADDING = 4.0f;
         constexpr float TITLE_HEIGHT = 18.0f;
         const float scaled_width = static_cast<float>(PREVIEW_WIDTH) * scale;
         const float scaled_height = static_cast<float>(PREVIEW_HEIGHT) * scale;
-        const float total_height = scaled_height + TITLE_HEIGHT + PADDING * 2.0f;
+        const float total_height = scaled_height + TITLE_HEIGHT + 8.0f;
 
-        const ImVec2 pos(
-            viewport.pos.x + MARGIN,
-            viewport.pos.y + viewport.size.y - panel_height - total_height - MARGIN);
-        const ImVec2 size(scaled_width + PADDING * 2.0f, total_height);
-
-        const ImU32 bg_color = toU32WithAlpha(t.palette.surface, 0.95f);
-        const ImU32 border_color = is_playing
-                                       ? t.error_u32()
-                                       : toU32WithAlpha(t.palette.primary, 0.6f);
-        const ImU32 text_color = toU32WithAlpha(t.palette.text, 0.8f);
-
-        auto* dl = ImGui::GetForegroundDrawList();
-        const ImVec2 p1(pos.x + size.x, pos.y + size.y);
-        dl->AddRectFilled(pos, p1, bg_color, t.sizes.window_rounding);
-        dl->AddRect(pos, p1, border_color, t.sizes.window_rounding, 0, 2.0f);
+        const float left = viewport.pos.x + MARGIN;
+        const float top = panel_->cachedPanelY() - total_height - MARGIN;
 
         const float playhead = controller_.playhead();
         const std::string title = (is_playing || !selected.has_value())
@@ -1481,12 +2391,10 @@ namespace lfs::vis::gui {
                                             return std::vformat(LOC(lichtfeld::Strings::Sequencer::KEYFRAME_PREVIEW),
                                                                 std::make_format_args(kf_num));
                                         }();
-        dl->AddText({pos.x + PADDING, pos.y + PADDING}, text_color, title.c_str());
 
-        const ImVec2 img_pos(pos.x + PADDING, pos.y + PADDING + TITLE_HEIGHT);
-        const ImVec2 img_end(img_pos.x + scaled_width, img_pos.y + scaled_height);
-        dl->AddImage(static_cast<ImTextureID>(static_cast<uintptr_t>(pip_texture_.get())),
-                     img_pos, img_end, {0, 1}, {1, 0});
+        overlay_->showPreviewWindow(left, top, scaled_width, scaled_height,
+                                    title, is_playing,
+                                    pip_texture_.rmlSrcUrl(PREVIEW_WIDTH, PREVIEW_HEIGHT));
     }
 
     void SequencerUIManager::renderKeyframeEditOverlay(const ViewportLayout& viewport) {

@@ -2,18 +2,16 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
-// clang-format off
-#include <glad/glad.h>
-// clang-format on
-
 #include "gui/rml_status_bar.hpp"
 #include "core/event_bridge/localization_manager.hpp"
 #include "core/events.hpp"
 #include "core/logger.hpp"
 #include "gui/gpu_memory_query.hpp"
+#include "gui/panel_layout.hpp"
+#include "gui/rmlui/rml_document_utils.hpp"
 #include "gui/rmlui/rml_theme.hpp"
 #include "gui/rmlui/rmlui_manager.hpp"
-#include "gui/rmlui/rmlui_render_interface.hpp"
+#include "gui/rmlui/sdl_rml_key_mapping.hpp"
 #include "gui/string_keys.hpp"
 #include "gui/ui_context.hpp"
 #include "internal/resource_paths.hpp"
@@ -21,16 +19,19 @@
 #include "scene/scene_manager.hpp"
 #include "theme/theme.hpp"
 #include "training/training_manager.hpp"
+#include "visualizer/app_store.hpp"
 #include "visualizer_impl.hpp"
 
 #include <RmlUi/Core.h>
 #include <RmlUi/Core/Element.h>
+#include <SDL3/SDL_clipboard.h>
 #include <SDL3/SDL_video.h>
 #include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstring>
 #include <format>
+#include <vector>
 
 #include "git_version.h"
 
@@ -40,6 +41,21 @@ namespace lfs::vis::gui {
     using rml_theme::colorToRmlAlpha;
 
     namespace {
+        class GitCommitClickListener final : public Rml::EventListener {
+        public:
+            explicit GitCommitClickListener(const std::string* commit) : commit_(commit) {}
+
+            void ProcessEvent(Rml::Event& /*event*/) override {
+                if (commit_->empty())
+                    return;
+                SDL_SetClipboardText(commit_->c_str());
+                LOG_INFO("Copied commit {} to clipboard", *commit_);
+            }
+
+        private:
+            const std::string* commit_;
+        };
+
         std::string fmtCount(int64_t n) {
             if (n >= 1'000'000)
                 return std::format("{:.2f}M", n / 1e6);
@@ -172,6 +188,8 @@ namespace lfs::vis::gui {
         ctor.Bind("step_value", &model_.step_value);
         ctor.Bind("loss_label", &model_.loss_label);
         ctor.Bind("loss_value", &model_.loss_value);
+        ctor.Bind("show_eval_metrics", &model_.show_eval_metrics);
+        ctor.Bind("eval_metrics_value", &model_.eval_metrics_value);
         ctor.Bind("gaussians_label", &model_.gaussians_label);
         ctor.Bind("gaussians_value", &model_.gaussians_value);
         ctor.Bind("time_value", &model_.time_value);
@@ -206,7 +224,7 @@ namespace lfs::vis::gui {
 
         try {
             const auto rml_path = lfs::vis::getAssetPath("rmlui/statusbar.rml");
-            document_ = rml_context_->LoadDocument(rml_path.string());
+            document_ = rml_documents::loadDocument(rml_context_, rml_path);
             if (!document_) {
                 LOG_ERROR("RmlStatusBar: failed to load statusbar.rml");
                 return;
@@ -217,16 +235,21 @@ namespace lfs::vis::gui {
             return;
         }
 
+        attachGitCommitListener();
+        bindReactiveStore();
+
         if (!speed_events_initialized_) {
             lfs::core::events::ui::SpeedChanged::when([this](const auto& e) {
                 speed_state_.showWasd(e.current_speed);
                 animation_active_ = true;
                 next_refresh_at_ = {};
+                markModelDirty();
             });
             lfs::core::events::ui::ZoomSpeedChanged::when([this](const auto& e) {
                 speed_state_.showZoom(e.zoom_speed);
                 animation_active_ = true;
                 next_refresh_at_ = {};
+                markModelDirty();
             });
             speed_events_initialized_ = true;
         }
@@ -235,37 +258,100 @@ namespace lfs::vis::gui {
     }
 
     void RmlStatusBar::shutdown() {
+        if (pending_gpu_mem_.valid()) {
+            pending_gpu_mem_.wait();
+            try {
+                cached_gpu_mem_ = pending_gpu_mem_.get();
+            } catch (const std::exception& e) {
+                LOG_WARN("RmlStatusBar: GPU memory query failed during shutdown: {}", e.what());
+            }
+        }
+
+        subscriptions_.clear();
         model_handle_ = {};
-        fbo_.destroy();
+        if (rml_manager_)
+            rml_manager_->releaseCachedVulkanContext(direct_cache_);
         if (rml_context_ && rml_manager_)
             rml_manager_->destroyContext("status_bar");
         rml_context_ = nullptr;
         document_ = nullptr;
+        delete git_commit_listener_;
+        git_commit_listener_ = nullptr;
     }
 
-    std::string RmlStatusBar::generateThemeRCSS(const lfs::vis::Theme& t) const {
-        const auto& p = t.palette;
+    void RmlStatusBar::reloadResources() {
+        if (!rml_context_)
+            return;
 
-        const auto text = colorToRml(p.text);
-        const auto text_dim = colorToRml(p.text_dim);
-        const auto surface_bright = colorToRml(p.surface_bright);
-        const auto primary = colorToRml(p.primary);
-        const auto success = colorToRml(p.success);
-        const auto warning = colorToRml(p.warning);
-        const auto error = colorToRml(p.error);
-        const auto info = colorToRml(p.info);
+        if (rml_manager_)
+            rml_manager_->releaseCachedVulkanContext(direct_cache_);
 
-        auto surface_bright_half = colorToRmlAlpha(p.surface_bright, 0.5f);
+        if (document_) {
+            rml_context_->UnloadDocument(document_);
+            rml_context_->Update();
+        }
 
-        return std::format(
-            "body {{ color: {0}; }}\n"
-            ".dim {{ color: {1}; }}\n"
-            ".separator {{ color: {1}; }}\n"
-            "#progress-container {{ background-color: {2}; }}\n"
-            "#progress-fill {{ background-color: {3}; }}\n"
-            "#progress-text {{ color: {0}; }}\n"
-            "#gpu-icon {{ image-color: {1}; }}\n",
-            text, text_dim, surface_bright_half, primary);
+        document_ = nullptr;
+        base_rcss_.clear();
+        has_theme_signature_ = false;
+        model_dirty_ = true;
+        animation_active_ = true;
+        last_render_w_ = 0;
+        last_render_h_ = 0;
+        last_document_h_ = 0;
+        next_refresh_at_ = {};
+
+        try {
+            const auto rml_path = lfs::vis::getAssetPath("rmlui/statusbar.rml");
+            document_ = rml_documents::loadDocument(rml_context_, rml_path);
+            if (!document_) {
+                LOG_ERROR("RmlStatusBar: failed to reload statusbar.rml");
+                return;
+            }
+            document_->Show();
+        } catch (const std::exception& e) {
+            LOG_ERROR("RmlStatusBar: resource not found during reload: {}", e.what());
+            return;
+        }
+
+        attachGitCommitListener();
+        bindReactiveStore();
+
+        updateTheme();
+    }
+
+    void RmlStatusBar::bindReactiveStore() {
+        subscriptions_.clear();
+        auto& store = lfs::vis::app_store();
+        const auto bind = [this](auto& observable) {
+            subscriptions_.push_back(observable.subscribe([this](const auto&) {
+                markModelDirty();
+            }));
+        };
+
+        bind(store.iteration);
+        bind(store.total_iterations);
+        bind(store.loss);
+        bind(store.num_gaussians);
+        bind(store.max_gaussians);
+        bind(store.training_running);
+        bind(store.training_state);
+        bind(store.trainer_loaded);
+        bind(store.eval_psnr);
+        bind(store.eval_ssim);
+        bind(store.scene_generation);
+        bind(store.selection_generation);
+        subscriptions_.push_back(store.fps.subscribe([this](const float& fps) {
+            reactive_fps_available_ = true;
+            reactive_fps_value_ = fps;
+            markModelDirty();
+        }));
+        bind(store.mode_text);
+    }
+
+    void RmlStatusBar::markModelDirty() {
+        model_dirty_ = true;
+        next_refresh_at_ = {};
     }
 
     bool RmlStatusBar::updateTheme() {
@@ -281,9 +367,42 @@ namespace lfs::vis::gui {
         if (base_rcss_.empty())
             base_rcss_ = rml_theme::loadBaseRCSS("rmlui/statusbar.rcss");
 
-        rml_theme::applyTheme(document_, base_rcss_, rml_theme::generateAllThemeMedia([this](const auto& th) { return generateThemeRCSS(th); }));
+        rml_theme::applyTheme(document_, base_rcss_, rml_theme::loadBaseRCSS("rmlui/statusbar.theme.rcss"));
         model_dirty_ = true;
         return true;
+    }
+
+    void RmlStatusBar::pollGpuMemoryQuery(const std::chrono::steady_clock::time_point now) {
+        if (pending_gpu_mem_.valid() &&
+            pending_gpu_mem_.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
+            try {
+                cached_gpu_mem_ = pending_gpu_mem_.get();
+            } catch (const std::exception& e) {
+                LOG_WARN("RmlStatusBar: GPU memory query failed: {}", e.what());
+            }
+        }
+
+        if (pending_gpu_mem_.valid())
+            return;
+
+        if (next_gpu_refresh_at_ != std::chrono::steady_clock::time_point{} &&
+            now < next_gpu_refresh_at_) {
+            return;
+        }
+
+        next_gpu_refresh_at_ = now + kGpuRefreshInterval;
+        pending_gpu_mem_ = std::async(std::launch::async, [] {
+            return queryGpuMemory();
+        });
+    }
+
+    void RmlStatusBar::attachGitCommitListener() {
+        if (!document_)
+            return;
+        if (!git_commit_listener_)
+            git_commit_listener_ = new GitCommitClickListener(&model_.git_commit);
+        if (auto* el = document_->GetElementById("git-commit"))
+            el->AddEventListener(Rml::EventId::Click, git_commit_listener_);
     }
 
     void RmlStatusBar::setModelString(const char* name, std::string& field, std::string value) {
@@ -419,11 +538,26 @@ namespace lfs::vis::gui {
                            std::format("{}/{}", fmtCount(num_splats), fmtCount(max_g)));
             setModelString("time_value", model_.time_value, fmtTime(elapsed));
             setModelString("eta_value", model_.eta_value, fmtTime(eta));
+
+            const auto eval_metrics = tm->getLastEvaluationMetrics();
+            setModelBool("show_eval_metrics", model_.show_eval_metrics, eval_metrics.has_value());
+            if (eval_metrics) {
+                setModelString("eval_metrics_value", model_.eval_metrics_value,
+                               std::format("{} {:.2f} / {} {:.4f}",
+                                           LOC(lichtfeld::Strings::Status::PSNR),
+                                           eval_metrics->psnr,
+                                           LOC(lichtfeld::Strings::Status::SSIM),
+                                           eval_metrics->ssim));
+            } else {
+                setModelString("eval_metrics_value", model_.eval_metrics_value, "");
+            }
         } else {
             setModelString("progress_width", model_.progress_width, "0%");
             setModelString("progress_text", model_.progress_text, "");
             setModelString("step_value", model_.step_value, "");
             setModelString("loss_value", model_.loss_value, "");
+            setModelBool("show_eval_metrics", model_.show_eval_metrics, false);
+            setModelString("eval_metrics_value", model_.eval_metrics_value, "");
             setModelString("gaussians_value", model_.gaussians_value, "");
             setModelString("time_value", model_.time_value, "");
             setModelString("eta_value", model_.eta_value, "");
@@ -433,8 +567,7 @@ namespace lfs::vis::gui {
         bool show_splats = !show_training && content_type != SceneManager::ContentType::Empty;
         size_t total_gaussians = 0;
         if (show_splats && sm) {
-            const auto* model = sm->getScene().getCombinedModel();
-            total_gaussians = model ? model->size() : 0;
+            total_gaussians = sm->getScene().getVisibleGaussianCount();
             if (total_gaussians == 0)
                 show_splats = false;
         }
@@ -508,28 +641,26 @@ namespace lfs::vis::gui {
         }
 
         // Right section: GPU memory
-        if (next_gpu_refresh_at_ == std::chrono::steady_clock::time_point{} ||
-            now >= next_gpu_refresh_at_) {
-            cached_gpu_mem_ = queryGpuMemory();
-            next_gpu_refresh_at_ = now + kGpuRefreshInterval;
-        }
+        pollGpuMemoryQuery(now);
         const auto mem = cached_gpu_mem_;
-        float app_gb = mem.process_used / 1e9f;
-        float used_gb = mem.total_used / 1e9f;
-        float total_gb = mem.total / 1e9f;
-        float pct = total_gb > 0.0f ? (used_gb / total_gb) * 100.0f : 0.0f;
+        constexpr float gib = 1024.0f * 1024.0f * 1024.0f;
+        float app_gib = mem.process_used / gib;
+        float used_gib = mem.total_used / gib;
+        float total_gib = mem.total / gib;
+        float pct = total_gib > 0.0f ? (used_gib / total_gib) * 100.0f : 0.0f;
 
         ImVec4 mem_color = pct < 50.0f ? p.success : (pct < 75.0f ? p.warning : p.error);
-        setModelString("lfs_mem_text", model_.lfs_mem_text, std::format("LFS {:.1f}GB", app_gb));
+        setModelString("lfs_mem_text", model_.lfs_mem_text, std::format("LFS {:.2f} GiB", app_gib));
         setModelString("lfs_mem_color", model_.lfs_mem_color, colorToRml(p.info));
         setModelBool("show_gpu_model", model_.show_gpu_model, !mem.device_name.empty());
         setModelString("gpu_model_text", model_.gpu_model_text, mem.device_name);
         setModelString("gpu_mem_text", model_.gpu_mem_text,
-                       std::format("{} {:.1f}/{:.1f}GB", LOC("status_bar.gpu"), used_gb, total_gb));
+                       std::format("{} {:.2f}/{:.2f} GiB", LOC("status_bar.gpu"), used_gib, total_gib));
         setModelString("gpu_mem_color", model_.gpu_mem_color, colorToRml(mem_color));
 
         // FPS
-        float fps = rm ? rm->getAverageFPS() : 0.0f;
+        float fps = reactive_fps_available_ ? reactive_fps_value_
+                                            : (rm ? rm->getAverageFPS() : 0.0f);
         ImVec4 fps_col = fps >= 30.0f ? p.success : (fps >= 15.0f ? p.warning : p.error);
         setModelString("fps_value", model_.fps_value, std::format("{:.0f}", fps));
         setModelString("fps_color", model_.fps_color, colorToRml(fps_col));
@@ -544,6 +675,82 @@ namespace lfs::vis::gui {
         return model_dirty_;
     }
 
+    void RmlStatusBar::processInput(const PanelInputState& input, const float bar_x, const float bar_y,
+                                    const float bar_w, const float bar_h) {
+        if (!rml_context_ || !document_)
+            return;
+
+        const float local_x = input.mouse_x - bar_x;
+        const float local_y = input.mouse_y - bar_y;
+        const bool is_inside = local_x >= 0.0f && local_x < bar_w &&
+                               local_y >= 0.0f && local_y < bar_h;
+        if (!is_inside && !input.mouse_released[0])
+            return;
+
+        const int mods = sdlModsToRml(input.key_ctrl, input.key_shift,
+                                      input.key_alt, input.key_super);
+        rml_context_->ProcessMouseMove(static_cast<int>(local_x), static_cast<int>(local_y), mods);
+
+        if (is_inside && input.mouse_clicked[0])
+            rml_context_->ProcessMouseButtonDown(0, mods);
+        if (input.mouse_released[0])
+            rml_context_->ProcessMouseButtonUp(0, mods);
+    }
+
+    void RmlStatusBar::queueCachedVulkanContext(const float x, const float y,
+                                                const float w_px, const float h_px,
+                                                const int screen_w, const int screen_h,
+                                                const int render_w, const int render_h,
+                                                const bool refresh_cache) {
+        if (!rml_manager_ || !rml_manager_->getVulkanRenderInterface())
+            return;
+
+        const auto blit_rect = toFramebufferBlitRect(rml_manager_->getWindow(),
+                                                     x, y, w_px, h_px, screen_w, screen_h);
+        rml_manager_->queueCachedVulkanContext({
+            .context = rml_context_,
+            .cache = &direct_cache_,
+            .cache_width = render_w,
+            .cache_height = render_h,
+            .offset_x = blit_rect.x,
+            .offset_y = blit_rect.y,
+            .draw_width = blit_rect.w,
+            .draw_height = blit_rect.h,
+            .refresh = refresh_cache,
+            .foreground = false,
+            .clip_enabled = true,
+            .clip = {
+                .x1 = blit_rect.x,
+                .y1 = blit_rect.y,
+                .x2 = blit_rect.x + blit_rect.w,
+                .y2 = blit_rect.y + blit_rect.h,
+            },
+        });
+    }
+
+    void RmlStatusBar::renderCached(const PanelDrawContext& ctx, const float x, const float y,
+                                    const float w_px, const float h_px,
+                                    const int screen_w, const int screen_h) {
+        if (!rml_context_ || !document_)
+            return;
+        if (w_px <= 0.0f || h_px <= 0.0f || screen_w <= 0 || screen_h <= 0)
+            return;
+
+        const int render_w = static_cast<int>(w_px);
+        const int render_h = static_cast<int>(h_px);
+        const bool theme_current =
+            has_theme_signature_ && rml_theme::currentThemeSignature() == last_theme_signature_;
+        const bool can_reuse = theme_current && !model_dirty_ && !animation_active_ &&
+                               render_w == last_render_w_ && render_h == last_render_h_;
+        if (!can_reuse) {
+            render(ctx, x, y, w_px, h_px, screen_w, screen_h);
+            return;
+        }
+
+        queueCachedVulkanContext(x, y, w_px, h_px, screen_w, screen_h,
+                                 render_w, render_h, direct_cache_.texture == 0);
+    }
+
     void RmlStatusBar::render(const PanelDrawContext& ctx, const float x, const float y,
                               const float w_px, const float h_px,
                               const int screen_w, const int screen_h) {
@@ -553,8 +760,6 @@ namespace lfs::vis::gui {
         if (w_px <= 0.0f || h_px <= 0.0f || screen_w <= 0 || screen_h <= 0)
             return;
 
-        const auto blit_rect = toFramebufferBlitRect(rml_manager_ ? rml_manager_->getWindow() : nullptr,
-                                                     x, y, w_px, h_px, screen_w, screen_h);
         const int render_w = static_cast<int>(w_px);
         const int render_h = static_cast<int>(h_px);
         const bool size_changed = (render_w != last_render_w_ || render_h != last_render_h_);
@@ -569,14 +774,8 @@ namespace lfs::vis::gui {
         const bool needs_render = size_changed || theme_changed || had_pending_model_dirty ||
                                   content_changed ||
                                   (animation_active_ && refresh_due);
-        if (rml_manager_->shouldDeferFboUpdate(fbo_)) {
-            if (needs_render)
-                model_dirty_ = true;
-            if (fbo_.valid())
-                fbo_.blitToScreen(blit_rect.x, blit_rect.y, blit_rect.w, blit_rect.h,
-                                  blit_rect.screen_w, blit_rect.screen_h);
+        if (!rml_manager_ || !rml_manager_->getVulkanRenderInterface())
             return;
-        }
 
         if (needs_render) {
             rml_context_->SetDimensions(Rml::Vector2i(render_w, render_h));
@@ -586,33 +785,13 @@ namespace lfs::vis::gui {
             }
             rml_context_->Update();
 
-            fbo_.ensure(render_w, render_h);
-            if (!fbo_.valid())
-                return;
-
-            auto* render = rml_manager_->getRenderInterface();
-            assert(render);
-            render->SetViewport(render_w, render_h);
-
-            GLint prev_fbo = 0;
-            fbo_.bind(&prev_fbo);
-            render->SetTargetFramebuffer(fbo_.fbo());
-
-            render->BeginFrame();
-            rml_context_->Render();
-            render->EndFrame();
-
-            render->SetTargetFramebuffer(0);
-            fbo_.unbind(prev_fbo);
-
             animation_active_ = animation_active_ || (rml_context_->GetNextUpdateDelay() == 0);
             last_render_w_ = render_w;
             last_render_h_ = render_h;
         }
 
-        if (fbo_.valid())
-            fbo_.blitToScreen(blit_rect.x, blit_rect.y, blit_rect.w, blit_rect.h,
-                              blit_rect.screen_w, blit_rect.screen_h);
+        queueCachedVulkanContext(x, y, w_px, h_px, screen_w, screen_h,
+                                 render_w, render_h, true);
     }
 
 } // namespace lfs::vis::gui

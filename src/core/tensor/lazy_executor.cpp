@@ -476,6 +476,14 @@ namespace lfs::core::internal {
             return {a, b};
         }
 
+        cudaStream_t resolve_pointwise_execution_stream(const Tensor& source) {
+            cudaStream_t execution_stream = getCurrentCUDAStream();
+            if (execution_stream == nullptr && source.device() == Device::CUDA) {
+                execution_stream = source.stream();
+            }
+            return execution_stream;
+        }
+
         bool execute_pointwise_fusion_recipe(const PointwiseFusionRecipe& recipe, Tensor& materialized) {
             if (recipe.ops.empty()) {
                 return false;
@@ -501,7 +509,9 @@ namespace lfs::core::internal {
                 if (source.device() == Device::CUDA) {
                     const float* in_ptr = source.ptr<float>();
                     assert(in_ptr != nullptr);
-                    CUDAStreamGuard guard(source.stream());
+                    const cudaStream_t execution_stream = resolve_pointwise_execution_stream(source);
+                    waitForCUDAStream(execution_stream, source.stream());
+                    CUDAStreamGuard guard(execution_stream);
                     Tensor out = Tensor::empty(source.shape(), Device::CUDA, DataType::Float32);
                     float* out_ptr = out.ptr<float>();
                     assert(out_ptr != nullptr);
@@ -535,7 +545,9 @@ namespace lfs::core::internal {
             if (source.device() == Device::CUDA) {
                 const float* in_ptr = source.ptr<float>();
                 assert(in_ptr != nullptr);
-                CUDAStreamGuard guard(source.stream());
+                const cudaStream_t execution_stream = resolve_pointwise_execution_stream(source);
+                waitForCUDAStream(execution_stream, source.stream());
+                CUDAStreamGuard guard(execution_stream);
                 Tensor out = Tensor::empty(source.shape(), Device::CUDA, DataType::Float32);
                 float* out_ptr = out.ptr<float>();
                 assert(out_ptr != nullptr);

@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 #include <iterator>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "core/point_cloud.hpp"
@@ -15,6 +16,7 @@
 #include "io/exporter.hpp"
 #include "io/formats/ply.hpp"
 #include "io/loader.hpp"
+#include "tinyply.hpp"
 
 namespace fs = std::filesystem;
 using namespace lfs::core;
@@ -35,6 +37,63 @@ protected:
 
     void TearDown() override {
         fs::remove_all(temp_dir);
+    }
+
+    void write_text_file(const fs::path& path, const std::string& contents) const {
+        fs::create_directories(path.parent_path());
+        std::ofstream out(path, std::ios::binary);
+        ASSERT_TRUE(out.is_open()) << "Failed to open " << path;
+        out << contents;
+        out.close();
+        ASSERT_TRUE(out.good()) << "Failed to write " << path;
+    }
+
+    std::string read_text_file(const fs::path& path) const {
+        std::ifstream in(path, std::ios::binary);
+        EXPECT_TRUE(in.is_open()) << "Failed to open " << path;
+        return {
+            std::istreambuf_iterator<char>(in),
+            std::istreambuf_iterator<char>()};
+    }
+
+    void expect_existing_target_and_no_temp_files(const fs::path& output_path, const std::string& existing_contents) const {
+        EXPECT_EQ(read_text_file(output_path), existing_contents);
+
+        const auto temp_prefix = output_path.filename().string() + ".";
+        for (const auto& entry : fs::directory_iterator(output_path.parent_path())) {
+            EXPECT_FALSE(entry.path().filename().string().starts_with(temp_prefix))
+                << "Temporary export file was not removed: " << entry.path();
+        }
+    }
+
+    static void expect_progress_completed(const std::vector<float>& updates) {
+        ASSERT_FALSE(updates.empty());
+        EXPECT_FLOAT_EQ(updates.front(), 0.0f);
+        EXPECT_FLOAT_EQ(updates.back(), 1.0f);
+        for (size_t i = 1; i < updates.size(); ++i) {
+            EXPECT_GE(updates[i], updates[i - 1]) << "Progress regressed at update " << i;
+        }
+    }
+
+    void write_png(const fs::path& path) const {
+        static const std::vector<unsigned char> png_1x1 = {
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+            0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+            0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+            0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+            0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41,
+            0x54, 0x78, 0x9C, 0x63, 0xF8, 0xCF, 0xC0, 0xF0,
+            0x1F, 0x00, 0x05, 0x00, 0x01, 0xFF, 0x89, 0x99,
+            0x3D, 0x1D, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+            0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82};
+
+        fs::create_directories(path.parent_path());
+        std::ofstream out(path, std::ios::binary);
+        ASSERT_TRUE(out.is_open()) << "Failed to open " << path;
+        out.write(reinterpret_cast<const char*>(png_1x1.data()),
+                  static_cast<std::streamsize>(png_1x1.size()));
+        out.close();
+        ASSERT_TRUE(out.good()) << "Failed to write " << path;
     }
 
     static SplatData create_test_splat(size_t num_points, int sh_degree = 0) {
@@ -119,6 +178,40 @@ protected:
             std::move(rotation),
             std::move(opacity),
             1.0f);
+    }
+
+    static std::string read_ply_header(const fs::path& path) {
+        std::ifstream file(path, std::ios::binary);
+        if (!file.is_open()) {
+            throw std::runtime_error("Failed to open PLY header");
+        }
+
+        std::string header_text;
+        std::string line;
+        while (std::getline(file, line) && line != "end_header") {
+            header_text += line + "\n";
+        }
+        return header_text;
+    }
+
+    static std::vector<float> read_ply_float_property(const fs::path& path, const std::string& property_name) {
+        std::ifstream file(path, std::ios::binary);
+        if (!file.is_open()) {
+            throw std::runtime_error("Failed to open PLY file");
+        }
+
+        tinyply::PlyFile ply;
+        ply.parse_header(file);
+        auto property = ply.request_properties_from_element("vertex", {property_name});
+        ply.read(file);
+
+        if (property->t != tinyply::Type::FLOAT32) {
+            throw std::runtime_error("Expected float32 PLY property");
+        }
+
+        std::vector<float> values(property->count);
+        std::memcpy(values.data(), property->buffer.get(), values.size() * sizeof(float));
+        return values;
     }
 
     static void write_external_sh_layout_test_ply(const fs::path& path) {
@@ -230,6 +323,97 @@ TEST_F(PythonIOTest, DatasetTypeDetection) {
     EXPECT_EQ(unknown_type, DatasetType::Unknown);
 }
 
+TEST_F(PythonIOTest, LoadTransformsDatasetConvertsPointCloudToColmapWorld) {
+    const fs::path dataset_dir = temp_dir / "transforms_dataset";
+    write_png(dataset_dir / "frame_0001.png");
+    write_text_file(
+        dataset_dir / "transforms_train.json",
+        R"json({
+  "w": 1,
+  "h": 1,
+  "camera_angle_x": 0.78539816339,
+  "ply_file_path": "pointcloud.ply",
+  "frames": [
+    {
+      "file_path": "frame_0001.png",
+      "transform_matrix": [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0]
+      ]
+    }
+  ]
+})json");
+    write_text_file(
+        dataset_dir / "pointcloud.ply",
+        R"ply(ply
+format ascii 1.0
+element vertex 2
+property float x
+property float y
+property float z
+property uchar red
+property uchar green
+property uchar blue
+end_header
+0 1 -2 255 0 0
+1 -3 4 0 255 0
+)ply");
+
+    auto loader = Loader::create();
+    auto result = loader->load(dataset_dir);
+    ASSERT_TRUE(result.has_value()) << "Failed to load: " << result.error().format();
+    ASSERT_TRUE(std::holds_alternative<LoadedScene>(result->data));
+
+    const auto& scene = std::get<LoadedScene>(result->data);
+    ASSERT_EQ(scene.cameras.size(), 1u);
+    ASSERT_TRUE(scene.point_cloud);
+    ASSERT_EQ(scene.point_cloud->size(), 2u);
+
+    auto means_cpu = scene.point_cloud->means.cpu().contiguous();
+    auto acc = means_cpu.accessor<float, 2>();
+    EXPECT_NEAR(acc(0, 0), 0.0f, EPSILON);
+    EXPECT_NEAR(acc(0, 1), -1.0f, EPSILON);
+    EXPECT_NEAR(acc(0, 2), 2.0f, EPSILON);
+    EXPECT_NEAR(acc(1, 0), 1.0f, EPSILON);
+    EXPECT_NEAR(acc(1, 1), 3.0f, EPSILON);
+    EXPECT_NEAR(acc(1, 2), -4.0f, EPSILON);
+}
+
+TEST_F(PythonIOTest, LoadTransformsDatasetCanBeCancelled) {
+    const fs::path dataset_dir = temp_dir / "cancelled_transforms_dataset";
+    write_text_file(
+        dataset_dir / "transforms_train.json",
+        R"json({
+  "w": 1,
+  "h": 1,
+  "camera_angle_x": 0.78539816339,
+  "frames": [
+    {
+      "file_path": "frame_0001.png",
+      "transform_matrix": [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0]
+      ]
+    }
+  ]
+})json");
+
+    int cancel_checks = 0;
+    auto loader = Loader::create();
+    auto result = loader->load(dataset_dir, {
+                                                .cancel_requested = [&cancel_checks]() {
+                                                    return ++cancel_checks >= 3;
+                                                },
+                                            });
+
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, ErrorCode::CANCELLED);
+}
+
 // Test loading COLMAP dataset
 TEST_F(PythonIOTest, LoadCOLMAPDataset) {
     if (!fs::exists(bicycle_dir / "sparse")) {
@@ -294,6 +478,80 @@ TEST_F(PythonIOTest, PlySaveLoadRoundtrip) {
     }
 }
 
+TEST_F(PythonIOTest, PlySaveReportsProgressDuringPreparation) {
+    auto splat = create_test_splat(1000, 1);
+    const fs::path output_path = temp_dir / "progress_output.ply";
+
+    std::vector<float> updates;
+    std::vector<std::string> stages;
+
+    PlySaveOptions save_options;
+    save_options.output_path = output_path;
+    save_options.binary = true;
+    save_options.progress_callback = [&](float progress, const std::string& stage) {
+        updates.push_back(progress);
+        stages.push_back(stage);
+        return true;
+    };
+
+    auto save_result = save_ply(splat, save_options);
+    ASSERT_TRUE(save_result.has_value()) << "Failed to save: " << save_result.error().format();
+
+    ASSERT_GE(updates.size(), 6UL);
+    EXPECT_FLOAT_EQ(updates.front(), 0.0f);
+    EXPECT_FLOAT_EQ(updates.back(), 1.0f);
+
+    for (size_t i = 1; i < updates.size(); ++i) {
+        EXPECT_GE(updates[i], updates[i - 1]) << "Progress regressed at update " << i;
+    }
+
+    bool saw_mid_export_progress = false;
+    bool saw_copy_stage = false;
+    for (size_t i = 0; i < updates.size(); ++i) {
+        saw_mid_export_progress |= updates[i] > 0.1f && updates[i] < 0.9f;
+        saw_copy_stage |= stages[i].starts_with("Copying ");
+    }
+
+    EXPECT_TRUE(saw_mid_export_progress);
+    EXPECT_TRUE(saw_copy_stage);
+}
+
+TEST_F(PythonIOTest, PlySaveCancellationAtFinalProgressDoesNotReportSuccess) {
+    auto splat = create_test_splat(1000, 1);
+    const fs::path output_path = temp_dir / "cancelled_progress_output.ply";
+
+    PlySaveOptions save_options;
+    save_options.output_path = output_path;
+    save_options.binary = true;
+    save_options.progress_callback = [](float progress, const std::string&) {
+        return progress < 1.0f;
+    };
+
+    auto save_result = save_ply(splat, save_options);
+    ASSERT_FALSE(save_result.has_value());
+    EXPECT_EQ(save_result.error().code, ErrorCode::CANCELLED);
+}
+
+TEST_F(PythonIOTest, PlySaveCancellationKeepsExistingTarget) {
+    auto splat = create_test_splat(1000, 1);
+    const fs::path output_path = temp_dir / "keep_existing_on_cancel.ply";
+    const std::string existing_contents = "existing ply data";
+    write_text_file(output_path, existing_contents);
+
+    PlySaveOptions save_options;
+    save_options.output_path = output_path;
+    save_options.binary = true;
+    save_options.progress_callback = [](float progress, const std::string&) {
+        return progress < 1.0f;
+    };
+
+    auto save_result = save_ply(splat, save_options);
+    ASSERT_FALSE(save_result.has_value());
+    EXPECT_EQ(save_result.error().code, ErrorCode::CANCELLED);
+
+    expect_existing_target_and_no_temp_files(output_path, existing_contents);
+}
+
 TEST_F(PythonIOTest, PlyLoadMapsExternalChannelMajorShOrderToInternalLayout) {
     const fs::path input_path = temp_dir / "external_channel_major_sh.ply";
     write_external_sh_layout_test_ply(input_path);
@@ -315,7 +573,7 @@ TEST_F(PythonIOTest, PlyLoadMapsExternalChannelMajorShOrderToInternalLayout) {
     EXPECT_FLOAT_EQ(sh0_ptr[1], 20.0f);
     EXPECT_FLOAT_EQ(sh0_ptr[2], 30.0f);
 
-    const auto shN = loaded->shN().cpu().contiguous();
+    const auto shN = loaded->shN_canonical_cpu().contiguous();
     ASSERT_TRUE(shN.is_valid());
     ASSERT_EQ(shN.ndim(), 3);
     ASSERT_EQ(shN.size(0), 1);
@@ -394,14 +652,38 @@ TEST_F(PythonIOTest, SpzSave) {
     auto splat = create_test_splat(num_points, 1);
 
     fs::path output_path = temp_dir / "test_output.spz";
+    std::vector<float> updates;
 
     SpzSaveOptions options;
     options.output_path = output_path;
+    options.progress_callback = [&](float progress, const std::string&) {
+        updates.push_back(progress);
+        return true;
+    };
 
     auto result = save_spz(splat, options);
     ASSERT_TRUE(result.has_value()) << "Failed to save SPZ: " << result.error().format();
     EXPECT_TRUE(fs::exists(output_path));
     EXPECT_GT(fs::file_size(output_path), 0);
+    expect_progress_completed(updates);
+}
+
+TEST_F(PythonIOTest, SpzSaveCancellationKeepsExistingTarget) {
+    auto splat = create_test_splat(200, 1);
+    const fs::path output_path = temp_dir / "keep_existing_on_cancel.spz";
+    const std::string existing_contents = "existing spz data";
+    write_text_file(output_path, existing_contents);
+
+    SpzSaveOptions options;
+    options.output_path = output_path;
+    options.progress_callback = [](float progress, const std::string&) {
+        return progress < 1.0f;
+    };
+
+    auto result = save_spz(splat, options);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, ErrorCode::CANCELLED);
+    expect_existing_target_and_no_temp_files(output_path, existing_contents);
 }
 
 // Test SOG save (SuperSplat format)
@@ -410,16 +692,42 @@ TEST_F(PythonIOTest, SogSave) {
     auto splat = create_test_splat(num_points, 1);
 
     fs::path output_path = temp_dir / "test_output.sog";
+    std::vector<float> updates;
 
     SogSaveOptions options;
     options.output_path = output_path;
     options.kmeans_iterations = 5;
     options.use_gpu = true;
+    options.progress_callback = [&](float progress, const std::string&) {
+        updates.push_back(progress);
+        return true;
+    };
 
     auto result = save_sog(splat, options);
     ASSERT_TRUE(result.has_value()) << "Failed to save SOG: " << result.error().format();
     EXPECT_TRUE(fs::exists(output_path));
     EXPECT_GT(fs::file_size(output_path), 0);
+    expect_progress_completed(updates);
+}
+
+TEST_F(PythonIOTest, SogSaveCancellationKeepsExistingTarget) {
+    auto splat = create_test_splat(200, 0);
+    const fs::path output_path = temp_dir / "keep_existing_on_cancel.sog";
+    const std::string existing_contents = "existing sog data";
+    write_text_file(output_path, existing_contents);
+
+    SogSaveOptions options;
+    options.output_path = output_path;
+    options.kmeans_iterations = 1;
+    options.use_gpu = true;
+    options.progress_callback = [](float progress, const std::string&) {
+        return progress < 1.0f;
+    };
+
+    auto result = save_sog(splat, options);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, ErrorCode::CANCELLED);
+    expect_existing_target_and_no_temp_files(output_path, existing_contents);
 }
 
 // Test HTML export
@@ -428,14 +736,20 @@ TEST_F(PythonIOTest, HtmlExport) {
     auto splat = create_test_splat(num_points, 1);
 
     fs::path output_path = temp_dir / "test_viewer.html";
+    std::vector<float> updates;
 
     HtmlExportOptions options;
     options.output_path = output_path;
     options.kmeans_iterations = 5;
+    options.progress_callback = [&](float progress, const std::string&) {
+        updates.push_back(progress);
+        return true;
+    };
 
     auto result = export_html(splat, options);
     ASSERT_TRUE(result.has_value()) << "Failed to export HTML: " << result.error().format();
     EXPECT_TRUE(fs::exists(output_path));
+    expect_progress_completed(updates);
 
     // Verify HTML content
     std::ifstream file(output_path);
@@ -444,6 +758,64 @@ TEST_F(PythonIOTest, HtmlExport) {
     EXPECT_TRUE(content.find("<!DOCTYPE html>") != std::string::npos ||
                 content.find("<html") != std::string::npos)
         << "Should be valid HTML";
+}
+
+TEST_F(PythonIOTest, HtmlExportCancellationKeepsExistingTarget) {
+    auto splat = create_test_splat(200, 0);
+    const fs::path output_path = temp_dir / "keep_existing_on_cancel.html";
+    const std::string existing_contents = "existing html data";
+    write_text_file(output_path, existing_contents);
+
+    HtmlExportOptions options;
+    options.output_path = output_path;
+    options.kmeans_iterations = 1;
+    options.progress_callback = [](float progress, const std::string&) {
+        return progress < 1.0f;
+    };
+
+    auto result = export_html(splat, options);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, ErrorCode::CANCELLED);
+    expect_existing_target_and_no_temp_files(output_path, existing_contents);
+}
+
+TEST_F(PythonIOTest, RadSaveCancellationKeepsExistingTarget) {
+    auto splat = create_test_splat(200, 0);
+    const fs::path output_path = temp_dir / "keep_existing_on_cancel.rad";
+    const std::string existing_contents = "existing rad data";
+    write_text_file(output_path, existing_contents);
+
+    RadSaveOptions options;
+    options.output_path = output_path;
+    options.compression_level = 1;
+    options.progress_callback = [](float progress, const std::string&) {
+        return progress < 1.0f;
+    };
+
+    auto result = save_rad(splat, options);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, ErrorCode::CANCELLED);
+    expect_existing_target_and_no_temp_files(output_path, existing_contents);
+}
+
+TEST_F(PythonIOTest, RadSaveReportsProgressToCompletion) {
+    auto splat = create_test_splat(200, 0);
+    const fs::path output_path = temp_dir / "test_output.rad";
+    std::vector<float> updates;
+
+    RadSaveOptions options;
+    options.output_path = output_path;
+    options.compression_level = 1;
+    options.progress_callback = [&](float progress, const std::string&) {
+        updates.push_back(progress);
+        return true;
+    };
+
+    auto result = save_rad(splat, options);
+    ASSERT_TRUE(result.has_value()) << "Failed to save RAD: " << result.error().format();
+    EXPECT_TRUE(fs::exists(output_path));
+    EXPECT_GT(fs::file_size(output_path), 0);
+    expect_progress_completed(updates);
 }
 
 // Test progress callback
@@ -549,12 +921,7 @@ TEST_F(PythonIOTest, PlySaveWithColorsUint8) {
     ASSERT_TRUE(result.has_value()) << result.error().format();
 
     // Verify header contains red/green/blue properties
-    std::ifstream file(output_path, std::ios::binary);
-    std::string header_text;
-    std::string line;
-    while (std::getline(file, line) && line != "end_header") {
-        header_text += line + "\n";
-    }
+    const std::string header_text = read_ply_header(output_path);
     EXPECT_NE(header_text.find("property uchar red"), std::string::npos);
     EXPECT_NE(header_text.find("property uchar green"), std::string::npos);
     EXPECT_NE(header_text.find("property uchar blue"), std::string::npos);
@@ -588,12 +955,7 @@ TEST_F(PythonIOTest, PlySaveWithColorsFloat32) {
     ASSERT_TRUE(result.has_value()) << result.error().format();
 
     // Verify header has uchar color properties (float32 should be converted)
-    std::ifstream file(output_path, std::ios::binary);
-    std::string header_text;
-    std::string line;
-    while (std::getline(file, line) && line != "end_header") {
-        header_text += line + "\n";
-    }
+    const std::string header_text = read_ply_header(output_path);
     EXPECT_NE(header_text.find("property uchar red"), std::string::npos);
 }
 
@@ -624,14 +986,177 @@ TEST_F(PythonIOTest, PlySaveFallbackAttributeNames) {
     ASSERT_TRUE(result.has_value()) << result.error().format();
 
     // Parse header and verify fallback names are present
-    std::ifstream file(output_path, std::ios::binary);
-    std::string header_text;
-    std::string line;
-    while (std::getline(file, line) && line != "end_header") {
-        header_text += line + "\n";
-    }
+    const std::string header_text = read_ply_header(output_path);
     EXPECT_NE(header_text.find("property float x"), std::string::npos);
     EXPECT_NE(header_text.find("property float y"), std::string::npos);
     EXPECT_NE(header_text.find("property float z"), std::string::npos);
     EXPECT_NE(header_text.find("property float opacity"), std::string::npos);
+}
+
+TEST_F(PythonIOTest, PlySaveWritesExtraAttributePayloads) {
+    PointCloud pc;
+    pc.means = Tensor::from_vector(
+        std::vector<float>{0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f},
+        {size_t{2}, size_t{3}}, Device::CPU);
+    pc.attribute_names = {"x", "y", "z"};
+
+    PlySaveOptions options;
+    options.output_path = temp_dir / "extra_attributes_payload.ply";
+    options.binary = true;
+    options.extra_attributes = {
+        PlyAttributeBlock{
+            .values = Tensor::from_vector(std::vector<float>{0.25f, 0.75f}, {size_t{2}}, Device::CPU),
+            .names = {"confidence"},
+        },
+        PlyAttributeBlock{
+            .values = Tensor::from_vector(
+                std::vector<float>{1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f},
+                {size_t{2}, size_t{3}}, Device::CPU),
+            .names = {"velocity_0", "velocity_1", "velocity_2"},
+        },
+    };
+
+    const auto result = save_ply(pc, options);
+    ASSERT_TRUE(result.has_value()) << result.error().format();
+
+    const std::string header_text = read_ply_header(options.output_path);
+    EXPECT_NE(header_text.find("property float confidence"), std::string::npos);
+    EXPECT_NE(header_text.find("property float velocity_0"), std::string::npos);
+    EXPECT_NE(header_text.find("property float velocity_1"), std::string::npos);
+    EXPECT_NE(header_text.find("property float velocity_2"), std::string::npos);
+
+    EXPECT_EQ(read_ply_float_property(options.output_path, "confidence"),
+              (std::vector<float>{0.25f, 0.75f}));
+    EXPECT_EQ(read_ply_float_property(options.output_path, "velocity_0"),
+              (std::vector<float>{1.0f, 4.0f}));
+    EXPECT_EQ(read_ply_float_property(options.output_path, "velocity_1"),
+              (std::vector<float>{2.0f, 5.0f}));
+    EXPECT_EQ(read_ply_float_property(options.output_path, "velocity_2"),
+              (std::vector<float>{3.0f, 6.0f}));
+}
+
+TEST_F(PythonIOTest, PlySaveFiltersExtraAttributesWhenDeletedMaskPresent) {
+    auto splat = create_test_splat(3);
+    splat.deleted() = Tensor::from_vector(std::vector<bool>{false, true, false}, {size_t{3}}, Device::CPU);
+
+    PlySaveOptions options;
+    options.output_path = temp_dir / "deleted_mask_extra_attributes.ply";
+    options.binary = true;
+    options.extra_attributes = {
+        PlyAttributeBlock{
+            .values = Tensor::from_vector(std::vector<float>{10.0f, 20.0f, 30.0f}, {size_t{3}}, Device::CPU),
+            .names = {"confidence"},
+        },
+    };
+
+    const auto result = save_ply(splat, options);
+    ASSERT_TRUE(result.has_value()) << result.error().format();
+
+    EXPECT_EQ(read_ply_float_property(options.output_path, "x"),
+              (std::vector<float>{0.0f, 2.0f}));
+    EXPECT_EQ(read_ply_float_property(options.output_path, "confidence"),
+              (std::vector<float>{10.0f, 30.0f}));
+}
+
+TEST_F(PythonIOTest, PlySaveRejectsReservedExtraAttributeNames) {
+    PointCloud pc;
+    pc.means = Tensor::zeros({size_t{2}, size_t{3}}, Device::CPU, DataType::Float32);
+    pc.attribute_names = {"x", "y", "z"};
+
+    PlySaveOptions options;
+    options.output_path = temp_dir / "reserved_extra_name.ply";
+    options.binary = true;
+    options.extra_attributes = {
+        PlyAttributeBlock{
+            .values = Tensor::ones({size_t{2}}, Device::CPU, DataType::Float32),
+            .names = {"opacity"},
+        },
+    };
+
+    const auto result = save_ply(pc, options);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_NE(result.error().format().find("reserved"), std::string::npos);
+}
+
+TEST_F(PythonIOTest, PlySaveRejectsDuplicateExtraAttributeNames) {
+    PointCloud pc;
+    pc.means = Tensor::zeros({size_t{2}, size_t{3}}, Device::CPU, DataType::Float32);
+    pc.attribute_names = {"x", "y", "z"};
+
+    PlySaveOptions options;
+    options.output_path = temp_dir / "duplicate_extra_name.ply";
+    options.binary = true;
+    options.extra_attributes = {
+        PlyAttributeBlock{
+            .values = Tensor::ones({size_t{2}}, Device::CPU, DataType::Float32),
+            .names = {"confidence"},
+        },
+        PlyAttributeBlock{
+            .values = Tensor::full({size_t{2}}, 2.0f, Device::CPU, DataType::Float32),
+            .names = {"confidence"},
+        },
+    };
+
+    const auto result = save_ply(pc, options);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_NE(result.error().format().find("Duplicate PLY property name 'confidence'"), std::string::npos);
+}
+
+TEST_F(PythonIOTest, PlySaveRejectsWhitespaceInExtraAttributeNames) {
+    PointCloud pc;
+    pc.means = Tensor::zeros({size_t{2}, size_t{3}}, Device::CPU, DataType::Float32);
+    pc.attribute_names = {"x", "y", "z"};
+
+    PlySaveOptions options;
+    options.output_path = temp_dir / "invalid_extra_name.ply";
+    options.binary = true;
+    options.extra_attributes = {
+        PlyAttributeBlock{
+            .values = Tensor::ones({size_t{2}}, Device::CPU, DataType::Float32),
+            .names = {"bad name"},
+        },
+    };
+
+    const auto result = save_ply(pc, options);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_NE(result.error().format().find("without whitespace"), std::string::npos);
+}
+
+TEST_F(PythonIOTest, PlySaveRejectsExtraAttributeRowCountMismatch) {
+    PointCloud pc;
+    pc.means = Tensor::zeros({size_t{2}, size_t{3}}, Device::CPU, DataType::Float32);
+    pc.attribute_names = {"x", "y", "z"};
+
+    PlySaveOptions options;
+    options.output_path = temp_dir / "mismatched_extra_rows.ply";
+    options.binary = true;
+    options.extra_attributes = {
+        PlyAttributeBlock{
+            .values = Tensor::ones({size_t{1}}, Device::CPU, DataType::Float32),
+            .names = {"confidence"},
+        },
+    };
+
+    const auto result = save_ply(pc, options);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_NE(result.error().format().find("row count 1 does not match point count 2"), std::string::npos);
+}
+
+TEST_F(PythonIOTest, PlySaveRejectsEmptyExtraAttributesWhenDeletedMaskPresent) {
+    auto splat = create_test_splat(3);
+    splat.deleted() = Tensor::from_vector(std::vector<bool>{false, true, false}, {size_t{3}}, Device::CPU);
+
+    PlySaveOptions options;
+    options.output_path = temp_dir / "empty_extra_with_deleted_mask.ply";
+    options.binary = true;
+    options.extra_attributes = {
+        PlyAttributeBlock{
+            .values = Tensor(),
+            .names = {"confidence"},
+        },
+    };
+
+    const auto result = save_ply(splat, options);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_NE(result.error().format().find("must not be empty"), std::string::npos);
 }

@@ -6,7 +6,14 @@
   <div id="overlay-box">
     <img id="logo" />
     <span id="supported-text" class="dim-text"></span>
-    <img id="core11-logo" />
+    <div id="sponsor-row">
+      <div id="link-core11" class="sponsor-link" data-url="https://www.core11.eu/">
+        <img id="core11-logo" />
+      </div>
+      <div id="link-volinga" class="sponsor-link" data-url="https://web.volinga.ai/">
+        <img id="volinga-logo" />
+      </div>
+    </div>
     <div id="social-row">
       <div id="link-discord" class="social-link" data-url="https://discord.gg/NqwTqVYVmj">
         <img class="social-icon" src="../icon/discord.png" /><span>Discord</span>

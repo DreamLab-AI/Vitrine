@@ -18,15 +18,19 @@ namespace lfs::vis {
     // Snapshot of scene state for rendering
     struct SceneRenderState {
         const lfs::core::SplatData* combined_model = nullptr;
-        const lfs::core::PointCloud* point_cloud = nullptr; // For pre-training point cloud rendering
-        std::vector<core::Scene::VisibleMesh> meshes;       // Visible mesh nodes with transforms
+        const lfs::core::PointCloud* point_cloud = nullptr;             // For pre-training point cloud rendering
+        std::shared_ptr<const lfs::core::PointCloud> owned_point_cloud; // Keeps merged point clouds alive
+        glm::mat4 point_cloud_transform{1.0f};
+        std::vector<core::Scene::VisibleMesh> meshes; // Visible mesh nodes with transforms
         std::vector<glm::mat4> model_transforms;
+        std::vector<glm::mat4> camera_scene_transforms;
         std::shared_ptr<lfs::core::Tensor> transform_indices; // Per-Gaussian index into model_transforms
         std::shared_ptr<lfs::core::Tensor> selection_mask;    // Per-Gaussian selection group ID
         std::vector<bool> selected_node_mask;                 // Per-node: true = selected, false = desaturate
         std::vector<bool> node_visibility_mask;               // Per-node: true = visible, false = culled (for consolidated models)
         std::string selected_node_name;
         std::vector<core::Scene::RenderableCropBox> cropboxes;
+        std::vector<core::Scene::RenderableEllipsoid> ellipsoids;
         int selected_cropbox_index = -1;
         bool has_selection = false;
         size_t visible_splat_count = 0;

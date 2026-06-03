@@ -4,18 +4,22 @@
 
 #pragma once
 
+#include "core/reactive/store.hpp"
 #include "gui/gpu_memory_query.hpp"
 #include "gui/panel_registry.hpp"
-#include "gui/rmlui/rml_fbo.hpp"
+#include "gui/rmlui/rmlui_manager.hpp"
 #include <RmlUi/Core/DataModelHandle.h>
 #include <chrono>
 #include <cstddef>
+#include <future>
 #include <string>
+#include <vector>
 
 namespace Rml {
     class Context;
     class ElementDocument;
     class Element;
+    class EventListener;
 } // namespace Rml
 
 namespace lfs::vis {
@@ -23,28 +27,37 @@ namespace lfs::vis {
 }
 namespace lfs::vis::gui {
 
-    class RmlUIManager;
-
     class RmlStatusBar {
     public:
         void init(RmlUIManager* mgr);
         void shutdown();
+        void reloadResources();
         void render(const PanelDrawContext& ctx, float x, float y, float w, float h,
                     int screen_w, int screen_h);
+        void renderCached(const PanelDrawContext& ctx, float x, float y, float w, float h,
+                          int screen_w, int screen_h);
+        void processInput(const PanelInputState& input, float bar_x, float bar_y,
+                          float bar_w, float bar_h);
 
     private:
         bool updateContent(const PanelDrawContext& ctx, bool force_refresh);
         bool updateTheme();
-        std::string generateThemeRCSS(const lfs::vis::Theme& t) const;
+        void queueCachedVulkanContext(float x, float y, float w_px, float h_px,
+                                      int screen_w, int screen_h,
+                                      int render_w, int render_h,
+                                      bool refresh_cache);
+        void pollGpuMemoryQuery(std::chrono::steady_clock::time_point now);
         void setModelString(const char* name, std::string& field, std::string value);
         void setModelBool(const char* name, bool& field, bool value);
+        void attachGitCommitListener();
+        void bindReactiveStore();
+        void markModelDirty();
 
         RmlUIManager* rml_manager_ = nullptr;
         Rml::Context* rml_context_ = nullptr;
         Rml::ElementDocument* document_ = nullptr;
         Rml::DataModelHandle model_handle_;
-
-        RmlFBO fbo_;
+        Rml::EventListener* git_commit_listener_ = nullptr;
 
         std::size_t last_theme_signature_ = 0;
         bool has_theme_signature_ = false;
@@ -79,6 +92,8 @@ namespace lfs::vis::gui {
             std::string step_value;
             std::string loss_label;
             std::string loss_value;
+            bool show_eval_metrics = false;
+            std::string eval_metrics_value;
             std::string gaussians_label;
             std::string gaussians_value;
             std::string time_value;
@@ -113,17 +128,22 @@ namespace lfs::vis::gui {
 
         ModelState model_;
         GpuMemoryInfo cached_gpu_mem_;
+        std::future<GpuMemoryInfo> pending_gpu_mem_;
         std::chrono::steady_clock::time_point next_refresh_at_{};
         std::chrono::steady_clock::time_point next_gpu_refresh_at_{};
         bool model_dirty_ = true;
         bool animation_active_ = false;
+        bool reactive_fps_available_ = false;
+        float reactive_fps_value_ = 0.0f;
+        std::vector<lfs::core::reactive::SubscriptionToken> subscriptions_;
         int last_render_w_ = 0;
         int last_render_h_ = 0;
         int last_document_h_ = 0;
+        CachedVulkanContextRender direct_cache_;
         static constexpr auto kIdleRefreshInterval = std::chrono::milliseconds(200);
         static constexpr auto kBusyRefreshInterval = std::chrono::milliseconds(100);
         static constexpr auto kAnimatedRefreshInterval = std::chrono::milliseconds(16);
-        static constexpr auto kGpuRefreshInterval = std::chrono::milliseconds(250);
+        static constexpr auto kGpuRefreshInterval = std::chrono::milliseconds(500);
     };
 
 } // namespace lfs::vis::gui

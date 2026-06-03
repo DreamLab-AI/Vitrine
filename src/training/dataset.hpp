@@ -215,6 +215,11 @@ namespace lfs::training {
             return cameras_[indices_[index]].get();
         }
 
+        size_t local_to_source(size_t index) const {
+            assert(index < indices_.size());
+            return indices_[index];
+        }
+
         /// Get single example by index
         CameraExample get(size_t index) const {
             if (index >= indices_.size()) {
@@ -225,12 +230,12 @@ namespace lfs::training {
             auto& cam = cameras_[camera_idx];
 
             // Load image using the new LibTorch-free Camera
-            lfs::core::Tensor image = cam->load_and_get_image(config_.resize_factor, config_.max_width);
+            lfs::core::Tensor image = cam->load_and_get_image(config_.resize_factor, config_.max_width, true);
 
             return {
                 {cam.get(), std::move(image)},
-                lfs::core::Tensor() // Empty target
-            };
+                lfs::core::Tensor(), // Empty target
+                std::nullopt};
         }
 
         /// Get batch of examples by indices
@@ -568,6 +573,18 @@ namespace lfs::training {
                 // Attach mask if present
                 if (ready.mask && ready.mask->is_valid()) {
                     example.mask = std::move(*ready.mask);
+                } else if (mask_config_.load_masks && cam->has_in_memory_mask()) {
+                    // Direct-scene plugins attach masks as in-memory tensors
+                    // via Camera::set_mask_tensor — load_and_get_mask returns
+                    // the processed-and-cached tensor (skips file I/O).
+                    auto m = cam->load_and_get_mask(
+                        dataset_->get_resize_factor(),
+                        dataset_->get_max_width(),
+                        mask_config_.invert_masks,
+                        mask_config_.mask_threshold);
+                    if (m.is_valid()) {
+                        example.mask = std::move(m);
+                    }
                 }
 
                 return example;
@@ -604,7 +621,8 @@ namespace lfs::training {
                 if (!indices || indices->empty())
                     break;
 
-                const size_t camera_idx = (*indices)[0];
+                const size_t local_idx = (*indices)[0];
+                const size_t camera_idx = dataset_->local_to_source(local_idx);
                 auto& cam = dataset_->get_cameras()[camera_idx];
                 const size_t seq_id = next_sequence_id_++;
                 sequence_to_camera_[seq_id] = camera_idx;
@@ -614,19 +632,20 @@ namespace lfs::training {
                 request.path = cam->image_path();
                 request.params.resize_factor = dataset_->get_resize_factor();
                 request.params.max_width = dataset_->get_max_width();
+                request.params.output_uint8 = true;
                 if (cam->is_undistort_prepared()) {
                     request.undistort = &cam->undistort_params();
                     request.params.undistort = request.undistort;
                 }
 
-                if (mask_config_.use_alpha_as_mask && cam->has_alpha()) {
-                    request.extract_alpha_as_mask = true;
-                    request.alpha_mask_params.invert = mask_config_.invert_masks;
-                    request.alpha_mask_params.threshold = mask_config_.mask_threshold;
-                } else if (mask_config_.load_masks && cam->has_mask()) {
+                if (mask_config_.load_masks && cam->has_mask()) {
                     request.mask_path = cam->mask_path();
                     request.mask_params.invert = mask_config_.invert_masks;
                     request.mask_params.threshold = mask_config_.mask_threshold;
+                } else if (mask_config_.use_alpha_as_mask && cam->has_alpha()) {
+                    request.extract_alpha_as_mask = true;
+                    request.alpha_mask_params.invert = mask_config_.invert_masks;
+                    request.alpha_mask_params.threshold = mask_config_.mask_threshold;
                 }
 
                 loader_->prefetch({request});

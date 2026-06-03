@@ -7,10 +7,15 @@
 #include "core/logger.hpp"
 #include "input/input_controller.hpp"
 #include "input/sdl_key_mapping.hpp"
+#include "rendering/cuda_vulkan_interop.hpp"
+#include "vulkan_context.hpp"
+#include "vulkan_loader_probe.hpp"
 #include <SDL3/SDL.h>
-#include <glad/glad.h>
+#include <cstdlib>
+#include <cstring>
 #include <imgui_impl_sdl3.h>
 #include <iostream>
+#include <string>
 #include <imgui.h>
 
 namespace lfs::vis {
@@ -44,14 +49,82 @@ namespace lfs::vis {
                 return true;
             }
         }
+
+        std::string compiledVideoDrivers() {
+            const int num_drivers = SDL_GetNumVideoDrivers();
+            if (num_drivers <= 0) {
+                return "<none>";
+            }
+
+            std::string result;
+            for (int i = 0; i < num_drivers; ++i) {
+                const char* const driver = SDL_GetVideoDriver(i);
+                if (i > 0) {
+                    result += ", ";
+                }
+                result += driver ? driver : "<null>";
+            }
+            return result;
+        }
+
+        bool hasCompiledVideoDriver(const char* const expected_driver) {
+            const int num_drivers = SDL_GetNumVideoDrivers();
+            for (int i = 0; i < num_drivers; ++i) {
+                const char* const driver = SDL_GetVideoDriver(i);
+                if (driver && std::strcmp(driver, expected_driver) == 0) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        bool containsToken(const char* const haystack, const char* const needle) {
+            return haystack && needle && std::strstr(haystack, needle) != nullptr;
+        }
+
+        bool shouldPreferX11OnGnome() {
+#if defined(__linux__)
+            // GNOME on Wayland can present undecorated SDL toplevels when the
+            // compositor expects client-side decorations but libdecor is not
+            // available at runtime. Prefer X11/Xwayland in that case so the
+            // native min/max/close buttons remain available.
+            const char* const current_desktop = std::getenv("XDG_CURRENT_DESKTOP");
+            const char* const session_desktop = std::getenv("XDG_SESSION_DESKTOP");
+            const bool is_gnome = containsToken(current_desktop, "GNOME") ||
+                                  containsToken(session_desktop, "gnome") ||
+                                  containsToken(session_desktop, "GNOME");
+            const bool has_wayland = std::getenv("WAYLAND_DISPLAY") != nullptr;
+            const bool has_x11 = std::getenv("DISPLAY") != nullptr;
+            const bool explicit_driver = std::getenv("SDL_VIDEO_DRIVER") != nullptr;
+            return is_gnome && has_wayland && has_x11 && !explicit_driver;
+#else
+            return false;
+#endif
+        }
+
+        void reportSdlVideoInitFailure() {
+            std::cerr << "Failed to initialize SDL: " << SDL_GetError() << std::endl;
+
+#if defined(__linux__)
+            std::cerr << "Compiled SDL video drivers: " << compiledVideoDrivers() << std::endl;
+            if (!hasCompiledVideoDriver("x11") && !hasCompiledVideoDriver("wayland")) {
+                std::cerr
+                    << "This SDL build lacks both X11 and Wayland support. Install the Linux GUI build "
+                       "dependencies and rebuild SDL3."
+                    << std::endl;
+            }
+#endif
+        }
     } // namespace
 
     void* WindowManager::callback_handler_ = nullptr;
 
     WindowManager::WindowManager(const std::string& title, const int width, const int height,
                                  const int monitor_x, const int monitor_y,
-                                 const int monitor_width, const int monitor_height)
-        : title_(title),
+                                 const int monitor_width, const int monitor_height,
+                                 const GraphicsBackend graphics_backend)
+        : graphics_backend_(graphics_backend),
+          title_(title),
           window_size_(width, height),
           framebuffer_size_(width, height),
           monitor_pos_(monitor_x, monitor_y),
@@ -59,9 +132,7 @@ namespace lfs::vis {
     }
 
     WindowManager::~WindowManager() {
-        if (gl_context_) {
-            SDL_GL_DestroyContext(gl_context_);
-        }
+        vulkan_context_.reset();
         if (window_) {
             SDL_DestroyWindow(window_);
         }
@@ -77,23 +148,34 @@ namespace lfs::vis {
     }
 
     bool WindowManager::init() {
+        if (shouldPreferX11OnGnome()) {
+            SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "x11,wayland");
+            LOG_INFO("GNOME Wayland session detected; preferring X11/Xwayland for native window decorations");
+        }
+
         if (!SDL_Init(SDL_INIT_VIDEO)) {
-            std::cerr << "Failed to initialize SDL: " << SDL_GetError() << std::endl;
+            reportSdlVideoInitFailure();
             return false;
         }
 
-        SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
-        SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 8);
-        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
-        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
-        SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-        SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+        if (const char* const video_driver = SDL_GetCurrentVideoDriver(); video_driver) {
+            LOG_INFO("SDL video driver: {}", video_driver);
+        }
+
+        const auto vulkan_info = probeVulkanLoader();
+        if (vulkan_info.enabled) {
+            if (vulkan_info.loader_available) {
+                LOG_INFO("Vulkan loader available: API {}", formatVulkanApiVersion(vulkan_info.api_version));
+            } else {
+                LOG_WARN("Vulkan viewer dependency is enabled, but the loader probe failed: {}", vulkan_info.error);
+            }
+        }
 
         window_ = SDL_CreateWindow(
             title_.c_str(),
             window_size_.x,
             window_size_.y,
-            SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_HIDDEN);
+            SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_HIDDEN);
 
         if (!window_) {
             std::cerr << "Failed to create SDL window: " << SDL_GetError() << std::endl;
@@ -108,35 +190,30 @@ namespace lfs::vis {
             SDL_SetWindowPosition(window_, xpos, ypos);
         }
 
-        gl_context_ = SDL_GL_CreateContext(window_);
-        if (!gl_context_) {
-            std::cerr << "Failed to create GL context: " << SDL_GetError() << std::endl;
+        int fb_w = 0;
+        int fb_h = 0;
+        SDL_GetWindowSizeInPixels(window_, &fb_w, &fb_h);
+        framebuffer_size_ = glm::ivec2(fb_w, fb_h);
+
+        vulkan_context_ = std::make_unique<VulkanContext>();
+        if (!vulkan_context_->init(window_, framebuffer_size_.x, framebuffer_size_.y)) {
+            std::cerr << "Failed to initialize Vulkan context: " << vulkan_context_->lastError() << std::endl;
+            vulkan_context_.reset();
             SDL_DestroyWindow(window_);
             window_ = nullptr;
             SDL_Quit();
             return false;
         }
-        SDL_GL_MakeCurrent(window_, gl_context_);
-
-        if (!gladLoadGLLoader((GLADloadproc)SDL_GL_GetProcAddress)) {
-            std::cerr << "GLAD init failed" << std::endl;
+        lfs::rendering::setExpectedVulkanDeviceUuid(vulkan_context_->deviceUUID());
+        if (!vulkan_context_->presentBootstrapFrame(0.11f, 0.11f, 0.14f, 1.0f)) {
+            std::cerr << "Failed to present Vulkan bootstrap frame: " << vulkan_context_->lastError() << std::endl;
+            vulkan_context_.reset();
+            SDL_DestroyWindow(window_);
+            window_ = nullptr;
             SDL_Quit();
             return false;
         }
-
-        SDL_GL_SetSwapInterval(1);
-
-        glEnable(GL_LINE_SMOOTH);
-        glDepthFunc(GL_LEQUAL);
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        glBlendEquation(GL_FUNC_ADD);
-        glEnable(GL_PROGRAM_POINT_SIZE);
-
-        glClearColor(0.11f, 0.11f, 0.14f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        SDL_GL_SwapWindow(window_);
-
+        LOG_INFO("Vulkan window context initialized");
         return true;
     }
 
@@ -153,11 +230,17 @@ namespace lfs::vis {
         SDL_GetWindowSizeInPixels(window_, &fbW, &fbH);
         window_size_ = glm::ivec2(winW, winH);
         framebuffer_size_ = glm::ivec2(fbW, fbH);
-        glViewport(0, 0, fbW, fbH);
+        if (vulkan_context_) {
+            vulkan_context_->notifyFramebufferResized(fbW, fbH);
+        }
     }
 
     void WindowManager::swapBuffers() {
-        SDL_GL_SwapWindow(window_);
+        if (vulkan_context_) {
+            if (!vulkan_context_->presentBootstrapFrame(0.11f, 0.11f, 0.14f, 1.0f)) {
+                LOG_WARN("Vulkan bootstrap present failed: {}", vulkan_context_->lastError());
+            }
+        }
     }
 
     void WindowManager::pollEvents() {
@@ -203,19 +286,15 @@ namespace lfs::vis {
         should_close_ = false;
     }
 
-    void WindowManager::requestRedraw() {
-        needs_redraw_ = true;
+    void WindowManager::wakeEventLoop() {
+        if (!SDL_WasInit(SDL_INIT_EVENTS)) {
+            return;
+        }
+
+        // Wake SDL_WaitEventTimeout so queued viewer-thread work is serviced promptly.
         SDL_Event event{};
         event.type = SDL_EVENT_USER;
         SDL_PushEvent(&event);
-    }
-
-    bool WindowManager::needsRedraw() const {
-        bool result = needs_redraw_;
-        if (result) {
-            needs_redraw_ = false;
-        }
-        return result;
     }
 
     void WindowManager::processEvent(const SDL_Event& event) {
@@ -343,7 +422,7 @@ namespace lfs::vis {
         }
 
         updateWindowSize();
-        requestRedraw();
+        wakeEventLoop();
     }
 
 } // namespace lfs::vis

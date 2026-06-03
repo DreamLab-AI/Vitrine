@@ -10,10 +10,12 @@
 #include <RmlUi/Core/Context.h>
 #include <RmlUi/Core/DataTypeRegister.h>
 #include <RmlUi/Core/DataVariable.h>
+#include <RmlUi/Core/Elements/ElementFormControlInput.h>
 #include <RmlUi/Core/StyleSheetSpecification.h>
 #include <RmlUi/Core/Tween.h>
 #include <cassert>
 #include <cmath>
+#include <limits>
 #include <nanobind/stl/map.h>
 #include <nanobind/stl/optional.h>
 #include <unordered_set>
@@ -26,10 +28,13 @@ namespace lfs::python {
 
     namespace {
         std::unordered_map<Rml::ElementDocument*, std::vector<Rml::ElementPtr>> s_held_elements;
+        std::unordered_map<Rml::Element*, Rml::ElementDocument*> s_detached_element_documents;
         std::unordered_set<Rml::ElementDocument*> s_dirty_documents;
+        std::unordered_set<Rml::ElementDocument*> s_update_requested_documents;
         std::map<std::string, DataModelArrayStorage> s_model_storage;
         std::unordered_map<std::string, Rml::DataModelHandle> s_active_handles;
         std::unordered_map<std::string, Rml::Context*> s_model_contexts;
+        std::unordered_map<std::string, Rml::ElementDocument*> s_model_documents;
         std::unordered_set<Rml::Context*> s_string_array_type_contexts;
         std::unordered_set<Rml::Context*> s_record_array_type_contexts;
         std::unordered_set<Rml::Context*> s_builtin_transform_contexts;
@@ -138,13 +143,89 @@ namespace lfs::python {
             return record;
         }
 
+        void register_detached_subtree(Rml::ElementDocument* doc, Rml::Element* element) {
+            if (!doc || !element)
+                return;
+
+            s_detached_element_documents[element] = doc;
+            for (int i = 0; i < element->GetNumChildren(); ++i) {
+                register_detached_subtree(doc, element->GetChild(i));
+            }
+        }
+
+        void unregister_detached_subtree(Rml::Element* element) {
+            if (!element)
+                return;
+
+            s_detached_element_documents.erase(element);
+            for (int i = 0; i < element->GetNumChildren(); ++i) {
+                unregister_detached_subtree(element->GetChild(i));
+            }
+        }
+
+        Rml::ElementDocument* resolve_document(Rml::Element* element) {
+            for (Rml::Element* current = element; current; current = current->GetParentNode()) {
+                if (auto* doc = current->GetOwnerDocument()) {
+                    return doc;
+                }
+                if (auto* doc = rmlui_dynamic_cast<Rml::ElementDocument*>(current)) {
+                    return doc;
+                }
+                if (auto it = s_detached_element_documents.find(current);
+                    it != s_detached_element_documents.end()) {
+                    return it->second;
+                }
+            }
+
+            return nullptr;
+        }
+
+        bool is_detached_subtree_rooted(Rml::Element* element) {
+            return element && !element->GetOwnerDocument() &&
+                   !rmlui_dynamic_cast<Rml::ElementDocument*>(element) &&
+                   resolve_document(element) != nullptr;
+        }
+
         void mark_document_dirty(Rml::Element* element) {
             if (!element)
                 return;
-            if (auto* doc = element->GetOwnerDocument()) {
+            if (auto* doc = resolve_document(element)) {
                 s_dirty_documents.insert(doc);
                 request_redraw();
             }
+        }
+
+        // Models created via PyRmlContext::create_data_model (e.g. in on_bind_model,
+        // before the panel document is loaded) only register their context. Resolve
+        // the owning document lazily from the context and cache it, so dirty/update
+        // invalidation can find it.
+        Rml::ElementDocument* resolve_model_document(const std::string& model_name) {
+            if (auto it = s_model_documents.find(model_name);
+                it != s_model_documents.end() && it->second)
+                return it->second;
+            if (auto cit = s_model_contexts.find(model_name);
+                cit != s_model_contexts.end() && cit->second) {
+                Rml::Context* ctx = cit->second;
+                if (ctx->GetNumDocuments() > 0) {
+                    if (Rml::ElementDocument* doc = ctx->GetDocument(0)) {
+                        s_model_documents[model_name] = doc;
+                        return doc;
+                    }
+                }
+            }
+            return nullptr;
+        }
+
+        void mark_model_document_dirty(const std::string& model_name) {
+            if (auto* doc = resolve_model_document(model_name))
+                s_dirty_documents.insert(doc);
+            request_redraw();
+        }
+
+        void request_model_document_update(const std::string& model_name) {
+            if (auto* doc = resolve_model_document(model_name))
+                s_update_requested_documents.insert(doc);
+            request_redraw();
         }
 
     } // namespace
@@ -157,6 +238,7 @@ namespace lfs::python {
         for (auto vi = vec.begin(); vi != vec.end(); ++vi) {
             if (vi->get() == raw) {
                 auto ptr = std::move(*vi);
+                unregister_detached_subtree(ptr.get());
                 vec.erase(vi);
                 return ptr;
             }
@@ -165,19 +247,36 @@ namespace lfs::python {
     }
 
     void storeHeldElement(Rml::ElementDocument* doc, Rml::ElementPtr elem) {
+        register_detached_subtree(doc, elem.get());
         s_held_elements[doc].push_back(std::move(elem));
     }
 
     void clearHeldElements(Rml::ElementDocument* doc) {
+        auto it = s_held_elements.find(doc);
+        if (it != s_held_elements.end()) {
+            for (auto& elem : it->second) {
+                unregister_detached_subtree(elem.get());
+            }
+        }
         s_held_elements.erase(doc);
+        s_dirty_documents.erase(doc);
+        s_update_requested_documents.erase(doc);
     }
 
     bool consume_document_dirty(Rml::ElementDocument* doc) {
         return s_dirty_documents.erase(doc) > 0;
     }
 
+    bool consume_document_update_request(Rml::ElementDocument* doc) {
+        return s_update_requested_documents.erase(doc) > 0;
+    }
+
     bool is_document_dirty(Rml::ElementDocument* doc) {
         return doc && s_dirty_documents.contains(doc);
+    }
+
+    bool is_document_update_requested(Rml::ElementDocument* doc) {
+        return doc && s_update_requested_documents.contains(doc);
     }
 
     nb::object variant_to_python(const Rml::Variant& v) {
@@ -199,8 +298,35 @@ namespace lfs::python {
             return {};
         if (nb::isinstance<nb::bool_>(obj))
             return Rml::Variant(nb::cast<bool>(obj));
-        if (nb::isinstance<nb::int_>(obj))
-            return Rml::Variant(nb::cast<int>(obj));
+        if (nb::isinstance<nb::int_>(obj)) {
+            int overflow = 0;
+            const long long signed_value = PyLong_AsLongLongAndOverflow(obj.ptr(), &overflow);
+            if (overflow == 0 && !PyErr_Occurred()) {
+                if (signed_value >= std::numeric_limits<int>::min() &&
+                    signed_value <= std::numeric_limits<int>::max()) {
+                    return Rml::Variant(static_cast<int>(signed_value));
+                }
+                return Rml::Variant(static_cast<int64_t>(signed_value));
+            }
+            PyErr_Clear();
+
+            if (overflow > 0) {
+                const unsigned long long unsigned_value = PyLong_AsUnsignedLongLong(obj.ptr());
+                if (!PyErr_Occurred()) {
+                    if (unsigned_value <= std::numeric_limits<unsigned int>::max()) {
+                        return Rml::Variant(static_cast<unsigned int>(unsigned_value));
+                    }
+                    return Rml::Variant(static_cast<uint64_t>(unsigned_value));
+                }
+                PyErr_Clear();
+            }
+
+            const double double_value = PyLong_AsDouble(obj.ptr());
+            if (!PyErr_Occurred())
+                return Rml::Variant(double_value);
+            PyErr_Clear();
+            return {};
+        }
         if (nb::isinstance<nb::float_>(obj))
             return Rml::Variant(nb::cast<double>(obj));
         if (nb::isinstance<nb::str>(obj))
@@ -224,6 +350,7 @@ namespace lfs::python {
         s_model_storage.erase(name);
         s_active_handles.erase(name);
         s_model_contexts.erase(name);
+        s_model_documents.erase(name);
         return ctx_->RemoveDataModel(name);
     }
 
@@ -299,59 +426,92 @@ namespace lfs::python {
     int PyRmlElement::num_children() { return elem_->GetNumChildren(); }
 
     nb::object PyRmlElement::append_child(const std::string& tag_name) {
-        auto* doc = elem_->GetOwnerDocument();
-        assert(doc);
+        auto* doc = resolve_document(elem_);
+        if (!doc) {
+            LOG_ERROR("append_child: failed to resolve owning document for <{}>", elem_->GetTagName());
+            return nb::none();
+        }
         auto new_elem = doc->CreateElement(tag_name);
         if (!new_elem)
             return nb::none();
         Rml::Element* raw = new_elem.get();
+        const bool parent_detached = is_detached_subtree_rooted(elem_);
         elem_->AppendChild(std::move(new_elem));
+        if (parent_detached) {
+            register_detached_subtree(doc, raw);
+        }
         mark_document_dirty(elem_);
         return nb::cast(PyRmlElement(raw));
     }
 
     nb::object PyRmlElement::append_child_element(PyRmlElement& child) {
-        auto* doc = elem_->GetOwnerDocument();
-        assert(doc);
+        auto* doc = resolve_document(elem_);
+        if (!doc) {
+            LOG_ERROR("append_child_element: failed to resolve owning document for <{}>",
+                      elem_->GetTagName());
+            return nb::none();
+        }
         auto held = extractHeldElement(doc, child.raw());
         if (!held) {
-            LOG_ERROR("append_child: element not in holding area");
+            LOG_ERROR("append_child_element: element not in holding area");
             return nb::none();
         }
         Rml::Element* raw = held.get();
+        const bool parent_detached = is_detached_subtree_rooted(elem_);
         elem_->AppendChild(std::move(held));
+        if (parent_detached) {
+            register_detached_subtree(doc, raw);
+        }
         mark_document_dirty(elem_);
         return nb::cast(PyRmlElement(raw));
     }
 
     nb::object PyRmlElement::insert_before(const std::string& tag_name, PyRmlElement& ref_child) {
-        auto* doc = elem_->GetOwnerDocument();
-        assert(doc);
+        auto* doc = resolve_document(elem_);
+        if (!doc) {
+            LOG_ERROR("insert_before: failed to resolve owning document for <{}>", elem_->GetTagName());
+            return nb::none();
+        }
         auto new_elem = doc->CreateElement(tag_name);
         if (!new_elem)
             return nb::none();
         Rml::Element* raw = new_elem.get();
+        const bool parent_detached = is_detached_subtree_rooted(elem_);
         elem_->InsertBefore(std::move(new_elem), ref_child.raw());
+        if (parent_detached) {
+            register_detached_subtree(doc, raw);
+        }
         mark_document_dirty(elem_);
         return nb::cast(PyRmlElement(raw));
     }
 
     nb::object PyRmlElement::insert_before_element(PyRmlElement& child, PyRmlElement& ref_child) {
-        auto* doc = elem_->GetOwnerDocument();
-        assert(doc);
+        auto* doc = resolve_document(elem_);
+        if (!doc) {
+            LOG_ERROR("insert_before_element: failed to resolve owning document for <{}>",
+                      elem_->GetTagName());
+            return nb::none();
+        }
         auto held = extractHeldElement(doc, child.raw());
         if (!held) {
-            LOG_ERROR("insert_before: element not in holding area");
+            LOG_ERROR("insert_before_element: element not in holding area");
             return nb::none();
         }
         Rml::Element* raw = held.get();
+        const bool parent_detached = is_detached_subtree_rooted(elem_);
         elem_->InsertBefore(std::move(held), ref_child.raw());
+        if (parent_detached) {
+            register_detached_subtree(doc, raw);
+        }
         mark_document_dirty(elem_);
         return nb::cast(PyRmlElement(raw));
     }
 
     void PyRmlElement::remove_child(PyRmlElement& child) {
-        elem_->RemoveChild(child.raw());
+        auto removed = elem_->RemoveChild(child.raw());
+        if (removed) {
+            unregister_detached_subtree(removed.get());
+        }
         mark_document_dirty(elem_);
     }
 
@@ -573,6 +733,14 @@ namespace lfs::python {
 
     bool PyRmlElement::focus() { return elem_->Focus(); }
     void PyRmlElement::blur() { elem_->Blur(); }
+    bool PyRmlElement::select() {
+        if (auto* input = rmlui_dynamic_cast<Rml::ElementFormControlInput*>(elem_)) {
+            input->Select();
+            mark_document_dirty(input);
+            return true;
+        }
+        return false;
+    }
 
     void PyRmlElement::submit(const std::string& name, const std::string& value) {
         Rml::Element* element = elem_;
@@ -631,6 +799,7 @@ namespace lfs::python {
         if (!ctor)
             return nb::none();
         s_model_contexts[name] = ctx;
+        s_model_documents[name] = doc_;
         register_builtin_transforms(ctor, ctx);
         return nb::cast(PyDataModelConstructor(std::move(ctor), name, ctx));
     }
@@ -641,6 +810,7 @@ namespace lfs::python {
         s_model_storage.erase(name);
         s_active_handles.erase(name);
         s_model_contexts.erase(name);
+        s_model_documents.erase(name);
         return ctx->RemoveDataModel(name);
     }
 
@@ -648,10 +818,16 @@ namespace lfs::python {
 
     void PyDataModelHandle::dirty(const std::string& name) {
         handle_.DirtyVariable(name);
+        mark_model_document_dirty(model_name_);
     }
 
     void PyDataModelHandle::dirty_all() {
         handle_.DirtyAllVariables();
+        mark_model_document_dirty(model_name_);
+    }
+
+    void PyDataModelHandle::request_update() {
+        request_model_document_update(model_name_);
     }
 
     bool PyDataModelHandle::is_dirty(const std::string& name) {
@@ -671,6 +847,7 @@ namespace lfs::python {
             return;
         arr_it->second = std::move(updated);
         handle_.DirtyVariable(name);
+        mark_model_document_dirty(model_name_);
     }
 
     void PyDataModelHandle::update_record_list(const std::string& name, nb::list items) {
@@ -688,6 +865,7 @@ namespace lfs::python {
             return;
         arr_it->second = std::move(updated);
         handle_.DirtyVariable(name);
+        mark_model_document_dirty(model_name_);
     }
 
     // --- PyDataModelConstructor ---
@@ -977,6 +1155,7 @@ namespace lfs::python {
                  nb::arg("align_top") = true)
             .def("focus", &PyRmlElement::focus)
             .def("blur", &PyRmlElement::blur)
+            .def("select", &PyRmlElement::select)
             .def("submit", &PyRmlElement::submit, nb::arg("name") = "",
                  nb::arg("value") = "");
 
@@ -992,6 +1171,7 @@ namespace lfs::python {
         nb::class_<PyDataModelHandle>(rml, "DataModelHandle")
             .def("dirty", &PyDataModelHandle::dirty, nb::arg("name"))
             .def("dirty_all", &PyDataModelHandle::dirty_all)
+            .def("request_update", &PyDataModelHandle::request_update)
             .def("is_dirty", &PyDataModelHandle::is_dirty, nb::arg("name"))
             .def("update_string_list", &PyDataModelHandle::update_string_list, nb::arg("name"),
                  nb::arg("items"))

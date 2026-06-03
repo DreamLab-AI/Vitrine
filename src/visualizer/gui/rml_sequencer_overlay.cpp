@@ -2,20 +2,17 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
-// clang-format off
-#include <glad/glad.h>
-// clang-format on
-
 #include "gui/rml_sequencer_overlay.hpp"
 #include "core/event_bridge/localization_manager.hpp"
 #include "core/events.hpp"
 #include "core/logger.hpp"
 #include "gui/gui_focus_state.hpp"
+#include "gui/rmlui/rml_document_utils.hpp"
 #include "gui/rmlui/rml_text_input_handler.hpp"
 #include "gui/rmlui/rml_theme.hpp"
 #include "gui/rmlui/rmlui_manager.hpp"
-#include "gui/rmlui/rmlui_render_interface.hpp"
 #include "gui/string_keys.hpp"
+#include "input/input_controller.hpp"
 #include "internal/resource_paths.hpp"
 #include "sequencer/keyframe.hpp"
 #include "sequencer/sequencer_controller.hpp"
@@ -29,8 +26,7 @@
 #include <SDL3/SDL_video.h>
 #include <algorithm>
 #include <cassert>
-#include <format>
-#include <ImGuizmo.h>
+#include <fmt/format.h>
 
 namespace lfs::vis::gui {
 
@@ -45,6 +41,25 @@ namespace lfs::vis::gui {
             default: return LOC(Scene::KEYFRAME_EASING_LINEAR);
             }
         }
+
+        std::string shortcutSpan(const input::Action action) {
+            auto* const controller = InputController::instance();
+            if (!controller) {
+                return {};
+            }
+            const auto& bindings = controller->getBindings();
+            if (!bindings.getEffectiveTriggerForAction(action, input::ToolMode::GLOBAL).has_value()) {
+                return {};
+            }
+            const std::string shortcut =
+                bindings.getLocalizedTriggerDescription(action, input::ToolMode::GLOBAL);
+            if (shortcut.empty()) {
+                return {};
+            }
+            return fmt::format(
+                R"(<span class="context-menu-label context-menu-shortcut">{}</span>)",
+                shortcut);
+        }
     } // namespace
 
     RmlSequencerOverlay::RmlSequencerOverlay(SequencerController& controller, RmlUIManager* rml_manager)
@@ -55,7 +70,7 @@ namespace lfs::vis::gui {
     }
 
     RmlSequencerOverlay::~RmlSequencerOverlay() {
-        fbo_.destroy();
+        hidePreviewWindow();
         if (rml_context_ && rml_manager_)
             rml_manager_->destroyContext("sequencer_overlay");
     }
@@ -72,7 +87,7 @@ namespace lfs::vis::gui {
 
         try {
             const auto rml_path = lfs::vis::getAssetPath("rmlui/sequencer_overlay.rml");
-            document_ = rml_context_->LoadDocument(rml_path.string());
+            document_ = rml_documents::loadDocument(rml_context_, rml_path);
             if (!document_) {
                 LOG_ERROR("RmlSequencerOverlay: failed to load sequencer_overlay.rml");
                 return;
@@ -105,6 +120,68 @@ namespace lfs::vis::gui {
         return true;
     }
 
+    void RmlSequencerOverlay::reloadResources() {
+        if (!rml_context_)
+            return;
+
+        hideContextMenu();
+        hideEditOverlay();
+        hidePreviewWindow();
+        time_edit_active_ = false;
+        focal_edit_active_ = false;
+        wants_input_ = false;
+        has_text_focus_ = false;
+
+        if (document_) {
+            rml_context_->UnloadDocument(document_);
+            rml_context_->Update();
+        }
+
+        document_ = nullptr;
+        el_menu_backdrop_ = nullptr;
+        el_context_menu_ = nullptr;
+        el_popup_backdrop_ = nullptr;
+        el_time_popup_ = nullptr;
+        el_focal_popup_ = nullptr;
+        el_time_input_ = nullptr;
+        el_focal_input_ = nullptr;
+        el_edit_overlay_ = nullptr;
+        el_edit_label_ = nullptr;
+        el_edit_delta_ = nullptr;
+        el_edit_apply_ = nullptr;
+        el_edit_revert_ = nullptr;
+        el_preview_window_ = nullptr;
+        el_preview_title_ = nullptr;
+        el_preview_image_ = nullptr;
+        el_time_popup_title_ = nullptr;
+        el_focal_popup_title_ = nullptr;
+        el_time_ok_ = nullptr;
+        el_time_cancel_ = nullptr;
+        el_focal_ok_ = nullptr;
+        el_focal_cancel_ = nullptr;
+        elements_cached_ = false;
+        base_rcss_.clear();
+        has_theme_signature_ = false;
+        width_ = 0;
+        height_ = 0;
+
+        try {
+            const auto rml_path = lfs::vis::getAssetPath("rmlui/sequencer_overlay.rml");
+            document_ = rml_documents::loadDocument(rml_context_, rml_path);
+            if (!document_) {
+                LOG_ERROR("RmlSequencerOverlay: failed to reload sequencer_overlay.rml");
+                return;
+            }
+            document_->Show();
+            cacheElements();
+        } catch (const std::exception& e) {
+            LOG_ERROR("RmlSequencerOverlay: resource not found during reload: {}", e.what());
+            return;
+        }
+
+        syncTheme();
+    }
+
     void RmlSequencerOverlay::cacheElements() {
         assert(document_);
         el_menu_backdrop_ = document_->GetElementById("menu-backdrop");
@@ -119,6 +196,9 @@ namespace lfs::vis::gui {
         el_edit_delta_ = document_->GetElementById("kf-edit-delta");
         el_edit_apply_ = document_->GetElementById("kf-edit-apply");
         el_edit_revert_ = document_->GetElementById("kf-edit-revert");
+        el_preview_window_ = document_->GetElementById("pip-preview-window");
+        el_preview_title_ = document_->GetElementById("pip-preview-title");
+        el_preview_image_ = document_->GetElementById("pip-preview-image");
         el_time_ok_ = document_->GetElementById("time-edit-ok");
         el_time_cancel_ = document_->GetElementById("time-edit-cancel");
         el_focal_ok_ = document_->GetElementById("focal-edit-ok");
@@ -140,7 +220,8 @@ namespace lfs::vis::gui {
 
         elements_cached_ = el_menu_backdrop_ && el_context_menu_ && el_popup_backdrop_ &&
                            el_time_popup_ && el_focal_popup_ && el_time_input_ &&
-                           el_focal_input_ && el_edit_overlay_ && el_edit_label_ && el_edit_delta_;
+                           el_focal_input_ && el_edit_overlay_ && el_edit_label_ && el_edit_delta_ &&
+                           el_preview_window_ && el_preview_title_ && el_preview_image_;
 
         if (!elements_cached_) {
             LOG_ERROR("RmlSequencerOverlay: missing DOM elements");
@@ -157,32 +238,6 @@ namespace lfs::vis::gui {
         el_focal_popup_->AddEventListener(Rml::EventId::Click, &listener_);
     }
 
-    std::string RmlSequencerOverlay::generateThemeRCSS(const lfs::vis::Theme& t) const {
-        using rml_theme::colorToRml;
-        using rml_theme::colorToRmlAlpha;
-        const auto& p = t.palette;
-
-        const auto surface = colorToRmlAlpha(p.surface, 0.95f);
-        const auto border = colorToRmlAlpha(p.border, 0.4f);
-        const auto text = colorToRml(p.text);
-        const auto text_dim = colorToRml(p.text_dim);
-        const auto primary = colorToRml(p.primary);
-        const auto sep_color = colorToRmlAlpha(p.border, 0.5f);
-        const int rounding = static_cast<int>(t.sizes.window_rounding);
-
-        return std::format(
-            ".overlay-panel {{ background-color: {}; border-color: {}; border-radius: {}dp; }}\n"
-            ".overlay-text {{ color: {}; }}\n"
-            ".overlay-text-dim {{ color: {}; }}\n"
-            ".edit-popup {{ background-color: {}; border-color: {}; border-radius: {}dp; }}\n"
-            ".popup-title {{ color: {}; }}\n"
-            ".popup-sep {{ background-color: {}; }}\n",
-            surface, border, rounding,
-            text, text_dim,
-            surface, border, rounding,
-            text, sep_color);
-    }
-
     void RmlSequencerOverlay::syncTheme() {
         if (!document_)
             return;
@@ -196,7 +251,7 @@ namespace lfs::vis::gui {
         if (base_rcss_.empty())
             base_rcss_ = rml_theme::loadBaseRCSS("rmlui/sequencer_overlay.rcss");
 
-        rml_theme::applyTheme(document_, base_rcss_, rml_theme::generateAllThemeMedia([this](const auto& th) { return generateThemeRCSS(th); }));
+        rml_theme::applyTheme(document_, base_rcss_, rml_theme::loadBaseRCSS("rmlui/sequencer_overlay.theme.rcss"));
         syncLocalization();
     }
 
@@ -226,17 +281,16 @@ namespace lfs::vis::gui {
 
     std::string RmlSequencerOverlay::buildContextMenuHTML(
         std::optional<size_t> keyframe,
-        const int gizmo_op_mask) const {
-        const auto gizmo_op = static_cast<ImGuizmo::OPERATION>(gizmo_op_mask);
-
+        const SequencerViewportEditMode edit_mode) const {
         const auto& timeline = controller_.timeline();
         std::string html;
         html.reserve(1024);
 
         using namespace lichtfeld::Strings;
-        html += std::format(
-            R"(<div class="context-menu-item" id="ctx-add">{}<span class="context-menu-label" style="float: right; display: inline; padding: 0;">K</span></div>)",
-            LOC(Sequencer::ADD_KEYFRAME_HERE));
+        html += fmt::format(
+            R"(<div class="context-menu-item" id="ctx-add">{}{}</div>)",
+            LOC(Sequencer::ADD_KEYFRAME_HERE),
+            shortcutSpan(input::Action::SEQUENCER_ADD_KEYFRAME));
 
         if (keyframe.has_value() && *keyframe < timeline.size()) {
             const size_t idx = *keyframe;
@@ -247,24 +301,25 @@ namespace lfs::vis::gui {
             const bool is_last = (idx == timeline.size() - 1);
 
             html += R"(<div class="context-menu-separator"></div>)";
-            html += std::format(
-                R"(<div class="context-menu-item" id="ctx-update">{}<span class="context-menu-label" style="float: right; display: inline; padding: 0;">U</span></div>)",
-                LOC(Sequencer::UPDATE_TO_CURRENT_VIEW));
-            html += std::format(
+            html += fmt::format(
+                R"(<div class="context-menu-item" id="ctx-update">{}{}</div>)",
+                LOC(Sequencer::UPDATE_TO_CURRENT_VIEW),
+                shortcutSpan(input::Action::SEQUENCER_UPDATE_KEYFRAME));
+            html += fmt::format(
                 R"(<div class="context-menu-item" id="ctx-goto">{}</div>)",
                 LOC(Sequencer::GO_TO_KEYFRAME));
-            html += std::format(
+            html += fmt::format(
                 R"(<div class="context-menu-item" id="ctx-focal">{}</div>)",
                 LOC(Sequencer::EDIT_FOCAL_LENGTH));
             html += R"(<div class="context-menu-separator"></div>)";
 
-            const bool translate_active = gizmo_op == ImGuizmo::TRANSLATE;
-            const bool rotate_active = gizmo_op == ImGuizmo::ROTATE;
+            const bool translate_active = edit_mode == SequencerViewportEditMode::Translate;
+            const bool rotate_active = edit_mode == SequencerViewportEditMode::Rotate;
 
-            html += std::format(
+            html += fmt::format(
                 R"(<div class="context-menu-item{}" id="ctx-translate">{}</div>)",
                 translate_active ? " active" : "", LOC(Sequencer::MOVE_TRANSLATE));
-            html += std::format(
+            html += fmt::format(
                 R"(<div class="context-menu-item{}" id="ctx-rotate">{}</div>)",
                 rotate_active ? " active" : "", LOC(Sequencer::ROTATE));
 
@@ -272,28 +327,28 @@ namespace lfs::vis::gui {
 
             if (!is_last) {
                 const auto current_easing = timeline.keyframes()[idx].easing;
-                html += std::format(R"(<div class="context-menu-label">{}</div>)", LOC(Sequencer::EASING));
+                html += fmt::format(R"(<div class="context-menu-label">{}</div>)", LOC(Sequencer::EASING));
                 for (int e = 0; e < 4; ++e) {
                     const auto easing = static_cast<lfs::sequencer::EasingType>(e);
                     const bool active = (current_easing == easing);
-                    html += std::format(
+                    html += fmt::format(
                         R"(<div class="context-menu-item submenu-item{}" id="ctx-easing-{}">{}</div>)",
                         active ? " active" : "", e, easingName(easing));
                 }
             } else {
-                html += std::format(
+                html += fmt::format(
                     R"(<div class="context-menu-label">{}</div>)", LOC(Sequencer::EASING_LAST_KEYFRAME));
             }
 
             html += R"(<div class="context-menu-separator"></div>)";
 
             if (is_first)
-                html += std::format(
+                html += fmt::format(
                     R"(<div class="context-menu-item disabled" id="ctx-delete-disabled">{}</div>)",
                     LOC(Sequencer::DELETE_KEYFRAME));
             else
-                html += std::format(
-                    R"(<div class="context-menu-item" id="ctx-delete">{}<span class="context-menu-label" style="float: right; display: inline; padding: 0;">Del</span></div>)",
+                html += fmt::format(
+                    R"(<div class="context-menu-item" id="ctx-delete">{}</div>)",
                     LOC(Sequencer::DELETE_KEYFRAME));
         }
 
@@ -303,7 +358,7 @@ namespace lfs::vis::gui {
     void RmlSequencerOverlay::showContextMenu(float screen_x, float screen_y,
                                               std::optional<size_t> keyframe_index,
                                               const float time,
-                                              const int gizmo_op) {
+                                              const SequencerViewportEditMode edit_mode) {
         if (!ensureContextReady())
             return;
 
@@ -312,7 +367,7 @@ namespace lfs::vis::gui {
         context_menu_open_ = true;
         skip_next_click_ = true;
 
-        const std::string html = buildContextMenuHTML(keyframe_index, gizmo_op);
+        const std::string html = buildContextMenuHTML(keyframe_index, edit_mode);
         el_context_menu_->SetInnerRML(html);
         el_context_menu_->SetClass("visible", true);
         el_menu_backdrop_->SetProperty("display", "block");
@@ -324,8 +379,8 @@ namespace lfs::vis::gui {
                             ? std::max(0.0f, screen_y - menu_h)
                             : screen_y;
 
-        el_context_menu_->SetProperty("left", std::format("{:.0f}dp", screen_x / dp));
-        el_context_menu_->SetProperty("top", std::format("{:.0f}dp", y / dp));
+        el_context_menu_->SetProperty("left", fmt::format("{:.0f}dp", screen_x / dp));
+        el_context_menu_->SetProperty("top", fmt::format("{:.0f}dp", y / dp));
     }
 
     void RmlSequencerOverlay::hideContextMenu() {
@@ -346,13 +401,13 @@ namespace lfs::vis::gui {
         time_edit_active_ = true;
         time_edit_index_ = index;
 
-        el_time_input_->SetAttribute("value", std::format("{:.2f}", current_time));
+        el_time_input_->SetAttribute("value", fmt::format("{:.2f}", current_time));
 
         const float dp = rml_manager_ ? rml_manager_->getDpRatio() : 1.0f;
         const float popup_x = static_cast<float>(width_) / (2.0f * dp) - 110.0f;
         const float popup_y = static_cast<float>(height_) / (2.0f * dp) - 60.0f;
-        el_time_popup_->SetProperty("left", std::format("{:.0f}dp", popup_x));
-        el_time_popup_->SetProperty("top", std::format("{:.0f}dp", popup_y));
+        el_time_popup_->SetProperty("left", fmt::format("{:.0f}dp", popup_x));
+        el_time_popup_->SetProperty("top", fmt::format("{:.0f}dp", popup_y));
         el_time_popup_->SetProperty("display", "block");
         el_popup_backdrop_->SetProperty("display", "block");
 
@@ -367,13 +422,13 @@ namespace lfs::vis::gui {
         focal_edit_active_ = true;
         focal_edit_index_ = index;
 
-        el_focal_input_->SetAttribute("value", std::format("{:.1f}", current_focal_mm));
+        el_focal_input_->SetAttribute("value", fmt::format("{:.1f}", current_focal_mm));
 
         const float dp = rml_manager_ ? rml_manager_->getDpRatio() : 1.0f;
         const float popup_x = static_cast<float>(width_) / (2.0f * dp) - 110.0f;
         const float popup_y = static_cast<float>(height_) / (2.0f * dp) - 60.0f;
-        el_focal_popup_->SetProperty("left", std::format("{:.0f}dp", popup_x));
-        el_focal_popup_->SetProperty("top", std::format("{:.0f}dp", popup_y));
+        el_focal_popup_->SetProperty("left", fmt::format("{:.0f}dp", popup_x));
+        el_focal_popup_->SetProperty("top", fmt::format("{:.0f}dp", popup_y));
         el_focal_popup_->SetProperty("display", "block");
         el_popup_backdrop_->SetProperty("display", "block");
 
@@ -424,8 +479,8 @@ namespace lfs::vis::gui {
         const float left = right_x / dp - OVERLAY_WIDTH - MARGIN;
         const float top = top_y / dp + MARGIN;
 
-        el_edit_overlay_->SetProperty("left", std::format("{:.0f}dp", left));
-        el_edit_overlay_->SetProperty("top", std::format("{:.0f}dp", top));
+        el_edit_overlay_->SetProperty("left", fmt::format("{:.0f}dp", left));
+        el_edit_overlay_->SetProperty("top", fmt::format("{:.0f}dp", top));
 
         overlay_px_left_ = left * dp;
         overlay_px_top_ = top * dp;
@@ -433,8 +488,9 @@ namespace lfs::vis::gui {
         overlay_px_height_ = 80.0f * dp;
 
         const size_t kf_num = selected + 1;
-        el_edit_label_->SetInnerRML(std::vformat(LOC(lichtfeld::Strings::Sequencer::EDITING_KEYFRAME), std::make_format_args(kf_num)));
-        el_edit_delta_->SetInnerRML(std::format("{:.3f}m  {:.1f}{}", pos_delta, rot_delta, DEG_SIGN));
+        el_edit_label_->SetInnerRML(
+            fmt::format(fmt::runtime(LOC(lichtfeld::Strings::Sequencer::EDITING_KEYFRAME)), kf_num));
+        el_edit_delta_->SetInnerRML(fmt::format("{:.3f}m  {:.1f}{}", pos_delta, rot_delta, DEG_SIGN));
 
         if (!edit_overlay_visible_) {
             el_edit_overlay_->SetProperty("display", "block");
@@ -451,13 +507,55 @@ namespace lfs::vis::gui {
         overlay_px_left_ = overlay_px_top_ = overlay_px_width_ = overlay_px_height_ = 0.0f;
     }
 
+    void RmlSequencerOverlay::showPreviewWindow(const float left, const float top,
+                                                const float width, const float height,
+                                                const std::string& title, const bool playing,
+                                                const std::string& texture_src) {
+        if (!ensureContextReady() || texture_src.empty())
+            return;
+
+        if (!rml_manager_ || !rml_manager_->getVulkanRenderInterface() ||
+            !el_preview_window_ || !el_preview_title_ || !el_preview_image_)
+            return;
+
+        if (preview_source_ != texture_src) {
+            el_preview_image_->SetAttribute("src", texture_src);
+            preview_source_ = texture_src;
+        }
+
+        el_preview_window_->SetProperty("left", fmt::format("{:.1f}px", left));
+        el_preview_window_->SetProperty("top", fmt::format("{:.1f}px", top));
+        el_preview_window_->SetProperty("width", fmt::format("{:.1f}px", width + 8.0f));
+        el_preview_title_->SetInnerRML(title);
+        el_preview_window_->SetClass("playing", playing);
+        el_preview_image_->SetProperty("width", fmt::format("{:.1f}px", width));
+        el_preview_image_->SetProperty("height", fmt::format("{:.1f}px", height));
+
+        el_preview_window_->SetProperty("display", "block");
+        preview_visible_ = true;
+    }
+
+    void RmlSequencerOverlay::hidePreviewWindow() {
+        if (!preview_source_.empty()) {
+            preview_source_.clear();
+        }
+
+        if (el_preview_window_)
+            el_preview_window_->SetProperty("display", "none");
+        if (el_preview_image_)
+            el_preview_image_->SetAttribute("src", "");
+
+        preview_visible_ = false;
+    }
+
     void RmlSequencerOverlay::processInput(const lfs::vis::PanelInputState& input) {
         wants_input_ = false;
         if (!rml_context_ || !document_ || !elements_cached_)
             return;
 
         const bool anything_visible = context_menu_open_ || time_edit_active_ ||
-                                      focal_edit_active_ || edit_overlay_visible_;
+                                      focal_edit_active_ || edit_overlay_visible_ ||
+                                      preview_visible_;
         if (!anything_visible)
             return;
         if (rml_manager_)
@@ -469,7 +567,10 @@ namespace lfs::vis::gui {
         const float mx = input.mouse_x;
         const float my = input.mouse_y;
 
-        rml_context_->ProcessMouseMove(static_cast<int>(mx), static_cast<int>(my), 0);
+        const int mods = gui::sdlModsToRml(input.key_ctrl, input.key_shift,
+                                           input.key_alt, input.key_super);
+
+        rml_context_->ProcessMouseMove(static_cast<int>(mx), static_cast<int>(my), mods);
 
         auto* hover = rml_context_->GetHoverElement();
         const bool over_interactive = hover && hover->GetTagName() != "body" &&
@@ -491,13 +592,13 @@ namespace lfs::vis::gui {
                 skip_next_click_ = false;
             } else {
                 if (input.mouse_clicked[0])
-                    rml_context_->ProcessMouseButtonDown(0, 0);
+                    rml_context_->ProcessMouseButtonDown(0, mods);
                 if (input.mouse_released[0])
-                    rml_context_->ProcessMouseButtonUp(0, 0);
+                    rml_context_->ProcessMouseButtonUp(0, mods);
                 if (input.mouse_clicked[1])
-                    rml_context_->ProcessMouseButtonDown(1, 0);
+                    rml_context_->ProcessMouseButtonDown(1, mods);
                 if (input.mouse_released[1])
-                    rml_context_->ProcessMouseButtonUp(1, 0);
+                    rml_context_->ProcessMouseButtonUp(1, mods);
             }
         }
 
@@ -513,8 +614,6 @@ namespace lfs::vis::gui {
                 rml_manager_ ? rml_manager_->getTextInputHandler() : nullptr;
             const bool composing = text_input_handler && text_input_handler->isComposing();
 
-            const int mods = gui::sdlModsToRml(input.key_ctrl, input.key_shift,
-                                               input.key_alt, input.key_super);
             for (int sc : input.keys_pressed) {
                 if (composing &&
                     (sc == SDL_SCANCODE_RETURN || sc == SDL_SCANCODE_KP_ENTER ||
@@ -590,63 +689,42 @@ namespace lfs::vis::gui {
 
     void RmlSequencerOverlay::render(int screen_w, int screen_h) {
         const bool anything_visible = context_menu_open_ || time_edit_active_ ||
-                                      focal_edit_active_ || edit_overlay_visible_;
+                                      focal_edit_active_ || edit_overlay_visible_ ||
+                                      preview_visible_;
         if (!anything_visible)
             return;
 
         if (!ensureContextReady())
             return;
 
-        if (!rml_manager_->shouldDeferFboUpdate(fbo_)) {
-            if (rml_manager_)
-                rml_manager_->trackContextFrame(rml_context_, 0, 0);
+        if (!rml_manager_ || !rml_manager_->getVulkanRenderInterface())
+            return;
 
-            const int w = screen_w;
-            const int h = screen_h;
+        rml_manager_->trackContextFrame(rml_context_, 0, 0);
 
-            if (w <= 0 || h <= 0)
-                return;
+        const int w = screen_w;
+        const int h = screen_h;
 
-            if (w != width_ || h != height_) {
-                width_ = w;
-                height_ = h;
-                rml_context_->SetDimensions(Rml::Vector2i(w, h));
-            }
+        if (w <= 0 || h <= 0)
+            return;
 
-            rml_context_->Update();
-
-            fbo_.ensure(w, h);
-            if (!fbo_.valid())
-                return;
-
-            auto* render_iface = rml_manager_->getRenderInterface();
-            assert(render_iface);
-            render_iface->SetViewport(w, h);
-
-            GLint prev_fbo = 0;
-            fbo_.bind(&prev_fbo);
-            render_iface->SetTargetFramebuffer(fbo_.fbo());
-
-            render_iface->BeginFrame();
-            rml_context_->Render();
-            render_iface->EndFrame();
-
-            render_iface->SetTargetFramebuffer(0);
-            fbo_.unbind(prev_fbo);
+        if (w != width_ || h != height_) {
+            width_ = w;
+            height_ = h;
+            rml_context_->SetDimensions(Rml::Vector2i(w, h));
         }
+
+        rml_context_->Update();
+        rml_manager_->queueVulkanContext(rml_context_, 0.0f, 0.0f, true);
     }
 
     void RmlSequencerOverlay::compositeToScreen(const int screen_w, const int screen_h) const {
-        const bool anything_visible = context_menu_open_ || time_edit_active_ ||
-                                      focal_edit_active_ || edit_overlay_visible_;
-        if (!anything_visible || !fbo_.valid() || screen_w <= 0 || screen_h <= 0)
-            return;
-        fbo_.blitToScreen(0.0f, 0.0f, static_cast<float>(screen_w), static_cast<float>(screen_h),
-                          screen_w, screen_h);
+        (void)screen_w;
+        (void)screen_h;
     }
 
-    void RmlSequencerOverlay::destroyGLResources() {
-        fbo_.destroy();
+    void RmlSequencerOverlay::destroyGraphicsResources() {
+        hidePreviewWindow();
     }
 
     std::optional<RmlSequencerOverlay::PendingAction> RmlSequencerOverlay::consumeAction() {

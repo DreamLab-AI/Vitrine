@@ -10,14 +10,55 @@
 #include "core/services.hpp"
 #include "core/tensor.hpp"
 #include "python/python_runtime.hpp"
+#include "rendering/vulkan_external_tensor.hpp"
 #include "training/training_setup.hpp"
+#include "visualizer/visualizer_impl.hpp"
+#include "window/vulkan_context.hpp"
+#include "window/window_manager.hpp"
+
+#include <algorithm>
 #include <cstring>
 #include <cuda_runtime.h>
+#include <format>
 #include <stdexcept>
+#include <utility>
 
 namespace lfs::vis {
 
     using namespace lfs::core::events;
+
+    namespace {
+        [[nodiscard]] lfs::core::SplatTensorAllocator makeVulkanTrainingTensorAllocator(VisualizerImpl* viewer) {
+            if (!viewer || !viewer->getWindowManager()) {
+                return {};
+            }
+            auto* const context = viewer->getWindowManager()->getVulkanContext();
+            if (!context || !context->externalMemoryInteropEnabled()) {
+                return {};
+            }
+
+            return [context](lfs::core::TensorShape shape,
+                             const size_t capacity,
+                             const lfs::core::DataType dtype,
+                             const std::string_view name) -> lfs::core::Tensor {
+                const std::string debug_name{name};
+                auto tensor = makeVulkanExternalTensor(
+                    *context,
+                    std::move(shape),
+                    dtype,
+                    capacity,
+                    debug_name.c_str());
+                if (!tensor) {
+                    throw lfs::core::TensorError(std::format(
+                        "Vulkan-external training tensor allocation failed for '{}': {}",
+                        debug_name,
+                        tensor.error()));
+                }
+                tensor->set_name(debug_name);
+                return std::move(*tensor);
+            };
+        }
+    } // namespace
 
     TrainerManager::TrainerManager() {
         setupEventHandlers();
@@ -25,15 +66,77 @@ namespace lfs::vis {
         LOG_DEBUG("TrainerManager created");
     }
 
+    lfs::core::SplatTensorAllocator TrainerManager::createTrainingSplatTensorAllocator(
+        const lfs::core::param::TrainingParameters& params,
+        const std::size_t min_capacity) {
+        splat_storage_.reset();
+        lfs::core::SplatTensorAllocator tensor_allocator;
+
+        const std::size_t configured_capacity =
+            params.optimization.max_cap > 0
+                ? static_cast<std::size_t>(params.optimization.max_cap)
+                : 0;
+        const std::size_t exportable_capacity = std::max(configured_capacity, min_capacity);
+        const int sh_degree = params.optimization.sh_degree;
+
+        VulkanContext* vk_ctx = nullptr;
+        if (viewer_ && viewer_->getWindowManager()) {
+            vk_ctx = viewer_->getWindowManager()->getVulkanContext();
+        }
+        const bool vulkan_interop_available =
+            vk_ctx && vk_ctx->externalMemoryInteropEnabled();
+
+        if (vulkan_interop_available && exportable_capacity > 0) {
+            auto storage_result =
+                lfs::core::SplatExportableStorage::create(exportable_capacity, sh_degree);
+            if (storage_result) {
+                splat_storage_ = std::move(*storage_result);
+                auto interop_alloc_result =
+                    makeSplatExportableInteropAllocator(*vk_ctx, *splat_storage_);
+                if (interop_alloc_result) {
+                    tensor_allocator = std::move(*interop_alloc_result);
+                    LOG_INFO("Training tensors share one CUDA-exportable VMM block "
+                             "imported into Vulkan (capacity={}, sh_degree={}, "
+                             "block={} MiB) — zero-copy viewer interop",
+                             exportable_capacity,
+                             sh_degree,
+                             splat_storage_->block->size >> 20);
+                } else {
+                    LOG_WARN("Exportable-interop allocator failed ({}); dropping storage "
+                             "and falling back to legacy Vulkan-external allocator",
+                             interop_alloc_result.error());
+                    splat_storage_.reset();
+                }
+            } else {
+                LOG_WARN("SplatExportableStorage creation failed ({}); falling back to "
+                         "legacy Vulkan-external allocator",
+                         storage_result.error());
+            }
+        }
+
+        if (!tensor_allocator) {
+            tensor_allocator = makeVulkanTrainingTensorAllocator(viewer_);
+            if (tensor_allocator) {
+                LOG_INFO("Training model tensors will use Vulkan-external CUDA storage");
+            }
+        }
+
+        return tensor_allocator;
+    }
+
     void TrainerManager::setupStateMachineCallbacks() {
         state_machine_.setCleanupCallback([this](const TrainingResources& resources) {
             cleanupTrainingResources(resources);
         });
 
-        state_machine_.setStateChangeCallback([this](TrainingState old_state, TrainingState new_state) {
+        state_machine_.setStateChangeCallback([this](TrainingState, TrainingState new_state) {
             // Emit events on state changes
             if (new_state == TrainingState::Idle) {
-                loss_buffer_.clear();
+                {
+                    std::lock_guard<std::mutex> lock(loss_buffer_mutex_);
+                    loss_buffer_.clear();
+                }
+                clearEvaluationMetrics();
                 last_error_.clear();
             }
         });
@@ -60,6 +163,7 @@ namespace lfs::vis {
         }
 
         if (trainer_) {
+            std::lock_guard<std::mutex> lock(trainer_lifetime_mutex_);
             trainer_->shutdown();
             trainer_.reset();
         }
@@ -96,6 +200,7 @@ namespace lfs::vis {
             pending_opt_params_ = params.optimization;
             pending_dataset_params_ = params.dataset;
 
+            std::lock_guard<std::mutex> lock(trainer_lifetime_mutex_);
             trainer_ = std::move(trainer);
             updateResourceTracking();
 
@@ -117,6 +222,7 @@ namespace lfs::vis {
             pending_opt_params_ = params.optimization;
             pending_dataset_params_ = params.dataset;
 
+            std::lock_guard<std::mutex> lock(trainer_lifetime_mutex_);
             trainer_ = std::move(trainer);
             updateResourceTracking();
             internal::TrainerReady{}.emit();
@@ -154,7 +260,10 @@ namespace lfs::vis {
         }
 
         // Destroy trainer - destructor handles cleanup
-        trainer_.reset();
+        {
+            std::lock_guard<std::mutex> lock(trainer_lifetime_mutex_);
+            trainer_.reset();
+        }
 
         // Transition to Idle
         updateResourceTracking();
@@ -181,6 +290,7 @@ namespace lfs::vis {
             return false;
         }
 
+        clearEvaluationMetrics();
         applyPendingParams();
 
         if (auto error = trainer_->getParams().validate(); !error.empty()) {
@@ -201,12 +311,45 @@ namespace lfs::vis {
         }
 
         if (trainer_->isInitialized()) {
+            const auto& params = trainer_->getParams();
+            auto* model = scene_ ? scene_->getTrainingModel() : nullptr;
+            const std::size_t model_size = model ? static_cast<std::size_t>(model->size()) : 0;
+            auto tensor_allocator = scene_ ? createTrainingSplatTensorAllocator(params, model_size)
+                                           : lfs::core::SplatTensorAllocator{};
+            const bool force_reallocation = splat_storage_.has_value();
+            if (scene_ && tensor_allocator) {
+                trainer_->setSplatTensorAllocator(tensor_allocator);
+                if (model) {
+                    if (auto result = lfs::training::migrateTrainingModelToAllocator(
+                            params, *model, tensor_allocator, force_reallocation);
+                        !result) {
+                        LOG_ERROR("Failed to migrate initialized training model: {}", result.error());
+                        last_error_ = result.error();
+                        state::TrainingCompleted{
+                            .iteration = getCurrentIteration(),
+                            .final_loss = 0.0f,
+                            .elapsed_seconds = 0.0f,
+                            .success = false,
+                            .user_stopped = false,
+                            .error = last_error_}
+                            .emit();
+                        if (!state_machine_.transitionToFinished(FinishReason::Error)) {
+                            LOG_WARN("Failed to transition to Finished(Error)");
+                        }
+                        return false;
+                    }
+                }
+            }
             LOG_DEBUG("Resuming from iteration {}", trainer_->get_current_iteration());
         } else {
             const auto& params = trainer_->getParams();
 
             if (scene_) {
-                if (auto result = lfs::training::initializeTrainingModel(params, *scene_); !result) {
+                auto tensor_allocator = createTrainingSplatTensorAllocator(params);
+                trainer_->setSplatTensorAllocator(tensor_allocator);
+                if (auto result = lfs::training::initializeTrainingModel(
+                        params, *scene_, std::move(tensor_allocator));
+                    !result) {
                     LOG_ERROR("Failed to initialize model: {}", result.error());
                     last_error_ = result.error();
 
@@ -228,6 +371,7 @@ namespace lfs::vis {
                     }
                     return false;
                 }
+                lfs::core::Tensor::log_storage_memory("After training model initialization");
             }
 
             if (auto result = trainer_->initialize(params); !result) {
@@ -252,6 +396,7 @@ namespace lfs::vis {
                 }
                 return false;
             }
+            lfs::core::Tensor::log_storage_memory("After trainer initialization");
 
             // Match headless mode: release init-time cached pool allocations before the
             // first training batch spins up image decoders and render workspaces.
@@ -371,12 +516,17 @@ namespace lfs::vis {
             trainer_->request_stop();
         }
 
-        if (training_thread_ && training_thread_->joinable()) {
+        const bool has_thread = training_thread_ && training_thread_->joinable();
+        if (has_thread) {
             training_thread_->request_stop();
         }
 
         state::TrainingStopped{.iteration = getCurrentIteration(), .user_requested = true}.emit();
         LOG_INFO("Training stop requested at iteration {}", getCurrentIteration());
+
+        if (!has_thread) {
+            handleTrainingComplete(true);
+        }
     }
 
     void TrainerManager::requestSaveCheckpoint() {
@@ -416,7 +566,7 @@ namespace lfs::vis {
     int TrainerManager::getTotalIterations() const {
         if (!trainer_)
             return 0;
-        return static_cast<int>(trainer_->getParams().optimization.iterations);
+        return trainer_->get_total_iterations();
     }
 
     int TrainerManager::getNumSplats() const {
@@ -491,6 +641,46 @@ namespace lfs::vis {
     std::deque<float> TrainerManager::getLossBuffer() const {
         std::lock_guard<std::mutex> lock(loss_buffer_mutex_);
         return loss_buffer_;
+    }
+
+    void TrainerManager::updatePSNR(float psnr) {
+        std::lock_guard<std::mutex> lock(psnr_buffer_mutex_);
+        psnr_buffer_.push_back(psnr);
+        while (psnr_buffer_.size() > static_cast<size_t>(MAX_PSNR_POINTS)) {
+            psnr_buffer_.pop_front();
+        }
+    }
+
+    std::deque<float> TrainerManager::getPSNRBuffer() const {
+        std::lock_guard<std::mutex> lock(psnr_buffer_mutex_);
+        return psnr_buffer_;
+    }
+
+    void TrainerManager::updateEvaluationMetrics(int iteration, float psnr, float ssim) {
+        updatePSNR(psnr);
+        setLastPSNR(psnr);
+        std::lock_guard<std::mutex> lock(eval_metrics_mutex_);
+        last_eval_metrics_ = EvaluationMetricsSnapshot{
+            .iteration = iteration,
+            .psnr = psnr,
+            .ssim = ssim};
+    }
+
+    std::optional<TrainerManager::EvaluationMetricsSnapshot> TrainerManager::getLastEvaluationMetrics() const {
+        std::lock_guard<std::mutex> lock(eval_metrics_mutex_);
+        return last_eval_metrics_;
+    }
+
+    void TrainerManager::clearEvaluationMetrics() {
+        {
+            std::lock_guard<std::mutex> lock(psnr_buffer_mutex_);
+            psnr_buffer_.clear();
+        }
+        {
+            std::lock_guard<std::mutex> lock(eval_metrics_mutex_);
+            last_eval_metrics_.reset();
+        }
+        last_psnr_.store(0.0f);
     }
 
     void TrainerManager::trainingThreadFunc(std::stop_token stop_token) {
@@ -599,6 +789,11 @@ namespace lfs::vis {
         state::TrainingProgress::when([this](const auto& event) {
             updateLoss(event.loss);
         });
+
+        // Listen for evaluation completed events - update PSNR buffer
+        state::EvaluationCompleted::when([this](const auto& event) {
+            updateEvaluationMetrics(event.iteration, event.psnr, event.ssim);
+        });
     }
 
     std::shared_ptr<const lfs::core::Camera> TrainerManager::getCamById(int camId) const {
@@ -623,6 +818,28 @@ namespace lfs::vis {
             return scene_->getAllCameras();
         }
         return {};
+    }
+
+    std::expected<lfs::training::Trainer::CameraMetricsSnapshot, std::string>
+    TrainerManager::computeCameraMetricsForCameraId(
+        const int camera_id,
+        const bool include_ssim,
+        const lfs::training::Trainer::CameraMetricsAppearanceConfig& appearance) const {
+        std::lock_guard<std::mutex> lock(trainer_lifetime_mutex_);
+
+        if (!trainer_) {
+            return std::unexpected("trainer unavailable");
+        }
+        if (!scene_) {
+            return std::unexpected("scene unavailable");
+        }
+
+        const auto cam = scene_->getCameraByUid(camera_id);
+        if (!cam) {
+            return std::unexpected(std::format("camera {} not found", camera_id));
+        }
+
+        return trainer_->computeCameraMetrics(*cam, include_ssim, appearance);
     }
 
     void TrainerManager::applyPendingParams() {

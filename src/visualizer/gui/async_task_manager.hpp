@@ -15,9 +15,11 @@
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <glm/glm.hpp>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -32,6 +34,8 @@ namespace lfs::vis {
 
     namespace gui {
 
+        struct VideoExportEnvironmentState;
+
         class LFS_VIS_API AsyncTaskManager {
         public:
             explicit AsyncTaskManager(VisualizerImpl* viewer);
@@ -41,10 +45,13 @@ namespace lfs::vis {
 
             void setupEvents();
             void pollImportCompletion();
+            [[nodiscard]] bool hasPendingMainThreadCompletions() const;
 
             // Export
             void performExport(lfs::core::ExportFormat format, const std::filesystem::path& path,
-                               const std::vector<std::string>& node_names, int sh_degree);
+                               const std::vector<std::string>& node_names, int sh_degree,
+                               const std::vector<float>& rad_lod_ratios = {},
+                               bool rad_flip_y = false);
             [[nodiscard]] bool isExporting() const { return export_state_.active.load(); }
             [[nodiscard]] float getExportProgress() const { return export_state_.progress.load(); }
             [[nodiscard]] std::string getExportStage() const {
@@ -104,7 +111,8 @@ namespace lfs::vis {
                 auto elapsed = std::chrono::steady_clock::now() - import_state_.completion_time;
                 return std::chrono::duration<float>(elapsed).count();
             }
-            void dismissImport() { import_state_.show_completion.store(false); }
+            void dismissImport();
+            void cancelImport();
 
             // Video export
             [[nodiscard]] bool isExportingVideo() const { return video_export_state_.active.load(); }
@@ -162,14 +170,37 @@ namespace lfs::vis {
             void cancelSplatSimplify();
 
         private:
+            struct ExportSplatSource {
+                const lfs::core::SplatData* data = nullptr;
+                glm::mat4 transform{1.0f};
+            };
+
             void startAsyncExport(lfs::core::ExportFormat format, const std::filesystem::path& path,
-                                  std::unique_ptr<lfs::core::SplatData> data);
+                                  std::vector<ExportSplatSource> splats,
+                                  int sh_degree,
+                                  bool borrow_single_identity,
+                                  std::shared_mutex* model_mutex,
+                                  std::vector<float> rad_lod_ratios,
+                                  bool rad_flip_y);
+            void startColmapExport(const std::filesystem::path& path);
             void startAsyncImport(const std::filesystem::path& path,
                                   const lfs::core::param::TrainingParameters& params);
             void checkAsyncImportCompletion();
             void applyLoadedDataToScene();
+            void applyAutoCropToLoadedScene();
             void startVideoExport(const std::filesystem::path& path,
                                   const io::video::VideoExportOptions& options);
+            void resetVideoExportEnvironmentState();
+            void cancelImportCompletionDismiss();
+            void scheduleImportCompletionDismiss();
+            void publishExportFailureState(lfs::core::ExportFormat format,
+                                           const std::filesystem::path& path,
+                                           std::string error);
+            void publishExportState();
+            void publishImportOverlayState();
+            void publishVideoExportOverlayState();
+            void publishMesh2SplatState();
+            void publishSplatSimplifyState();
 
             VisualizerImpl* viewer_;
 
@@ -181,6 +212,8 @@ namespace lfs::vis {
                 std::string stage;
                 std::string error;
                 std::filesystem::path path;
+                std::vector<float> rad_lod_ratios; // Custom LOD ratios for RAD export
+                bool rad_flip_y = false;           // Y-flip for RAD export (off by default)
                 mutable std::mutex mutex;
                 std::optional<std::jthread> thread;
             };
@@ -199,6 +232,7 @@ namespace lfs::vis {
                 std::optional<std::jthread> thread;
             };
             VideoExportState video_export_state_;
+            std::unique_ptr<VideoExportEnvironmentState> video_export_environment_state_;
 
             struct ImportState {
                 std::atomic<bool> active{false};
@@ -214,10 +248,13 @@ namespace lfs::vis {
                 size_t num_points{0};
                 bool success{false};
                 bool is_mesh{false};
+                std::atomic<bool> apply_auto_crop{false};
+                std::atomic<std::uint64_t> completion_generation{0};
                 std::chrono::steady_clock::time_point completion_time;
                 std::optional<lfs::io::LoadResult> load_result;
                 lfs::core::param::TrainingParameters params;
                 std::optional<std::jthread> thread;
+                std::optional<std::jthread> completion_dismiss_thread;
             };
             ImportState import_state_;
 
@@ -235,7 +272,7 @@ namespace lfs::vis {
             };
             Mesh2SplatState mesh2splat_state_;
 
-            void executeMesh2SplatOnGlThread();
+            void executeMesh2SplatOnGraphicsThread();
             void applyMesh2SplatResult();
 
             struct SplatSimplifyState {

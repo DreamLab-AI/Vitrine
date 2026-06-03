@@ -6,6 +6,7 @@
 #include "core/path_utils.hpp"
 #include "mcp_tools.hpp"
 
+#include <format>
 #include <utility>
 
 namespace lfs::mcp {
@@ -13,6 +14,8 @@ namespace lfs::mcp {
     namespace {
 
         constexpr std::string_view NO_MODEL_LOADED_ERROR = "No model loaded";
+
+        constexpr std::string_view kDefaultStrategyAlias = "default";
 
         McpToolMetadata command_metadata(const SharedSceneToolBackend& backend,
                                          std::string category,
@@ -38,6 +41,36 @@ namespace lfs::mcp {
             };
         }
 
+        std::expected<void, std::string> apply_dataset_load_arguments(
+            const json& args,
+            core::param::TrainingParameters& params) {
+            if (args.contains("images_folder"))
+                params.dataset.images = args["images_folder"].get<std::string>();
+            if (args.contains("max_iterations"))
+                params.optimization.iterations = args["max_iterations"].get<size_t>();
+            if (args.contains("output_path"))
+                params.dataset.output_path = args["output_path"].get<std::string>();
+            if (params.dataset.output_path.empty())
+                params.dataset.output_path = core::param::default_dataset_output_path(params.dataset.data_path);
+
+            if (!args.contains("strategy"))
+                return {};
+
+            const auto requested = args["strategy"].get<std::string>();
+            if (requested == kDefaultStrategyAlias) {
+                return {};
+            }
+
+            if (const auto canonical = core::param::canonical_strategy_name(requested); !canonical.empty()) {
+                params.optimization.strategy = std::string(canonical);
+                return {};
+            }
+
+            return std::unexpected(std::format(
+                "Invalid strategy '{}'. Use one of: default, mcmc, mrnf, igs+",
+                requested));
+        }
+
     } // namespace
 
     void register_shared_scene_tools(const SharedSceneToolBackend& backend) {
@@ -52,8 +85,9 @@ namespace lfs::mcp {
                     .properties = json{
                         {"path", json{{"type", "string"}, {"description", "Path to COLMAP dataset directory"}}},
                         {"images_folder", json{{"type", "string"}, {"description", "Images subfolder (default: images)"}}},
+                        {"output_path", json{{"type", "string"}, {"description", "Optional output directory for checkpoints and exports (default: <dataset>/output)"}}},
                         {"max_iterations", json{{"type", "integer"}, {"description", "Maximum training iterations (default: 30000)"}}},
-                        {"strategy", json{{"type", "string"}, {"enum", json::array({"mcmc", "default"})}, {"description", "Training strategy"}}}},
+                        {"strategy", json{{"type", "string"}, {"enum", json::array({"default", "mcmc", "mrnf", "igs+"})}, {"description", "Training strategy or 'default' to keep the built-in default"}}}},
                     .required = {"path"}},
                 .metadata = command_metadata(backend, "scene", true)},
             [backend](const json& args) -> json {
@@ -61,12 +95,9 @@ namespace lfs::mcp {
 
                 core::param::TrainingParameters params;
                 params.dataset.data_path = path;
-                if (args.contains("images_folder"))
-                    params.dataset.images = args["images_folder"].get<std::string>();
-                if (args.contains("max_iterations"))
-                    params.optimization.iterations = args["max_iterations"].get<size_t>();
-                if (args.contains("strategy"))
-                    params.optimization.strategy = args["strategy"].get<std::string>();
+                if (auto parsed = apply_dataset_load_arguments(args, params); !parsed) {
+                    return json{{"error", parsed.error()}};
+                }
 
                 auto result = backend.load_dataset(path, params);
                 if (!result)
@@ -75,6 +106,8 @@ namespace lfs::mcp {
                 json response{
                     {"success", true},
                     {"path", core::path_to_utf8(path)},
+                    {"output_path", core::path_to_utf8(params.dataset.output_path)},
+                    {"strategy", params.optimization.strategy},
                 };
                 if (backend.gaussian_count) {
                     if (const auto count = backend.gaussian_count(); count) {
@@ -166,11 +199,11 @@ namespace lfs::mcp {
         registry.register_tool(
             McpTool{
                 .name = "render.capture",
-                .description = "Capture the current scene. Omit camera_index to grab the live viewport; pass camera_index to render from a dataset camera.",
+                .description = "Capture the current scene. Omit camera_index to grab the live viewport region only; pass camera_index to render from a dataset camera.",
                 .input_schema = {
                     .type = "object",
                     .properties = json{
-                        {"camera_index", json{{"type", "integer"}, {"description", "Dataset camera index; omit to capture the live viewport"}}},
+                        {"camera_index", json{{"type", "integer"}, {"description", "Dataset camera index; omit to capture the live viewport region only"}}},
                         {"width", json{{"type", "integer"}, {"description", "Optional output width; preserves aspect ratio when height is omitted"}}},
                         {"height", json{{"type", "integer"}, {"description", "Optional output height; preserves aspect ratio when width is omitted"}}}},
                     .required = {}},

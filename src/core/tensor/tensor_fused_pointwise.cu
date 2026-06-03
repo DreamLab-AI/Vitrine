@@ -344,6 +344,11 @@ namespace lfs::core::tensor_ops {
                     }
                     output[seg] = acc;
                 }
+
+                // block_reduce_op uses block-local scratch. When one block loops over
+                // many segments, all threads must retire the current reduction before
+                // any thread starts reusing that scratch for the next segment.
+                __syncthreads();
             }
         }
 

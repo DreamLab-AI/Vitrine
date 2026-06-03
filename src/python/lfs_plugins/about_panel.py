@@ -5,6 +5,9 @@
 import lichtfeld as lf
 from .types import Panel
 
+__lfs_panel_classes__ = ["AboutPanel"]
+__lfs_panel_ids__ = ["lfs.about"]
+
 
 class AboutPanel(Panel):
     """Floating panel displaying application information."""
@@ -30,9 +33,6 @@ class AboutPanel(Panel):
         model.bind_func("commit", lambda: bi.commit)
         model.bind_func("build_type", lambda: bi.build_type)
         model.bind_func("platform", lambda: bi.platform)
-        model.bind_func("cuda_gl_interop",
-                         lambda: "@tr:about.interop.enabled" if bi.cuda_gl_interop
-                         else "@tr:about.interop.disabled")
         model.bind_func("repo_url", lambda: bi.repo_url)
         model.bind_func("website_url", lambda: bi.website_url)
 
@@ -48,3 +48,7 @@ class AboutPanel(Panel):
         website_el = doc.get_element_by_id("link-website")
         if website_el:
             website_el.add_event_listener("click", lambda _ev: lf.ui.open_url(lf.build_info.website_url))
+
+        commit_el = doc.get_element_by_id("commit-value")
+        if commit_el:
+            commit_el.add_event_listener("click", lambda _ev: lf.ui.set_clipboard_text(lf.build_info.commit))

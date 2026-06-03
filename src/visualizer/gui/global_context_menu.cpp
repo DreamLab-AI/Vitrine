@@ -2,17 +2,13 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
-// clang-format off
-#include <glad/glad.h>
-// clang-format on
-
 #include "gui/global_context_menu.hpp"
 #include "core/logger.hpp"
 #include "gui/gui_focus_state.hpp"
 #include "gui/panel_layout.hpp"
+#include "gui/rmlui/rml_document_utils.hpp"
 #include "gui/rmlui/rml_theme.hpp"
 #include "gui/rmlui/rmlui_manager.hpp"
-#include "gui/rmlui/rmlui_render_interface.hpp"
 #include "internal/resource_paths.hpp"
 #include "theme/theme.hpp"
 
@@ -21,6 +17,7 @@
 #include <RmlUi/Core.h>
 #include <RmlUi/Core/Element.h>
 #include <RmlUi/Core/Input.h>
+#include <algorithm>
 #include <cassert>
 #include <format>
 
@@ -36,7 +33,8 @@ namespace lfs::vis::gui {
         menu_model_ = {};
         items_.clear();
         pending_items_.clear();
-        fbo_.destroy();
+        if (mgr_ && mgr_->isInitialized())
+            mgr_->releaseCachedVulkanContext(direct_cache_);
         if (ctx_ && mgr_)
             mgr_->destroyContext("global_context_menu");
     }
@@ -68,7 +66,7 @@ namespace lfs::vis::gui {
 
         try {
             const auto rml_path = lfs::vis::getAssetPath("rmlui/global_context_menu.rml");
-            doc_ = ctx_->LoadDocument(rml_path.string());
+            doc_ = rml_documents::loadDocument(ctx_, rml_path);
             if (!doc_) {
                 LOG_ERROR("GlobalContextMenu: failed to load global_context_menu.rml");
                 return;
@@ -90,49 +88,94 @@ namespace lfs::vis::gui {
         }
     }
 
-    std::string GlobalContextMenu::generateThemeRCSS(const lfs::vis::Theme& t) const {
-        using rml_theme::colorToRml;
-        using rml_theme::colorToRmlAlpha;
-        const auto& p = t.palette;
+    void GlobalContextMenu::reloadResources() {
+        if (!ctx_)
+            return;
 
-        const auto surface = colorToRmlAlpha(p.surface, 0.95f);
-        const auto border = colorToRmlAlpha(p.border, 0.4f);
-        const auto text = colorToRml(p.text);
-        const auto text_dim = colorToRml(p.text_dim);
-        const int rounding = static_cast<int>(t.sizes.window_rounding);
+        hide();
+        open_ = false;
+        pending_open_ = false;
+        focus_first_item_ = false;
+        callback_ = {};
 
-        return std::format(
-            ".context-menu {{ background-color: {}; border-color: {}; border-radius: {}dp; }}\n"
-            ".context-menu-item {{ color: {}; }}\n"
-            ".context-menu-label {{ color: {}; }}\n"
-            ".context-menu-separator {{ background-color: {}; }}\n",
-            surface, border, rounding,
-            text, text_dim,
-            colorToRmlAlpha(p.border, 0.5f));
+        if (doc_) {
+            ctx_->UnloadDocument(doc_);
+            ctx_->Update();
+        }
+
+        doc_ = nullptr;
+        el_backdrop_ = nullptr;
+        el_ctx_menu_ = nullptr;
+        base_rcss_.clear();
+        has_theme_signature_ = false;
+        width_ = 0;
+        height_ = 0;
+        render_needed_ = true;
+        last_mouse_valid_ = false;
+        if (mgr_)
+            mgr_->releaseCachedVulkanContext(direct_cache_);
+
+        try {
+            const auto rml_path = lfs::vis::getAssetPath("rmlui/global_context_menu.rml");
+            doc_ = rml_documents::loadDocument(ctx_, rml_path);
+            if (!doc_) {
+                LOG_ERROR("GlobalContextMenu: failed to reload global_context_menu.rml");
+                return;
+            }
+            doc_->Show();
+
+            el_backdrop_ = doc_->GetElementById("backdrop");
+            el_ctx_menu_ = doc_->GetElementById("ctx-menu");
+
+            if (!el_backdrop_ || !el_ctx_menu_) {
+                LOG_ERROR("GlobalContextMenu: missing DOM elements after reload");
+                return;
+            }
+
+            el_backdrop_->AddEventListener(Rml::EventId::Click, &listener_);
+            el_ctx_menu_->AddEventListener(Rml::EventId::Click, &listener_);
+        } catch (const std::exception& e) {
+            LOG_ERROR("GlobalContextMenu: resource not found during reload: {}", e.what());
+            return;
+        }
+
+        menu_model_.DirtyVariable("items");
+        syncTheme();
     }
 
-    void GlobalContextMenu::syncTheme() {
+    void GlobalContextMenu::preload() {
+        initContext();
+        syncTheme();
+    }
+
+    bool GlobalContextMenu::syncTheme() {
         if (!doc_)
-            return;
+            return false;
 
         const std::size_t theme_signature = rml_theme::currentThemeSignature();
         if (has_theme_signature_ && theme_signature == last_theme_signature_)
-            return;
+            return false;
         last_theme_signature_ = theme_signature;
         has_theme_signature_ = true;
 
         if (base_rcss_.empty())
             base_rcss_ = rml_theme::loadBaseRCSS("rmlui/global_context_menu.rcss");
 
-        rml_theme::applyTheme(doc_, base_rcss_, rml_theme::generateAllThemeMedia([this](const auto& th) { return generateThemeRCSS(th); }));
+        rml_theme::applyTheme(doc_, base_rcss_, rml_theme::loadBaseRCSS("rmlui/global_context_menu.theme.rcss"));
+        render_needed_ = true;
+        return true;
     }
 
-    void GlobalContextMenu::request(std::vector<ContextMenuItem> items, float screen_x, float screen_y) {
+    void GlobalContextMenu::request(std::vector<ContextMenuItem> items, float screen_x, float screen_y,
+                                    ActionCallback callback) {
         pending_items_ = std::move(items);
+        callback_ = std::move(callback);
         pending_x_ = screen_x;
         pending_y_ = screen_y;
         pending_open_ = true;
         focus_first_item_ = true;
+        render_needed_ = true;
+        last_mouse_valid_ = false;
     }
 
     std::string GlobalContextMenu::pollResult() {
@@ -147,8 +190,11 @@ namespace lfs::vis::gui {
 
         open_ = false;
         focus_first_item_ = false;
+        callback_ = {};
         el_ctx_menu_->SetClass("visible", false);
         el_backdrop_->SetProperty("display", "none");
+        render_needed_ = true;
+        last_mouse_valid_ = false;
     }
 
     void GlobalContextMenu::focusFirstItem() {
@@ -172,12 +218,27 @@ namespace lfs::vis::gui {
         const float mx = input.mouse_x - input.screen_x;
         const float my = input.mouse_y - input.screen_y;
 
-        ctx_->ProcessMouseMove(static_cast<int>(mx), static_cast<int>(my), 0);
+        const int mods = sdlModsToRml(input.key_ctrl, input.key_shift,
+                                      input.key_alt, input.key_super);
 
-        if (input.mouse_clicked[0])
-            ctx_->ProcessMouseButtonDown(0, 0);
-        if (input.mouse_released[0])
-            ctx_->ProcessMouseButtonUp(0, 0);
+        const int rml_mx = static_cast<int>(mx);
+        const int rml_my = static_cast<int>(my);
+        if (!last_mouse_valid_ || rml_mx != last_mouse_x_ || rml_my != last_mouse_y_) {
+            ctx_->ProcessMouseMove(rml_mx, rml_my, mods);
+            last_mouse_valid_ = true;
+            last_mouse_x_ = rml_mx;
+            last_mouse_y_ = rml_my;
+            render_needed_ = true;
+        }
+
+        if (input.mouse_clicked[0]) {
+            ctx_->ProcessMouseButtonDown(0, mods);
+            render_needed_ = true;
+        }
+        if (input.mouse_released[0]) {
+            ctx_->ProcessMouseButtonUp(0, mods);
+            render_needed_ = true;
+        }
 
         if (input.mouse_clicked[1]) {
             hide();
@@ -188,20 +249,23 @@ namespace lfs::vis::gui {
         focus.want_capture_mouse = true;
         focus.want_capture_keyboard = true;
 
-        const int mods = sdlModsToRml(input.key_ctrl, input.key_shift, input.key_alt, input.key_super);
         for (const int sc : input.keys_pressed) {
             if (sc == SDL_SCANCODE_ESCAPE) {
                 hide();
                 return;
             }
             const auto rml_key = sdlScancodeToRml(static_cast<SDL_Scancode>(sc));
-            if (rml_key != Rml::Input::KI_UNKNOWN)
+            if (rml_key != Rml::Input::KI_UNKNOWN) {
                 ctx_->ProcessKeyDown(rml_key, mods);
+                render_needed_ = true;
+            }
         }
         for (const int sc : input.keys_released) {
             const auto rml_key = sdlScancodeToRml(static_cast<SDL_Scancode>(sc));
-            if (rml_key != Rml::Input::KI_UNKNOWN)
+            if (rml_key != Rml::Input::KI_UNKNOWN) {
                 ctx_->ProcessKeyUp(rml_key, mods);
+                render_needed_ = true;
+            }
         }
 
         if (input.mouse_clicked[0] || input.mouse_clicked[1])
@@ -225,11 +289,13 @@ namespace lfs::vis::gui {
             if (el_ctx_menu_ && el_backdrop_) {
                 items_ = pending_items_;
                 menu_model_.DirtyVariable("items");
-                el_ctx_menu_->SetProperty("left", std::format("{:.0f}dp", pending_x_ - screen_x));
-                el_ctx_menu_->SetProperty("top", std::format("{:.0f}dp", pending_y_ - screen_y));
+                const float dp = std::max(mgr_ ? mgr_->getDpRatio() : 1.0f, 1.0f);
+                el_ctx_menu_->SetProperty("left", std::format("{:.0f}dp", (pending_x_ - screen_x) / dp));
+                el_ctx_menu_->SetProperty("top", std::format("{:.0f}dp", (pending_y_ - screen_y) / dp));
                 el_ctx_menu_->SetClass("visible", true);
                 el_backdrop_->SetProperty("display", "block");
                 open_ = true;
+                render_needed_ = true;
             }
             pending_items_.clear();
         }
@@ -237,7 +303,7 @@ namespace lfs::vis::gui {
         if (!open_)
             return;
 
-        syncTheme();
+        const bool theme_changed = syncTheme();
 
         const int w = screen_w;
         const int h = screen_h;
@@ -245,47 +311,45 @@ namespace lfs::vis::gui {
         if (w <= 0 || h <= 0)
             return;
 
-        if (!mgr_->shouldDeferFboUpdate(fbo_)) {
-            if (w != width_ || h != height_) {
-                width_ = w;
-                height_ = h;
-                ctx_->SetDimensions(Rml::Vector2i(w, h));
-            }
+        if (!mgr_ || !mgr_->getVulkanRenderInterface())
+            return;
 
-            ctx_->Update();
-            if (focus_first_item_) {
-                focusFirstItem();
-                focus_first_item_ = false;
-                ctx_->Update();
-            }
-
-            fbo_.ensure(w, h);
-            if (!fbo_.valid())
-                return;
-
-            auto* render_iface = mgr_->getRenderInterface();
-            assert(render_iface);
-            render_iface->SetViewport(w, h);
-
-            GLint prev_fbo = 0;
-            fbo_.bind(&prev_fbo);
-            render_iface->SetTargetFramebuffer(fbo_.fbo());
-
-            render_iface->BeginFrame();
-            ctx_->Render();
-            render_iface->EndFrame();
-
-            render_iface->SetTargetFramebuffer(0);
-            fbo_.unbind(prev_fbo);
+        if (w != width_ || h != height_) {
+            width_ = w;
+            height_ = h;
+            ctx_->SetDimensions(Rml::Vector2i(w, h));
+            render_needed_ = true;
         }
 
-        if (fbo_.valid())
-            fbo_.blitToScreen(0.0f, 0.0f, static_cast<float>(screen_w), static_cast<float>(screen_h),
-                              screen_w, screen_h);
+        bool refresh_cache = render_needed_ || theme_changed || direct_cache_.texture == 0;
+        if (refresh_cache)
+            ctx_->Update();
+        if (focus_first_item_) {
+            focusFirstItem();
+            focus_first_item_ = false;
+            ctx_->Update();
+            refresh_cache = true;
+        }
+
+        render_needed_ = false;
+        mgr_->queueCachedVulkanContext({
+            .context = ctx_,
+            .cache = &direct_cache_,
+            .cache_width = w,
+            .cache_height = h,
+            .offset_x = 0.0f,
+            .offset_y = 0.0f,
+            .draw_width = static_cast<float>(w),
+            .draw_height = static_cast<float>(h),
+            .refresh = refresh_cache,
+            .foreground = true,
+            .clip = {},
+        });
     }
 
-    void GlobalContextMenu::destroyGLResources() {
-        fbo_.destroy();
+    void GlobalContextMenu::releaseRendererResources() {
+        if (mgr_)
+            mgr_->releaseCachedVulkanContext(direct_cache_);
     }
 
     void GlobalContextMenu::EventListener::ProcessEvent(Rml::Event& event) {
@@ -303,8 +367,13 @@ namespace lfs::vis::gui {
 
         const auto action = target->GetAttribute<Rml::String>("data-ctx-action", "");
         if (!action.empty()) {
-            owner->result_ = action;
+            auto callback = owner->callback_;
             owner->hide();
+            if (callback) {
+                callback(action);
+            } else {
+                owner->result_ = action;
+            }
         }
     }
 

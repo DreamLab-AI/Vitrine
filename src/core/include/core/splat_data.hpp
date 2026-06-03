@@ -8,10 +8,14 @@
 #include "core/point_cloud.hpp"
 #include "core/tensor.hpp"
 
+#include <atomic>
+#include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <functional>
 #include <glm/fwd.hpp>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace lfs::geometry {
@@ -23,6 +27,11 @@ namespace lfs::core {
     namespace param {
         struct TrainingParameters;
     }
+
+    using SplatTensorAllocator = std::function<Tensor(TensorShape shape,
+                                                      size_t capacity,
+                                                      DataType dtype,
+                                                      std::string_view name)>;
 
     /**
      * @brief Core data structure for Gaussian splat representation
@@ -38,6 +47,16 @@ namespace lfs::core {
      */
     class LFS_CORE_API SplatData {
     public:
+        enum class ShNLayout {
+            Canonical,
+            Swizzled
+        };
+
+        struct FrozenRange {
+            std::size_t start = 0;
+            std::size_t count = 0;
+        };
+
         SplatData() = default;
         ~SplatData();
 
@@ -57,7 +76,8 @@ namespace lfs::core {
                   Tensor scaling,
                   Tensor rotation,
                   Tensor opacity,
-                  float scene_scale);
+                  float scene_scale,
+                  ShNLayout shN_layout = ShNLayout::Canonical);
 
         // ========== Computed getters ==========
         Tensor get_means() const;
@@ -70,6 +90,7 @@ namespace lfs::core {
         int get_active_sh_degree() const { return _active_sh_degree; }
         int get_max_sh_degree() const { return _max_sh_degree; }
         float get_scene_scale() const { return _scene_scale; }
+        void set_scene_scale(float scene_scale) { _scene_scale = scene_scale; }
         unsigned long size() const { return static_cast<unsigned long>(_means.shape()[0]); }
 
         // ========== Raw tensor access (for optimization) ==========
@@ -87,16 +108,63 @@ namespace lfs::core {
         inline const Tensor& sh0() const { return _sh0; }
         inline Tensor& sh0_raw() { return _sh0; }
         inline const Tensor& sh0_raw() const { return _sh0; }
+
+        // shN is stored in vksplat-style float4-packed swizzled layout: 1D float tensor of
+        // sh_swizzled_float_count(N, max_rest) = ceil(N / SH_REORDER_SIZE)
+        //                                        * slots_for_max_rest
+        //                                        * SH_REORDER_SIZE * 4 floats.
+        // SH0 allocates no shN rest storage; SH1/SH2/SH3 allocate 3/6/12 float4 slots per
+        // primitive. sh_swizzled_index(p, k, max_rest) / shAt(p, k, slots) returns a
+        // float4-slot index (multiply by 4 for the float offset).
+        // shN() / shN_raw() return the swizzled tensor directly. Use shN_canonical() to
+        // materialise a deswizzled [N, K, 3] view for I/O / transforms / scene merge.
         inline Tensor& shN() { return _shN; }
         inline const Tensor& shN() const { return _shN; }
         inline Tensor& shN_raw() { return _shN; }
         inline const Tensor& shN_raw() const { return _shN; }
+
+        // Materialise a deswizzled [N, K, 3] copy of resident shN storage where
+        // K = sh_rest_coeffs of the max SH degree. Always allocates a new tensor — not a view.
+        Tensor shN_canonical() const;
+
+        // Host-side variant for export/checkpoint paths. Copies the resident swizzled buffer
+        // to CPU first and unpacks there, avoiding a full canonical SH allocation on CUDA.
+        Tensor shN_canonical_cpu() const;
+
+        // Replace _shN with the swizzled form of a canonical-layout source tensor.
+        // `canonical` may be [N, K, 3] or [N, K*3]; K may be 0 for SH degree 0. The
+        // swizzled buffer is allocated/resized to fit N with optional `capacity`.
+        void shN_set_from_canonical(const Tensor& canonical, size_t capacity = 0);
+
+        // Number of "rest" SH coefficients implied by the current active SH degree
+        // (0 / 3 / 8 / 15 for degree 0 / 1 / 2 / 3).
+        size_t active_sh_coeffs_rest() const;
+
+        // Number of resident "rest" SH coefficients implied by the current max SH degree.
+        size_t max_sh_coeffs_rest() const;
 
         // ========== Soft deletion (for undo/redo crop support) ==========
         Tensor& deleted() { return _deleted; }
         [[nodiscard]] const Tensor& deleted() const { return _deleted; }
         [[nodiscard]] bool has_deleted_mask() const { return _deleted.is_valid(); }
         [[nodiscard]] unsigned long visible_count() const;
+
+        // Cached count of deleted gaussians, refreshed by the owner (trainer) on its
+        // own thread/stream via refresh_deleted_count(). Lets other threads (e.g. the
+        // Vulkan viewer) decide whether the soft-delete path is needed with a plain
+        // atomic read — no GPU reduction on the shared mask, which would race the
+        // strategy's writes and can deadlock against the render interop handshake.
+        [[nodiscard]] std::size_t deleted_count() const {
+            return _deleted_count.load(std::memory_order_relaxed);
+        }
+        void refresh_deleted_count();
+
+        [[nodiscard]] const std::vector<FrozenRange>& frozen_ranges() const { return _frozen_ranges; }
+        [[nodiscard]] bool has_frozen_ranges() const { return !_frozen_ranges.empty(); }
+        void set_frozen_ranges(std::vector<FrozenRange> ranges) { _frozen_ranges = std::move(ranges); }
+        void clear_frozen_ranges() { _frozen_ranges.clear(); }
+        void remap_frozen_ranges_after_keep(size_t old_size, const std::vector<int>& kept_old_indices);
+        void remap_frozen_ranges_after_keep(size_t old_size, const std::vector<int64_t>& kept_old_indices);
 
         // Mark gaussians as deleted, returns previous state for undo
         Tensor soft_delete(const Tensor& mask);
@@ -114,11 +182,20 @@ namespace lfs::core {
         // ========== SH degree management ==========
         void increment_sh_degree();
         void set_active_sh_degree(int sh_degree);
-        void set_max_sh_degree(int sh_degree) { _max_sh_degree = sh_degree; }
+        void set_max_sh_degree(int sh_degree);
+        bool set_sh_degree(int sh_degree);
 
         // ========== Serialization ==========
         void serialize(std::ostream& os) const;
-        void deserialize(std::istream& is);
+        void deserialize(std::istream& is, SplatTensorAllocator tensor_allocator = {});
+
+        // Allocator used to back the parameter tensors (e.g. Vulkan-external interop
+        // storage). Retained so edits that rebuild tensors (apply_deleted) can keep
+        // them in the same storage the renderer requires, instead of falling back to
+        // the default device allocator.
+        void set_tensor_allocator(SplatTensorAllocator allocator) {
+            _tensor_allocator = std::move(allocator);
+        }
 
     public:
         // Holds the magnitude of the screen space gradient (used for densification)
@@ -139,6 +216,13 @@ namespace lfs::core {
 
         // Soft deletion mask: bool tensor [N], true = hidden from rendering
         Tensor _deleted;
+        // Cached nonzero count of _deleted; see refresh_deleted_count(). Atomic so
+        // the render thread can read it without a data race on the writer.
+        std::atomic<std::size_t> _deleted_count{0};
+
+        // Backing allocator for parameter tensors (see set_tensor_allocator).
+        SplatTensorAllocator _tensor_allocator;
+        std::vector<FrozenRange> _frozen_ranges;
 
         // Allow free functions in splat_data_transform.cpp to access private members
         friend LFS_CORE_API SplatData& transform(SplatData&, const glm::mat4&);
@@ -161,6 +245,7 @@ namespace lfs::core {
         const param::TrainingParameters& params,
         Tensor scene_center,
         const PointCloud& point_cloud,
-        int capacity = 0);
+        int capacity = 0,
+        SplatTensorAllocator tensor_allocator = {});
 
 } // namespace lfs::core

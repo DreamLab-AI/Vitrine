@@ -24,6 +24,8 @@ namespace lfs::vis {
         int width;
         int height;
         float fov;
+        bool orthographic = false;
+        float ortho_scale = 100.0f;
     };
 
     struct SetViewParams {
@@ -33,6 +35,7 @@ namespace lfs::vis {
     };
 
     using SetViewCallback = std::function<void(const SetViewParams&)>;
+    using SetViewForPanelCallback = std::function<void(SplitViewPanelId, const SetViewParams&)>;
     using SetFovCallback = std::function<void(float)>;
 
     struct ViewportRender {
@@ -41,19 +44,24 @@ namespace lfs::vis {
     };
 
     using GetViewCallback = std::function<std::optional<ViewInfo>()>;
+    using GetViewForPanelCallback = std::function<std::optional<ViewInfo>(SplitViewPanelId)>;
     using GetViewportRenderCallback = std::function<std::optional<ViewportRender>()>;
     using CaptureViewportRenderCallback = std::function<std::optional<ViewportRender>()>;
 
     LFS_VIS_API void set_view_callback(GetViewCallback callback);
+    LFS_VIS_API void set_view_for_panel_callback(GetViewForPanelCallback callback);
     LFS_VIS_API void set_viewport_render_callback(GetViewportRenderCallback callback);
     LFS_VIS_API void set_capture_viewport_render_callback(CaptureViewportRenderCallback callback);
     [[nodiscard]] LFS_VIS_API std::optional<ViewInfo> get_current_view_info();
+    [[nodiscard]] LFS_VIS_API std::optional<ViewInfo> get_view_info_for_panel(SplitViewPanelId panel);
     [[nodiscard]] LFS_VIS_API std::optional<ViewportRender> get_viewport_render();
     [[nodiscard]] LFS_VIS_API std::optional<ViewportRender> capture_viewport_render();
 
     LFS_VIS_API void set_set_view_callback(SetViewCallback callback);
+    LFS_VIS_API void set_set_view_for_panel_callback(SetViewForPanelCallback callback);
     LFS_VIS_API void set_set_fov_callback(SetFovCallback callback);
     LFS_VIS_API void apply_set_view(const SetViewParams& params);
+    LFS_VIS_API void apply_set_view_for_panel(SplitViewPanelId panel, const SetViewParams& params);
     LFS_VIS_API void apply_set_fov(float fov_degrees);
 
     struct RenderSettingsProxy {
@@ -63,6 +71,7 @@ namespace lfs::vis {
         bool mip_filter = false;
         int sh_degree = 3;
         float render_scale = 1.0f;
+        int camera_metrics_mode = 0;
         bool show_crop_box = false;
         bool use_crop_box = false;
         bool show_ellipsoid = false;
@@ -72,6 +81,11 @@ namespace lfs::vis {
         bool hide_outside_depth_box = false;
         bool crop_filter_for_selection = false;
         std::array<float, 3> background_color{0.0f, 0.0f, 0.0f};
+        int environment_mode = 0;
+        std::string environment_map_path{
+            std::string(kDefaultEnvironmentMapPath)};
+        float environment_exposure = 0.0f;
+        float environment_rotation_degrees = 0.0f;
         bool show_coord_axes = false;
         float axes_size = 2.0f;
         std::array<bool, 3> axes_visibility = {true, true, true};
@@ -90,6 +104,7 @@ namespace lfs::vis {
         bool show_pivot = false;
         int split_view_mode = 0;
         float split_position = 0.5f;
+        int raster_backend = 2;
         bool gut = false;
         bool equirectangular = false;
         bool orthographic = false;
@@ -117,6 +132,8 @@ namespace lfs::vis {
         bool depth_filter_enabled = false;
         std::array<float, 3> depth_filter_min{-50.0f, -10000.0f, 0.0f};
         std::array<float, 3> depth_filter_max{50.0f, 10000.0f, 100.0f};
+        std::array<float, 4> depth_filter_rotation{1.0f, 0.0f, 0.0f, 0.0f};
+        std::array<float, 3> depth_filter_translation{0.0f, 0.0f, 0.0f};
     };
 
     using GetRenderSettingsCallback = std::function<std::optional<RenderSettingsProxy>()>;

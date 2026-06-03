@@ -5,12 +5,16 @@
 #pragma once
 
 #include "geometry/euclidean_transform.hpp"
+#include "rendering/frame_contract.hpp"
 #include "rendering/render_constants.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <glm/glm.hpp>
+#include <optional>
 #include <string>
+#include <string_view>
 
 namespace lfs::vis {
 
@@ -27,6 +31,14 @@ namespace lfs::vis {
         Left = 0,
         Right = 1
     };
+
+    enum class EnvironmentBackgroundMode {
+        SolidColor = 0,
+        Equirectangular = 1,
+    };
+
+    inline constexpr std::string_view kDefaultEnvironmentMapPath =
+        "environments/kloofendal_48d_partly_cloudy_puresky_1k.hdr";
 
     [[nodiscard]] inline bool splitViewEnabled(const SplitViewMode mode) {
         return mode != SplitViewMode::Disabled;
@@ -94,7 +106,8 @@ namespace lfs::vis {
         Rectangle,
         Polygon,
         Lasso,
-        Rings
+        Rings,
+        Color
     };
 
     struct PPISPOverrides {
@@ -135,6 +148,12 @@ namespace lfs::vis {
     };
 
     struct RenderSettings {
+        enum class CameraMetricsMode {
+            Off = 0,
+            PSNR = 1,
+            PSNRSSIM = 2,
+        };
+
         // Core rendering settings
         float focal_length_mm = lfs::rendering::DEFAULT_FOCAL_LENGTH_MM;
         float scaling_modifier = 1.0f;
@@ -142,6 +161,7 @@ namespace lfs::vis {
         bool mip_filter = false;
         int sh_degree = 3;
         float render_scale = 1.0f; // Viewer resolution scale (0.25-1.0), does not affect training
+        CameraMetricsMode camera_metrics_mode = CameraMetricsMode::Off;
 
         // Crop box (data stored in scene graph CropBoxData, these are UI toggles only)
         bool show_crop_box = false;
@@ -163,6 +183,10 @@ namespace lfs::vis {
 
         // Background
         glm::vec3 background_color = glm::vec3(0.0f, 0.0f, 0.0f);
+        EnvironmentBackgroundMode environment_mode = EnvironmentBackgroundMode::SolidColor;
+        std::string environment_map_path = std::string(kDefaultEnvironmentMapPath);
+        float environment_exposure = 0.0f;
+        float environment_rotation_degrees = 0.0f;
 
         // Coordinate axes
         bool show_coord_axes = false;
@@ -197,10 +221,12 @@ namespace lfs::vis {
         float split_position = 0.5f;
         size_t split_view_offset = 0;
 
+        lfs::rendering::GaussianRasterBackend raster_backend = lfs::rendering::GaussianRasterBackend::ThreeDgs;
         bool gut = false;
         bool equirectangular = false;
         bool orthographic = false;
         float ortho_scale = 100.0f; // Pixels per world unit (larger = more zoomed in)
+        bool depth_view = false;
 
         // Selection colors (RGB: committed=219,83,83 preview=0,222,76 center=0,154,187)
         glm::vec3 selection_color_committed{0.859f, 0.325f, 0.325f};
@@ -228,6 +254,25 @@ namespace lfs::vis {
         lfs::geometry::EuclideanTransform depth_filter_transform;
     };
 
+    inline void enforceProjectionBackend(RenderSettings& settings) {
+        if (!settings.equirectangular) {
+            return;
+        }
+        settings.raster_backend = lfs::rendering::GaussianRasterBackend::ThreeDgut;
+        settings.gut = true;
+    }
+
+    [[nodiscard]] inline bool environmentBackgroundEnabled(const RenderSettings& settings) {
+        return settings.environment_mode == EnvironmentBackgroundMode::Equirectangular &&
+               !settings.environment_map_path.empty();
+    }
+
+    [[nodiscard]] inline bool environmentBackgroundUsesTransparentViewerCompositing(
+        const RenderSettings& settings) {
+        return environmentBackgroundEnabled(settings) &&
+               !splitViewEnabled(settings.split_view_mode);
+    }
+
     struct SplitViewInfo {
         bool enabled = false;
         std::string mode_label;
@@ -240,15 +285,26 @@ namespace lfs::vis {
         float x, y, width, height;
     };
 
+    struct GTRenderCamera {
+        glm::mat3 rotation{1.0f};
+        glm::vec3 translation{0.0f};
+        std::optional<lfs::rendering::CameraIntrinsics> intrinsics;
+        bool equirectangular = false;
+    };
+
     struct GTComparisonContext {
-        unsigned int gt_texture_id = 0;
+        uint64_t gt_image_handle = 0;
+        int camera_id = -1;
         glm::ivec2 dimensions{0, 0};
         glm::ivec2 gpu_aligned_dims{0, 0};
         glm::vec2 render_texcoord_scale{1.0f, 1.0f};
         glm::vec2 gt_texcoord_scale{1.0f, 1.0f};
-        bool gt_needs_flip = false;
+        lfs::rendering::TextureOrigin gt_texture_origin =
+            lfs::rendering::TextureOrigin::BottomLeft;
+        glm::mat4 scene_transform{1.0f};
+        std::optional<GTRenderCamera> render_camera;
 
-        [[nodiscard]] bool valid() const { return gt_texture_id != 0 && dimensions.x > 0 && dimensions.y > 0; }
+        [[nodiscard]] bool valid() const { return gt_image_handle != 0 && dimensions.x > 0 && dimensions.y > 0; }
     };
 
 } // namespace lfs::vis

@@ -12,19 +12,25 @@
 
     <!-- Filter / Sort controls -->
     <div class="mp-controls">
-      <span class="text-disabled">@tr:plugin_marketplace.filter_label</span>
-      <select data-value="filter_idx" class="mp-select">
-        <option value="0">@tr:plugin_marketplace.filter.all</option>
-        <option value="1">@tr:plugin_marketplace.filter.installed</option>
-        <option value="2">@tr:plugin_marketplace.filter.not_installed</option>
-      </select>
-      <span class="text-disabled mp-sort-label">@tr:plugin_marketplace.sort_label</span>
-      <select data-value="sort_idx" class="mp-select-sort">
-        <option value="0">@tr:plugin_marketplace.sort.popularity_desc</option>
-        <option value="1">@tr:plugin_marketplace.sort.popularity_asc</option>
-        <option value="2">@tr:plugin_marketplace.sort.name_asc</option>
-        <option value="3">@tr:plugin_marketplace.sort.name_desc</option>
-      </select>
+      <div class="mp-controls-main">
+        <span class="text-disabled">@tr:plugin_marketplace.filter_label</span>
+        <select data-value="filter_idx" class="mp-select">
+          <option value="0">@tr:plugin_marketplace.filter.all</option>
+          <option value="1">@tr:plugin_marketplace.filter.installed</option>
+          <option value="2">@tr:plugin_marketplace.filter.not_installed</option>
+        </select>
+        <span class="text-disabled mp-sort-label">@tr:plugin_marketplace.sort_label</span>
+        <select data-value="sort_idx" class="mp-select-sort">
+          <option value="0">@tr:plugin_marketplace.sort.popularity_desc</option>
+          <option value="1">@tr:plugin_marketplace.sort.popularity_asc</option>
+          <option value="2">@tr:plugin_marketplace.sort.name_asc</option>
+          <option value="3">@tr:plugin_marketplace.sort.name_desc</option>
+        </select>
+      </div>
+      <div class="mp-view-toggle">
+        <button id="view-cards-btn" type="button" class="btn btn--secondary mp-view-btn" data-event-click="view_cards"><span class="mp-icon-grid"><span></span><span></span><span></span><span></span></span></button>
+        <button id="view-list-btn" type="button" class="btn btn--secondary mp-view-btn selected" data-event-click="view_list"><span class="mp-icon-list"><span></span><span></span><span></span></span></button>
+      </div>
     </div>
 
     <!-- Manual URL install -->
@@ -64,7 +70,7 @@
       <span class="text-disabled">@tr:plugin_marketplace.edit_list_hint</span>
     </div>
 
-    <!-- Card grid (rendered dynamically by the panel controller) -->
+    <!-- Marketplace results (card or list layout, rendered dynamically by the panel controller) -->
     <div id="card-grid" class="card-grid"></div>
   </div>
 

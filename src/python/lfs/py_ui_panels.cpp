@@ -460,10 +460,10 @@ namespace lfs::python {
             panel_id = get_class_id(panel_class);
         }
 
-        if (on_gl_thread()) {
+        if (on_graphics_thread()) {
             gui::PanelRegistry::instance().unregister_panel(panel_id);
         } else {
-            schedule_gl_callback([id = panel_id]() {
+            schedule_graphics_callback([id = panel_id]() {
                 gui::PanelRegistry::instance().unregister_panel(id);
             });
         }
@@ -472,10 +472,10 @@ namespace lfs::python {
 
     void PyPanelRegistry::unregister_all() {
         std::lock_guard lock(mutex_);
-        if (on_gl_thread()) {
+        if (on_graphics_thread()) {
             gui::PanelRegistry::instance().unregister_all_non_native();
         } else {
-            schedule_gl_callback([]() {
+            schedule_graphics_callback([]() {
                 gui::PanelRegistry::instance().unregister_all_non_native();
             });
         }
@@ -485,6 +485,11 @@ namespace lfs::python {
     void PyPanelRegistry::unregister_for_module(const std::string& prefix) {
         std::lock_guard lock(mutex_);
 
+        if (prefix.empty() || prefix == "lfs_plugins") {
+            LOG_WARN("Refusing to unregister panels for broad module prefix '{}'", prefix);
+            return;
+        }
+
         std::vector<std::string> to_remove;
         for (const auto& [panel_id, entry] : panels_) {
             if (entry.module_prefix == prefix || entry.module_prefix.starts_with(prefix + ".")) {
@@ -493,10 +498,10 @@ namespace lfs::python {
         }
 
         for (const auto& panel_id : to_remove) {
-            if (on_gl_thread()) {
+            if (on_graphics_thread()) {
                 gui::PanelRegistry::instance().unregister_panel(panel_id);
             } else {
-                schedule_gl_callback([id = panel_id]() {
+                schedule_graphics_callback([id = panel_id]() {
                     gui::PanelRegistry::instance().unregister_panel(id);
                 });
             }
@@ -512,6 +517,7 @@ namespace lfs::python {
             .value("VIEWPORT_OVERLAY", PanelSpace::ViewportOverlay)
             .value("MAIN_PANEL_TAB", PanelSpace::MainPanelTab)
             .value("SCENE_HEADER", PanelSpace::SceneHeader)
+            .value("BOTTOM_DOCK", PanelSpace::BottomDock)
             .value("STATUS_BAR", PanelSpace::StatusBar);
         nb::enum_<PanelHeightMode>(m, "PanelHeightMode")
             .value("FILL", PanelHeightMode::Fill)

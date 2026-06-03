@@ -4,12 +4,15 @@
 
 #pragma once
 
-#include "gui/rmlui/rml_fbo.hpp"
+#include "gui/rmlui/rmlui_manager.hpp"
+
 #include <RmlUi/Core/DataModelHandle.h>
 #include <RmlUi/Core/EventListener.h>
 #include <core/export.hpp>
 #include <cstddef>
+#include <functional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Rml {
@@ -37,24 +40,30 @@ namespace lfs::vis::gui {
 
     class LFS_VIS_API GlobalContextMenu {
     public:
+        using ActionCallback = std::function<void(std::string_view)>;
+
         explicit GlobalContextMenu(RmlUIManager* mgr);
         ~GlobalContextMenu();
 
         GlobalContextMenu(const GlobalContextMenu&) = delete;
         GlobalContextMenu& operator=(const GlobalContextMenu&) = delete;
 
-        void request(std::vector<ContextMenuItem> items, float screen_x, float screen_y);
+        void request(std::vector<ContextMenuItem> items, float screen_x, float screen_y,
+                     ActionCallback callback = {});
         std::string pollResult();
         [[nodiscard]] bool isOpen() const { return open_ || pending_open_; }
+        [[nodiscard]] bool hasPendingRenderWork() const { return open_ || pending_open_; }
+        [[nodiscard]] bool needsAnimationFrame() const { return pending_open_; }
 
         void processInput(const PanelInputState& input);
         void render(int screen_w, int screen_h, float screen_x, float screen_y);
-        void destroyGLResources();
+        void releaseRendererResources();
+        void reloadResources();
+        void preload();
 
     private:
         void initContext();
-        void syncTheme();
-        std::string generateThemeRCSS(const lfs::vis::Theme& t) const;
+        bool syncTheme();
         void hide();
         void focusFirstItem();
 
@@ -67,7 +76,6 @@ namespace lfs::vis::gui {
         Rml::Context* ctx_ = nullptr;
         Rml::ElementDocument* doc_ = nullptr;
         Rml::DataModelHandle menu_model_;
-        RmlFBO fbo_;
         EventListener listener_;
 
         Rml::Element* el_backdrop_ = nullptr;
@@ -78,6 +86,7 @@ namespace lfs::vis::gui {
         bool focus_first_item_ = false;
         std::vector<ContextMenuItem> items_;
         std::vector<ContextMenuItem> pending_items_;
+        ActionCallback callback_;
         float pending_x_ = 0;
         float pending_y_ = 0;
         std::string result_;
@@ -87,6 +96,11 @@ namespace lfs::vis::gui {
         bool has_theme_signature_ = false;
         int width_ = 0;
         int height_ = 0;
+        CachedVulkanContextRender direct_cache_;
+        bool render_needed_ = true;
+        bool last_mouse_valid_ = false;
+        int last_mouse_x_ = 0;
+        int last_mouse_y_ = 0;
     };
 
 } // namespace lfs::vis::gui

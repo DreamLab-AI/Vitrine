@@ -6,6 +6,8 @@ import lichtfeld as lf
 from .types import Operator
 from .layouts.menus import register_menu, menu_operator, menu_separator
 
+__lfs_menu_classes__ = ["HelpMenu"]
+
 
 class GettingStartedOperator(Operator):
     label = "menu.help.getting_started"
@@ -18,10 +20,11 @@ class GettingStartedOperator(Operator):
 
 class SetDefaultAppOperator(Operator):
     label = "file_association.menu_register"
-    description = "Register as default viewer for splat files (.ply, .sog, .spz, .usd, .usda, .usdc, .usdz)"
+    description = "Open Windows default app settings for splat files (.ply, .sog, .spz, .usd, .usda, .usdc, .usdz)"
 
     def execute(self, context) -> set:
         lf.ui.register_file_associations()
+        lf.ui.open_file_association_settings()
         return {"FINISHED"}
 
 
@@ -55,10 +58,7 @@ class HelpMenu:
         items = [menu_operator(GettingStartedOperator)]
         if lf.ui.is_windows_platform():
             items.append(menu_separator())
-            if lf.ui.are_file_associations_registered():
-                items.append(menu_operator(UnsetDefaultAppOperator))
-            else:
-                items.append(menu_operator(SetDefaultAppOperator))
+            items.append(menu_operator(SetDefaultAppOperator))
         items.append(menu_separator())
         items.append(menu_operator(AboutOperator))
         return items

@@ -3,10 +3,12 @@
 
 #pragma once
 
-#include "gui/rmlui/rml_fbo.hpp"
+#include "gui/rmlui/rml_tooltip.hpp"
+#include "gui/rmlui/rmlui_manager.hpp"
 #include "gui/sequencer_ui_state.hpp"
 #include "sequencer_controller.hpp"
 #include <RmlUi/Core/EventListener.h>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <set>
@@ -20,10 +22,13 @@ namespace Rml {
 } // namespace Rml
 
 namespace lfs::vis::gui {
+    class FilmStripRenderer;
     class RmlUIManager;
 } // namespace lfs::vis::gui
 
 namespace lfs::vis {
+    class RenderingManager;
+    class SceneManager;
 
     struct Theme;
 
@@ -115,14 +120,23 @@ namespace lfs::vis {
         RmlSequencerPanel(const RmlSequencerPanel&) = delete;
         RmlSequencerPanel& operator=(const RmlSequencerPanel&) = delete;
 
-        void render(float viewport_x, float viewport_width, float viewport_y_bottom,
-                    const PanelInputState& input);
+        void render(float panel_x, float panel_y, float panel_width, float total_height,
+                    const PanelInputState& input,
+                    RenderingManager* rm, SceneManager* sm,
+                    gui::FilmStripRenderer& film_strip);
+        void compositeToScreen(int screen_w, int screen_h);
+        void clearPendingComposite();
 
         void setFilmStripAttached(bool attached) { film_strip_attached_ = attached; }
+        void setFloating(bool floating) { floating_ = floating; }
+        [[nodiscard]] bool isFloating() const { return floating_; }
 
         [[nodiscard]] bool consumeSavePathRequest();
         [[nodiscard]] bool consumeLoadPathRequest();
         [[nodiscard]] bool consumeExportRequest();
+        [[nodiscard]] bool consumeLoadSequenceRequest();
+        [[nodiscard]] bool consumeDockToggleRequest();
+        [[nodiscard]] bool consumeClosePanelRequest();
         [[nodiscard]] bool consumeClearRequest();
 
         void openFocalLengthEdit(size_t index, float current_focal_mm);
@@ -135,6 +149,7 @@ namespace lfs::vis {
         [[nodiscard]] float cachedPanelX() const { return cached_panel_x_; }
         [[nodiscard]] float cachedPanelY() const { return cached_panel_y_; }
         [[nodiscard]] float cachedPanelWidth() const { return cached_panel_width_; }
+        [[nodiscard]] float cachedHeight() const { return cached_height_; }
         [[nodiscard]] float cachedDpRatio() const { return cached_dp_ratio_; }
         [[nodiscard]] float cachedPlayheadScreenX() const { return cached_playhead_screen_x_; }
         [[nodiscard]] bool isPlayheadInRange() const { return playhead_in_range_; }
@@ -146,23 +161,36 @@ namespace lfs::vis {
         [[nodiscard]] TimeEditRequest consumeTimeEditRequest();
         [[nodiscard]] FocalEditRequest consumeFocalEditRequest();
 
-        [[nodiscard]] std::string consumeTooltip();
-
-        void destroyGLResources();
+        void destroyGraphicsResources();
+        void reloadResources();
 
     private:
         void initContext(int width, int height);
 
         void syncTheme();
-        std::string generateThemeRCSS(const lfs::vis::Theme& t) const;
 
+        void clearElementCache();
         void cacheElements();
         void updateButtonStates();
         void updatePlayhead();
         void updateTimeDisplay();
         void updateTransportSettings();
         void rebuildKeyframes();
+        void rebuildPlySequenceClip();
         void rebuildRuler();
+        void rebuildEasingStripe(float timeline_x, float timeline_width);
+        void rebuildFilmStrip(float timeline_x, float timeline_width,
+                              float strip_y, const PanelInputState& input,
+                              RenderingManager* rm, SceneManager* sm,
+                              gui::FilmStripRenderer& film_strip);
+        void rebuildFilmStripDecor(float timeline_width);
+        void ensureFilmThumbPool(size_t count);
+        void clearFilmThumbPool();
+        void unregisterFilmStripSources();
+        void updateTimelineGuides(float timeline_x, float timeline_width,
+                                  const gui::FilmStripRenderer& film_strip);
+        void updateTimelineTooltip(const gui::FilmStripRenderer& film_strip,
+                                   const PanelInputState& input);
         void forwardInput(const PanelInputState& input);
 
         struct Vec2 {
@@ -171,6 +199,11 @@ namespace lfs::vis {
 
         void handleTimelineInteraction(const Vec2& pos, float width, float height,
                                        const PanelInputState& input);
+        void handleEasingStripeInteraction(float timeline_x, float timeline_width,
+                                           const PanelInputState& input);
+        void handleFilmStripInteraction(float timeline_x, float timeline_width,
+                                        const PanelInputState& input,
+                                        gui::FilmStripRenderer& film_strip);
 
         void clampPanOffset();
         [[nodiscard]] float timeToX(float time, float timeline_x, float timeline_width) const;
@@ -187,39 +220,140 @@ namespace lfs::vis {
             void ProcessEvent(Rml::Event& event) override;
         };
 
+        struct DurationEditListener : Rml::EventListener {
+            RmlSequencerPanel* panel = nullptr;
+            void ProcessEvent(Rml::Event& event) override;
+        };
+
         void syncQualityScrub();
         void applyQualityFromDrag(float mouse_x);
         void enterQualityEdit();
         void exitQualityEdit(bool commit);
+
+        void syncDurationDisplay();
+        void enterDurationEdit();
+        void exitDurationEdit(bool commit);
+
+        struct SequenceFpsEditListener : Rml::EventListener {
+            RmlSequencerPanel* panel = nullptr;
+            void ProcessEvent(Rml::Event& event) override;
+        };
+
+        void syncSequenceFpsDisplay();
+        void enterSequenceFpsEdit();
+        void exitSequenceFpsEdit(bool commit);
+
+        struct RenderSignature {
+            int width = 0;
+            int height = 0;
+            int dp_milli = 1000;
+            bool floating = false;
+            bool film_strip_attached = false;
+            std::size_t theme_signature = 0;
+            std::string language;
+            uint64_t timeline_revision = 0;
+            uint64_t selection_revision = 0;
+            uint64_t selected_keyframes_signature = 0;
+            int playhead_milli = 0;
+            int zoom_milli = 1000;
+            int pan_milli = 0;
+            int playback_speed_milli = 1000;
+            int sequence_fps_milli = 24000;
+            std::size_t sequence_frame_count = 0;
+            std::string sequence_node_name;
+            int snap_interval_milli = 1000;
+            int pip_scale_milli = 1000;
+            int state = 0;
+            int loop_mode = 0;
+            int preset = 0;
+            int custom_width = 0;
+            int custom_height = 0;
+            int framerate = 0;
+            int quality = 0;
+            bool follow_playback = false;
+            bool show_camera_path = false;
+            bool snap_to_grid = false;
+            bool show_film_strip = false;
+            bool show_pip_preview = false;
+            bool equirectangular = false;
+
+            bool operator==(const RenderSignature&) const = default;
+        };
+
+        [[nodiscard]] RenderSignature makeRenderSignature(
+            int width,
+            int height,
+            std::size_t theme_signature,
+            std::string language) const;
+        [[nodiscard]] bool canReuseCachedRender(const RenderSignature& signature,
+                                                const PanelInputState& input,
+                                                int width,
+                                                int height) const;
+        void queueCachedRender(float context_x, float context_y,
+                               float panel_width, float total_height,
+                               int width, int height,
+                               bool refresh);
 
         SequencerController& controller_;
         gui::panels::SequencerUIState& ui_state_;
         gui::RmlUIManager* rml_manager_;
         TransportClickListener transport_listener_;
         QualityScrubListener quality_scrub_listener_;
+        DurationEditListener duration_listener_;
+        SequenceFpsEditListener sequence_fps_listener_;
 
         bool quality_scrub_active_ = false;
         bool quality_scrub_dragging_ = false;
         bool quality_scrub_editing_ = false;
         float quality_scrub_start_x_ = 0.0f;
+        bool duration_editing_ = false;
+        bool sequence_fps_editing_ = false;
 
         Rml::Context* rml_context_ = nullptr;
         Rml::ElementDocument* document_ = nullptr;
+        gui::CachedVulkanContextRender direct_cache_;
+        std::optional<RenderSignature> last_render_signature_;
+        bool direct_cache_dirty_ = true;
         std::string base_rcss_;
-        float last_synced_text_[4] = {};
+        std::size_t last_theme_signature_ = 0;
+        bool has_theme_signature_ = false;
 
         // Cached DOM elements
         bool elements_cached_ = false;
+        Rml::Element* el_panel_ = nullptr;
+        Rml::Element* el_floating_header_ = nullptr;
         Rml::Element* el_ruler_ = nullptr;
         Rml::Element* el_track_bar_ = nullptr;
+        Rml::Element* el_sequence_strip_ = nullptr;
         Rml::Element* el_keyframes_ = nullptr;
         Rml::Element* el_playhead_ = nullptr;
+        Rml::Element* el_playhead_handle_ = nullptr;
         Rml::Element* el_hint_ = nullptr;
         Rml::Element* el_current_time_ = nullptr;
         Rml::Element* el_duration_ = nullptr;
         Rml::Element* el_play_icon_ = nullptr;
         Rml::Element* el_btn_loop_ = nullptr;
         Rml::Element* el_timeline_ = nullptr;
+        Rml::Element* el_header_ = nullptr;
+        Rml::Element* el_easing_stripe_ = nullptr;
+        Rml::Element* el_easing_segments_ = nullptr;
+        Rml::Element* el_easing_curves_ = nullptr;
+        Rml::Element* el_easing_indicators_ = nullptr;
+        Rml::Element* el_film_strip_panel_ = nullptr;
+        Rml::Element* el_film_strip_groove_ = nullptr;
+        Rml::Element* el_film_strip_gaps_ = nullptr;
+        Rml::Element* el_film_strip_thumbs_ = nullptr;
+        Rml::Element* el_film_strip_markers_ = nullptr;
+        Rml::Element* el_film_strip_dividers_ = nullptr;
+        Rml::Element* el_film_strip_sprockets_top_ = nullptr;
+        Rml::Element* el_film_strip_sprockets_bottom_ = nullptr;
+        Rml::Element* el_panel_guides_ = nullptr;
+        Rml::Element* el_guide_playhead_ = nullptr;
+        Rml::Element* el_guide_selected_ = nullptr;
+        Rml::Element* el_guide_hovered_ = nullptr;
+        Rml::Element* el_guide_strip_hover_ = nullptr;
+        Rml::Element* el_timeline_tooltip_ = nullptr;
+        gui::RmlTooltipController tooltip_;
 
         // Transport settings elements
         Rml::Element* el_btn_camera_path_ = nullptr;
@@ -228,20 +362,33 @@ namespace lfs::vis {
         Rml::Element* el_btn_film_strip_ = nullptr;
         Rml::Element* el_btn_preview_ = nullptr;
         Rml::Element* el_speed_label_ = nullptr;
+        Rml::Element* el_sequence_fps_field_ = nullptr;
+        Rml::Element* el_sequence_fps_display_ = nullptr;
+        Rml::Element* el_sequence_fps_input_ = nullptr;
         Rml::Element* el_format_label_ = nullptr;
         Rml::Element* el_resolution_info_ = nullptr;
         Rml::Element* el_quality_scrub_ = nullptr;
         Rml::Element* el_quality_fill_ = nullptr;
         Rml::Element* el_quality_display_ = nullptr;
         Rml::Element* el_quality_input_ = nullptr;
+        Rml::Element* el_duration_field_ = nullptr;
+        Rml::Element* el_duration_input_ = nullptr;
         Rml::Element* el_btn_equirect_ = nullptr;
         Rml::Element* el_btn_save_ = nullptr;
         Rml::Element* el_btn_load_ = nullptr;
+        Rml::Element* el_btn_load_sequence_ = nullptr;
         Rml::Element* el_btn_export_ = nullptr;
         Rml::Element* el_btn_clear_ = nullptr;
+        Rml::Element* el_transport_dock_sep_ = nullptr;
+        Rml::Element* el_btn_dock_toggle_ = nullptr;
+        Rml::Element* el_dock_toggle_label_ = nullptr;
+        Rml::Element* el_btn_close_panel_ = nullptr;
+        Rml::Element* el_close_panel_label_ = nullptr;
 
         // Keyframe element pool
         std::vector<Rml::Element*> keyframe_elements_;
+        std::vector<Rml::Element*> film_thumb_elements_;
+        std::set<std::string> registered_film_strip_sources_;
 
         // Dirty tracking
         size_t last_keyframe_count_ = 0;
@@ -266,28 +413,33 @@ namespace lfs::vis {
         bool playhead_in_range_ = false;
         float cached_dp_ratio_ = 1.0f;
         float cached_height_ = panel_config::HEIGHT;
-
-        gui::RmlFBO fbo_;
+        float cached_total_height_ = panel_config::HEIGHT + panel_config::EASING_STRIPE_HEIGHT;
 
         // Interaction state
         bool dragging_playhead_ = false;
         bool dragging_keyframe_ = false;
         bool dragged_keyframe_changed_ = false;
+        bool film_strip_scrubbing_ = false;
         sequencer::KeyframeId dragged_keyframe_id_ = sequencer::INVALID_KEYFRAME_ID;
         float drag_start_mouse_x_ = 0.0f;
         std::optional<size_t> hovered_keyframe_;
-        std::set<sequencer::KeyframeId> selected_keyframes_;
+        std::vector<sequencer::KeyframeId> selected_keyframes_;
 
         float zoom_level_ = 1.0f;
         float pan_offset_ = 0.0f;
 
         bool film_strip_attached_ = false;
         bool last_film_strip_attached_ = false;
+        bool floating_ = false;
+        bool last_floating_ = false;
 
         // Request flags consumed by SequencerUIManager
         bool save_path_requested_ = false;
         bool load_path_requested_ = false;
+        bool load_sequence_requested_ = false;
         bool export_requested_ = false;
+        bool dock_toggle_requested_ = false;
+        bool close_panel_requested_ = false;
         bool clear_requested_ = false;
 
         TransportContextMenuRequest transport_ctx_request_;
@@ -316,7 +468,6 @@ namespace lfs::vis {
         bool hovered_ = false;
         bool wants_keyboard_ = false;
         bool last_hovered_ = false;
-        std::string tooltip_;
         std::string last_language_;
     };
 

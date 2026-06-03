@@ -7,6 +7,8 @@ from typing import Optional
 from .tool_defs.builtin import BUILTIN_TOOLS, get_tool_by_id
 from .tool_defs.definition import ToolDef
 
+_BUILTIN_TOOL_IDS = {tool.id for tool in BUILTIN_TOOLS}
+
 
 class ToolRegistry:
     """Manages tool definitions (builtin + custom) and activation state."""
@@ -55,15 +57,24 @@ class ToolRegistry:
         if not tool.can_activate(context):
             return False
 
+        if tool.action_only:
+            if not tool.operator:
+                return False
+            lf.ui.ops.invoke(tool.operator)
+            return True
+
         lf.ui.ops.cancel_modal()
         lf.ui.clear_gizmo()
 
         cls._active_tool_id = tool_id
 
         gizmo = tool.gizmo or ""
-        lf.ui.set_active_operator(tool_id, gizmo)
-
-        if tool_id == "builtin.select" and not lf.ui.get_active_submode():
+        set_active_tool = getattr(lf.ui, "set_active_tool", None)
+        if tool_id in _BUILTIN_TOOL_IDS and callable(set_active_tool):
+            set_active_tool(tool_id)
+        else:
+            lf.ui.set_active_operator(tool_id, gizmo)
+        if tool_id == "builtin.select":
             lf.ui.set_selection_mode("centers")
 
         if tool.gizmo and not tool.operator:
@@ -79,6 +90,9 @@ class ToolRegistry:
 
         lf.ui.ops.cancel_modal()
         lf.ui.clear_gizmo()
+        set_tool = getattr(lf.ui, "set_tool", None)
+        if callable(set_tool):
+            set_tool("none")
         lf.ui.clear_active_operator()
         cls._active_tool_id = ""
 

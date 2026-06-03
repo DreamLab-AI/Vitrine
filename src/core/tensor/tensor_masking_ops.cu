@@ -28,6 +28,18 @@
 
 namespace lfs::core::tensor_ops {
 
+    namespace {
+        template <typename T>
+        void launch_masked_fill_impl(T* data, const unsigned char* mask, T val, size_t n, cudaStream_t stream) {
+            auto data_ptr = thrust::device_pointer_cast(data);
+            auto mask_ptr = thrust::device_pointer_cast(mask);
+            auto begin = thrust::make_zip_iterator(thrust::make_tuple(data_ptr, mask_ptr));
+            auto end = thrust::make_zip_iterator(thrust::make_tuple(data_ptr + n, mask_ptr + n));
+            thrust::transform(thrust::cuda::par.on(stream), begin, end, data_ptr,
+                              ops::masked_fill_op<T>(val));
+        }
+    } // namespace
+
     // ============= Import broadcast index calculator =============
     __device__ inline size_t compute_broadcast_index(
         size_t idx, const size_t* src_shape, size_t src_rank,
@@ -332,12 +344,23 @@ namespace lfs::core::tensor_ops {
 
     // ============= Masking Operations =============
     void launch_masked_fill(float* data, const unsigned char* mask, float val, size_t n, cudaStream_t s) {
-        auto data_ptr = thrust::device_pointer_cast(data);
-        auto mask_ptr = thrust::device_pointer_cast(mask);
-        auto begin = thrust::make_zip_iterator(thrust::make_tuple(data_ptr, mask_ptr));
-        auto end = thrust::make_zip_iterator(thrust::make_tuple(data_ptr + n, mask_ptr + n));
-        thrust::transform(thrust::cuda::par.on(s), begin, end, data_ptr,
-                          ops::masked_fill_op<float>(val));
+        launch_masked_fill_impl(data, mask, val, n, s);
+    }
+
+    void launch_masked_fill(int32_t* data, const unsigned char* mask, int32_t val, size_t n, cudaStream_t s) {
+        launch_masked_fill_impl(data, mask, val, n, s);
+    }
+
+    void launch_masked_fill(int64_t* data, const unsigned char* mask, int64_t val, size_t n, cudaStream_t s) {
+        launch_masked_fill_impl(data, mask, val, n, s);
+    }
+
+    void launch_masked_fill(uint8_t* data, const unsigned char* mask, uint8_t val, size_t n, cudaStream_t s) {
+        launch_masked_fill_impl(data, mask, val, n, s);
+    }
+
+    void launch_masked_fill(__half* data, const unsigned char* mask, __half val, size_t n, cudaStream_t s) {
+        launch_masked_fill_impl(data, mask, val, n, s);
     }
 
     void launch_masked_select(const float* input, const unsigned char* mask,

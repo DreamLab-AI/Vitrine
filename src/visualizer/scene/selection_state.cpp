@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "scene/selection_state.hpp"
+#include "visualizer/app_store.hpp"
 #include <cassert>
 
 namespace lfs::vis {
@@ -71,7 +72,6 @@ namespace lfs::vis {
         if (!node_mask_dirty_)
             return cached_node_mask_;
 
-        // Build name vector from selected IDs for Scene::getSelectedNodeMask
         std::vector<std::string> names;
         names.reserve(selected_nodes_.size());
         for (const auto id : selected_nodes_) {
@@ -91,7 +91,8 @@ namespace lfs::vis {
     }
 
     void SelectionState::bumpGeneration() {
-        generation_.fetch_add(1, std::memory_order_release);
+        const uint32_t generation = generation_.fetch_add(1, std::memory_order_acq_rel) + 1;
+        app_store().selection_generation.set(generation);
     }
 
 } // namespace lfs::vis

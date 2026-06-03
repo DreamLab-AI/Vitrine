@@ -35,7 +35,7 @@ namespace lfs::vis {
         float window_rounding = 6.0f;
         float frame_rounding = 2.0f;
         float popup_rounding = 4.0f;
-        float scrollbar_rounding = 4.0f;
+        float scrollbar_rounding = 6.0f;
         float grab_rounding = 2.0f;
         float tab_rounding = 4.0f;
         float border_size = 0.0f;
@@ -46,8 +46,8 @@ namespace lfs::vis {
         ImVec2 item_spacing = {8.0f, 4.0f};
         ImVec2 item_inner_spacing = {4.0f, 4.0f};
         float indent_spacing = 21.0f;
-        float scrollbar_size = 14.0f;
-        float grab_min_size = 10.0f;
+        float scrollbar_size = 12.0f;
+        float grab_min_size = 16.0f;
         float toolbar_button_size = 24.0f;
         float toolbar_padding = 6.0f;
         float toolbar_spacing = 4.0f;
@@ -232,10 +232,19 @@ namespace lfs::vis {
 
     using ThemeChangeCallback = std::function<void(const std::string& theme_id)>;
     using ThemePresetVisitor = std::function<void(std::string_view theme_id, const Theme& theme)>;
+    struct LFS_VIS_API ThemePresetInfo {
+        std::string id;
+        std::string name;
+        std::string label_key;
+        std::string mode;
+        int order = 0;
+    };
+    using ThemePresetInfoVisitor = std::function<void(const ThemePresetInfo& info)>;
     LFS_VIS_API void setThemeChangeCallback(ThemeChangeCallback cb);
     [[nodiscard]] LFS_VIS_API const std::string& currentThemeId();
     [[nodiscard]] LFS_VIS_API std::string normalizeThemeId(std::string name);
     LFS_VIS_API void visitThemePresets(const ThemePresetVisitor& visitor);
+    LFS_VIS_API void visitThemePresetInfos(const ThemePresetInfoVisitor& visitor);
 
     // Presets (loaded from JSON files with hot-reload support)
     [[nodiscard]] LFS_VIS_API const Theme& darkTheme();
@@ -244,8 +253,13 @@ namespace lfs::vis {
     [[nodiscard]] LFS_VIS_API const Theme& catppuccinMochaTheme();
     [[nodiscard]] LFS_VIS_API const Theme& catppuccinLatteTheme();
     [[nodiscard]] LFS_VIS_API const Theme& nordTheme();
-    LFS_VIS_API bool setThemeByName(const std::string& name); // e.g. "dark", "light", "gruvbox", "catppuccin_mocha", "catppuccin_latte", "nord"
-    LFS_VIS_API bool checkThemeFileChanges();                 // Call periodically to hot-reload; returns true when any preset changed
+    LFS_VIS_API bool setThemeByName(const std::string& name);
+    LFS_VIS_API bool checkThemeFileChanges(); // Call periodically to hot-reload; returns true when any preset changed
+
+    // Runtime vignette control (does not persist to theme file)
+    LFS_VIS_API void setThemeVignetteEnabled(bool enabled);
+    LFS_VIS_API void setThemeVignetteIntensity(float intensity);
+    LFS_VIS_API void setThemeVignetteStyle(float intensity, float radius, float softness);
 
     // Persistence
     LFS_VIS_API bool saveTheme(const Theme& t, const std::string& path);

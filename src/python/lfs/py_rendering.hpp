@@ -5,10 +5,13 @@
 
 #include "py_prop.hpp"
 #include "py_tensor.hpp"
+#include "rendering/render_constants.hpp"
 #include "visualizer/ipc/view_context.hpp"
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/optional.h>
+#include <nanobind/stl/string.h>
 #include <optional>
+#include <string>
 #include <tuple>
 
 namespace nb = nanobind;
@@ -26,6 +29,8 @@ namespace lfs::python {
         int height;
         float fov_x;
         float fov_y;
+        bool orthographic;
+        float ortho_scale;
     };
 
     struct PyViewportRender {
@@ -40,10 +45,11 @@ namespace lfs::python {
         float fov;
     };
 
-    [[nodiscard]] std::optional<PyCameraState> get_camera();
+    [[nodiscard]] std::optional<PyCameraState> get_camera(const std::string& panel = "main");
     void set_camera(const std::tuple<float, float, float>& eye,
                     const std::tuple<float, float, float>& target,
-                    const std::tuple<float, float, float>& up);
+                    const std::tuple<float, float, float>& up,
+                    const std::string& panel = "main");
     void set_camera_fov(float fov_degrees);
 
     [[nodiscard]] std::optional<PyViewportRender> get_viewport_render();
@@ -53,11 +59,14 @@ namespace lfs::python {
     [[nodiscard]] std::optional<PyTensor> render_view(const PyTensor& rotation, const PyTensor& translation, int width,
                                                       int height, float fov_degrees = 60.0f,
                                                       const PyTensor* bg_color = nullptr);
+    [[nodiscard]] std::optional<PyTensor> render_view_u8(const PyTensor& rotation, const PyTensor& translation,
+                                                         int width, int height, float fov_degrees = 60.0f,
+                                                         const PyTensor* bg_color = nullptr);
 
     [[nodiscard]] std::optional<PyTensor> compute_screen_positions(const PyTensor& rotation, const PyTensor& translation,
                                                                    int width, int height, float fov_degrees = 60.0f);
 
-    [[nodiscard]] std::optional<PyViewInfo> get_current_view();
+    [[nodiscard]] std::optional<PyViewInfo> get_current_view(const std::string& panel = "main");
 
     [[nodiscard]] std::tuple<PyTensor, PyTensor> look_at(
         const std::tuple<float, float, float>& eye, const std::tuple<float, float, float>& target,
@@ -67,6 +76,12 @@ namespace lfs::python {
         const std::tuple<float, float, float>& eye, const std::tuple<float, float, float>& target, int width,
         int height, float fov_degrees = 60.0f, const std::tuple<float, float, float>& up = {0.0f, 1.0f, 0.0f},
         const PyTensor* bg_color = nullptr);
+
+    [[nodiscard]] std::optional<PyTensor> render_asset_preview(
+        const std::string& path,
+        int width = 512,
+        int height = 224,
+        float focal_length_mm = lfs::rendering::DEFAULT_FOCAL_LENGTH_MM);
 
     class PyRenderSettings {
     public:

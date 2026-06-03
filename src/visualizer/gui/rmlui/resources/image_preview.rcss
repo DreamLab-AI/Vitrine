@@ -69,8 +69,7 @@
     position: absolute;
     bottom: 1dp;
     left: 3dp;
-    font-size: 7dp;
-    color: rgba(255, 255, 255, 102);
+    font-size: 12dp;
 }
 
 /* -- Image Area -- */
@@ -81,6 +80,10 @@
     position: relative;
     min-width: 0;
     min-height: 0;
+}
+
+#image-container.picker-active {
+    cursor: pipette;
 }
 
 #image-viewport {
@@ -113,7 +116,6 @@
     position: absolute;
     display: none;
     decorator: none;
-    image-color: rgba(255, 50, 50, 128);
 }
 
 #mask-overlay.visible {
@@ -121,7 +123,7 @@
 }
 
 #no-image-text {
-    font-size: 11dp;
+    font-size: 12dp;
     position: absolute;
     top: 0;
     right: 0;
@@ -148,7 +150,6 @@
     width: 32dp;
     height: 32dp;
     border-radius: 16dp;
-    background-color: rgba(255, 255, 255, 13);
     border-width: 1dp;
     font-size: 14dp;
     text-align: center;
@@ -195,21 +196,21 @@
 
 .sidebar-header-label-ip {
     display: block;
-    font-size: 8dp;
-    letter-spacing: 1dp;
+    font-size: 12dp;
+    letter-spacing: 0.2dp;
     margin-bottom: 2dp;
 }
 
 #sidebar-filename {
     display: block;
-    font-size: 10dp;
+    font-size: 12dp;
     overflow: hidden;
 }
 
 .section-label-ip {
     display: block;
-    font-size: 8dp;
-    letter-spacing: 1dp;
+    font-size: 12dp;
+    letter-spacing: 0.2dp;
     margin-bottom: 6dp;
 }
 
@@ -229,19 +230,19 @@
 
 .meta-key {
     display: block;
-    font-size: 7dp;
-    letter-spacing: 0.5dp;
+    font-size: 12dp;
+    letter-spacing: 0.2dp;
     margin-bottom: 1dp;
 }
 
 .meta-val {
     display: block;
-    font-size: 10dp;
+    font-size: 12dp;
 }
 
 .meta-val-accent {
     display: block;
-    font-size: 10dp;
+    font-size: 12dp;
 }
 
 .meta-full-ip {
@@ -274,13 +275,13 @@
 
 .meta-val-secondary {
     display: block;
-    font-size: 9dp;
+    font-size: 12dp;
     overflow: hidden;
 }
 
 #sidebar-mask-name {
     display: block;
-    font-size: 10dp;
+    font-size: 12dp;
     margin-bottom: 2dp;
 }
 
@@ -292,7 +293,7 @@
 }
 
 .sidebar-check-row label {
-    font-size: 10dp;
+    font-size: 12dp;
     margin-left: 4dp;
     cursor: pointer;
 }
@@ -313,9 +314,50 @@
 }
 
 .status-item {
-    font-size: 9dp;
+    font-size: 12dp;
     margin-right: 16dp;
-    letter-spacing: 0.5dp;
+    letter-spacing: 0.2dp;
+}
+
+#view-controls {
+    display: flex;
+    align-items: center;
+    gap: 4dp;
+    margin-right: 12dp;
+}
+
+#view-controls.hidden {
+    display: none;
+}
+
+.view-btn {
+    width: 20dp;
+    height: 20dp;
+    padding: 0;
+    border-width: 1dp;
+    border-radius: 3dp;
+    cursor: pointer;
+    font-size: 12dp;
+    text-align: center;
+    line-height: 18dp;
+    transition: background-color 0.12s quadratic-out, border-color 0.12s quadratic-out,
+                color 0.12s quadratic-out, opacity 0.12s quadratic-out;
+}
+
+.view-btn--icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.view-btn--icon img {
+    width: 14dp;
+    height: 14dp;
+}
+
+.view-btn:disabled {
+    opacity: 0.35;
+    cursor: default;
 }
 
 .status-keys {
@@ -333,19 +375,19 @@
 }
 
 .hk-key {
-    font-size: 8dp;
+    font-size: 12dp;
     padding: 1dp 3dp;
     border-radius: 2dp;
     letter-spacing: 0.3dp;
 }
 
 .hk-label {
-    font-size: 8dp;
+    font-size: 12dp;
     letter-spacing: 0.3dp;
 }
 
 .status-counter {
-    font-size: 9dp;
+    font-size: 12dp;
     margin-left: auto;
-    letter-spacing: 0.5dp;
+    letter-spacing: 0.2dp;
 }

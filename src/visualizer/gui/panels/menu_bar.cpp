@@ -6,10 +6,9 @@
 #include "core/image_io.hpp"
 #include "python/python_runtime.hpp"
 
-#include <glad/glad.h>
-
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -21,12 +20,7 @@ namespace lfs::vis::gui {
 
     MenuBar::MenuBar() = default;
 
-    MenuBar::~MenuBar() {
-        for (const auto& [id, thumb] : thumbnails_) {
-            if (thumb.texture)
-                glDeleteTextures(1, &thumb.texture);
-        }
-    }
+    MenuBar::~MenuBar() = default;
 
     void MenuBar::requestThumbnail(const std::string& video_id) {
         startThumbnailDownload(video_id);
@@ -44,9 +38,13 @@ namespace lfs::vis::gui {
     uint64_t MenuBar::getThumbnailTexture(const std::string& video_id) const {
         const auto it = thumbnails_.find(video_id);
         if (it != thumbnails_.end() && it->second.state == Thumbnail::State::READY) {
-            return static_cast<uint64_t>(it->second.texture);
+            return static_cast<uint64_t>(it->second.texture ? it->second.texture->textureId() : 0);
         }
         return 0;
+    }
+
+    void MenuBar::clearThumbnails() {
+        thumbnails_.clear();
     }
 
     void MenuBar::startThumbnailDownload(const std::string& video_id) {
@@ -88,19 +86,19 @@ namespace lfs::vis::gui {
                     continue;
                 }
 
-                GLuint tex = 0;
-                glGenTextures(1, &tex);
-                glBindTexture(GL_TEXTURE_2D, tex);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB, GL_UNSIGNED_BYTE, pixels);
-                glBindTexture(GL_TEXTURE_2D, 0);
-
+                auto texture = std::make_unique<VulkanUiTexture>();
+                const bool uploaded = texture->upload(
+                    static_cast<const std::uint8_t*>(pixels),
+                    w,
+                    h,
+                    c);
                 lfs::core::free_image(pixels);
-                thumb.texture = tex;
-                thumb.state = Thumbnail::State::READY;
+                if (uploaded) {
+                    thumb.texture = std::move(texture);
+                    thumb.state = Thumbnail::State::READY;
+                } else {
+                    thumb.state = Thumbnail::State::FAILED;
+                }
             } catch (...) {
                 thumb.state = Thumbnail::State::FAILED;
             }
@@ -113,6 +111,7 @@ namespace lfs::vis::gui {
         std::vector<python::MenuBarEntry> g_menu_entries;
         std::atomic<bool> g_menu_entries_ready{false};
         std::atomic<bool> g_menu_entries_loading{false};
+        std::atomic<std::uint64_t> g_menu_entries_version{0};
 
         void start_menu_entry_preload_once() {
             bool expected = false;
@@ -126,6 +125,7 @@ namespace lfs::vis::gui {
                     std::lock_guard lock(g_menu_entries_mutex);
                     g_menu_entries = std::move(entries);
                 }
+                g_menu_entries_version.fetch_add(1, std::memory_order_acq_rel);
                 g_menu_entries_ready.store(true, std::memory_order_release);
                 g_menu_entries_loading.store(false, std::memory_order_release);
             }).detach();
@@ -143,6 +143,10 @@ namespace lfs::vis::gui {
 
     std::vector<python::MenuBarEntry> MenuBar::getMenuEntries() const {
         return copy_menu_entries();
+    }
+
+    std::uint64_t MenuBar::menuEntriesVersion() const {
+        return g_menu_entries_version.load(std::memory_order_acquire);
     }
 
     void MenuBar::render() {

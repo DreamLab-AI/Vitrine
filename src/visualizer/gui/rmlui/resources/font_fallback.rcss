@@ -1,0 +1,6 @@
+/* Minimal parse-time font fallback for plugin panels that forget to declare one.
+ * Full component and theme styles are still applied later by rml_theme::applyTheme(). */
+
+body {
+    font-family: Inter;
+}

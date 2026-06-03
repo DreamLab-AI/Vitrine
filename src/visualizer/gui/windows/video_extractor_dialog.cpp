@@ -10,6 +10,7 @@
 #include "gui/utils/native_file_dialog.hpp"
 #include "theme/theme.hpp"
 
+#include "gui/ui_widgets.hpp"
 #include <array>
 #include <cmath>
 #include <format>
@@ -49,13 +50,12 @@ namespace lfs::gui {
 
     VideoExtractorDialog::~VideoExtractorDialog() {
         joinExtractionThread();
-        if (preview_texture_ != 0) {
-            glDeleteTextures(1, &preview_texture_);
-        }
+        preview_texture_.reset();
     }
 
     void VideoExtractorDialog::shutdown() {
         joinExtractionThread();
+        preview_texture_.reset();
     }
 
     void VideoExtractorDialog::startExtraction(const VideoExtractionParams& params) {
@@ -221,31 +221,18 @@ namespace lfs::gui {
         const int width = player_->width();
         const int height = player_->height();
 
-        // Create texture if needed
-        if (preview_texture_ == 0) {
-            glGenTextures(1, &preview_texture_);
-            glBindTexture(GL_TEXTURE_2D, preview_texture_);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            glBindTexture(GL_TEXTURE_2D, 0);
+        if (!preview_texture_) {
+            preview_texture_ = std::make_unique<lfs::vis::gui::VulkanUiTexture>();
         }
 
-        glBindTexture(GL_TEXTURE_2D, preview_texture_);
-
-        // Allocate or reallocate if size changed
-        if (preview_texture_width_ != width || preview_texture_height_ != height) {
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE,
-                         data);
+        if (preview_texture_->upload(data, width, height, 3)) {
             preview_texture_width_ = width;
             preview_texture_height_ = height;
         } else {
-            // Direct upload - fast enough for 720p on modern GPUs
-            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE, data);
+            preview_texture_.reset();
+            preview_texture_width_ = 0;
+            preview_texture_height_ = 0;
         }
-
-        glBindTexture(GL_TEXTURE_2D, 0);
         texture_needs_update_ = false;
     }
 
@@ -270,7 +257,7 @@ namespace lfs::gui {
         ImGui::BeginChild("##preview_area", ImVec2(0, preview_height),
                           ImGuiChildFlags_Borders | ImGuiChildFlags_FrameStyle);
 
-        if (player_->isOpen() && preview_texture_ != 0) {
+        if (player_->isOpen() && preview_texture_ && preview_texture_->valid()) {
             const ImVec2 region = ImGui::GetContentRegionAvail();
             const float video_aspect =
                 static_cast<float>(player_->width()) / static_cast<float>(player_->height());
@@ -290,7 +277,7 @@ namespace lfs::gui {
 
             ImGui::SetCursorPos(ImVec2(ImGui::GetCursorPosX() + offset_x,
                                        ImGui::GetCursorPosY() + offset_y));
-            ImGui::Image(static_cast<ImTextureID>(preview_texture_),
+            ImGui::Image(static_cast<ImTextureID>(preview_texture_->textureId()),
                          ImVec2(display_width, display_height));
         } else {
             const char* hint = LOC(VideoExtractor::SELECT_PREVIEW);
@@ -481,7 +468,7 @@ namespace lfs::gui {
         ImGui::PushItemWidth(80);
         ImGui::PushStyleColor(ImGuiCol_FrameBg,
                               lfs::vis::toU32WithAlpha(t.palette.success, 0.2f));
-        if (ImGui::DragFloat("##trim_start", &trim_start_, 0.1f, 0.0f, trim_end_ - 0.1f, "%.1fs")) {
+        if (lfs::vis::gui::widgets::DragFloat("##trim_start", &trim_start_, 0.1f, 0.0f, trim_end_ - 0.1f, "%.1fs")) {
             trim_start_ = std::clamp(trim_start_, 0.0f, trim_end_ - 0.1f);
         }
         ImGui::PopStyleColor();
@@ -503,7 +490,7 @@ namespace lfs::gui {
         // End time
         ImGui::PushItemWidth(80);
         ImGui::PushStyleColor(ImGuiCol_FrameBg, lfs::vis::toU32WithAlpha(t.palette.error, 0.2f));
-        if (ImGui::DragFloat("##trim_end", &trim_end_, 0.1f, trim_start_ + 0.1f, duration, "%.1fs")) {
+        if (lfs::vis::gui::widgets::DragFloat("##trim_end", &trim_end_, 0.1f, trim_start_ + 0.1f, duration, "%.1fs")) {
             trim_end_ = std::clamp(trim_end_, trim_start_ + 0.1f, duration);
         }
         ImGui::PopStyleColor();
@@ -587,14 +574,15 @@ namespace lfs::gui {
         if (mode_selection_ == 0) {
             ImGui::SetNextItemWidth(100);
             ImGui::PushID("fps");
-            ImGui::SliderFloat(LOC(VideoExtractor::FPS_LABEL), &fps_, 0.1f, 30.0f, "%.1f");
+            lfs::vis::gui::widgets::SliderFloat(LOC(VideoExtractor::FPS_LABEL), &fps_, 0.1f, 30.0f, "%.1f");
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("%s", LOC(VideoExtractor::FPS_TOOLTIP));
             ImGui::PopID();
         } else {
             ImGui::SetNextItemWidth(100);
             ImGui::PushID("interval");
-            ImGui::SliderInt(LOC(VideoExtractor::EVERY_LABEL), &frame_interval_, 1, 100, LOC(VideoExtractor::FRAMES_FORMAT));
+            lfs::vis::gui::widgets::SliderInt(LOC(VideoExtractor::EVERY_LABEL), &frame_interval_, 1, 100,
+                                              LOC(VideoExtractor::FRAMES_FORMAT));
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("%s", LOC(VideoExtractor::INTERVAL_TOOLTIP));
             ImGui::PopID();
@@ -615,7 +603,7 @@ namespace lfs::gui {
             ImGui::SameLine(0, 20);
             ImGui::SetNextItemWidth(100);
             ImGui::PushID("quality");
-            ImGui::SliderInt(LOC(VideoExtractor::QUALITY_LABEL), &jpg_quality_, 50, 100, "%d%%");
+            lfs::vis::gui::widgets::SliderInt(LOC(VideoExtractor::QUALITY_LABEL), &jpg_quality_, 50, 100, "%d%%");
             ImGui::PopID();
         }
     }
@@ -637,14 +625,14 @@ namespace lfs::gui {
             ImGui::Combo("##scale", &scale_selection_, scales.data(), static_cast<int>(scales.size()));
         } else if (resolution_mode_ == 2) {
             ImGui::SetNextItemWidth(80);
-            ImGui::InputInt("##custom_w", &custom_width_, 0, 0);
+            lfs::vis::gui::widgets::InputInt("##custom_w", &custom_width_, 0, 0);
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("%s", LOC(VideoExtractor::WIDTH));
             ImGui::SameLine();
             ImGui::Text("x");
             ImGui::SameLine();
             ImGui::SetNextItemWidth(80);
-            ImGui::InputInt("##custom_h", &custom_height_, 0, 0);
+            lfs::vis::gui::widgets::InputInt("##custom_h", &custom_height_, 0, 0);
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("%s", LOC(VideoExtractor::HEIGHT));
 
@@ -678,7 +666,7 @@ namespace lfs::gui {
         ImGui::Text("%s", LOC(VideoExtractor::PATTERN));
         ImGui::SameLine();
         ImGui::SetNextItemWidth(200);
-        ImGui::InputText("##pattern", filename_pattern_.data(), filename_pattern_.size());
+        lfs::vis::gui::widgets::InputText("##pattern", filename_pattern_.data(), filename_pattern_.size());
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("%s", LOC(VideoExtractor::PATTERN_TOOLTIP));
 

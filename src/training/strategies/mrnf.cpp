@@ -3,7 +3,9 @@
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "mrnf.hpp"
+#include "core/cuda/sh_layout.cuh"
 #include "core/logger.hpp"
+#include "diagnostics/vram_profiler.hpp"
 #include "edge_rasterizer.hpp"
 #include "io/pipelined_image_loader.hpp"
 #include "kernels/densification_kernels.hpp"
@@ -17,6 +19,7 @@
 #include <chrono>
 #include <climits>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <numeric>
 #include <random>
@@ -143,14 +146,11 @@ namespace lfs::training {
             return false;
         }
 
-        [[nodiscard]] bool has_shN_coefficients(const lfs::core::Tensor& shN) {
-            return shN.is_valid() && shN.ndim() >= 2 && shN.shape()[1] > 0;
-        }
-
         void reset_optimizer_state_at_indices(
             AdamOptimizer& optimizer,
             const ParamType param_type,
-            const lfs::core::Tensor& indices) {
+            const lfs::core::Tensor& indices,
+            const uint32_t shN_layout_rest = 0) {
             if (!indices.is_valid() || indices.numel() == 0) {
                 return;
             }
@@ -160,20 +160,39 @@ namespace lfs::training {
                 return;
             }
 
-            const auto& shape = state->exp_avg.shape();
-            if (has_zero_dimension(shape)) {
+            // Quantised moments: zeroing a primitive's per-primitive scales dequantises its
+            // moments to zero, so we reset the scales (works for both contiguous and swizzled
+            // shN layouts). The fp32 grad buffer is still zeroed in its native layout.
+            if (!state->exp_avg_scale.is_valid() || state->exp_avg_scale.numel() == 0) {
+                return;
+            }
+            auto scale_zeros = lfs::core::Tensor::zeros(
+                lfs::core::TensorShape({indices.numel()}), state->exp_avg_scale.device());
+            state->exp_avg_scale.index_put_(indices, scale_zeros);
+            state->exp_avg_sq_scale.index_put_(indices, scale_zeros);
+
+            if (param_type == ParamType::ShN) {
+                const auto layout_rest = shN_layout_rest;
+                if (layout_rest != 0 && state->grad.is_valid() && state->grad.numel() > 0) {
+                    auto idx_i32 = indices.dtype() == lfs::core::DataType::Int32
+                                       ? indices
+                                       : indices.to(lfs::core::DataType::Int32);
+                    lfs::core::shN_swizzled_zero_at_indices(
+                        state->grad.ptr<float>(), idx_i32.ptr<int>(), idx_i32.numel(), layout_rest);
+                }
                 return;
             }
 
-            std::vector<size_t> dims = {indices.numel()};
-            for (size_t i = 1; i < shape.rank(); ++i) {
-                dims.push_back(shape[i]);
-            }
-            auto zeros = lfs::core::Tensor::zeros(lfs::core::TensorShape(dims), state->exp_avg.device());
-
-            state->exp_avg.index_put_(indices, zeros);
-            state->exp_avg_sq.index_put_(indices, zeros);
-            if (state->grad.is_valid()) {
+            if (state->grad.is_valid() && state->grad.numel() > 0) {
+                const auto& shape = state->grad.shape();
+                if (has_zero_dimension(shape)) {
+                    return;
+                }
+                std::vector<size_t> dims = {indices.numel()};
+                for (size_t i = 1; i < shape.rank(); ++i) {
+                    dims.push_back(shape[i]);
+                }
+                auto zeros = lfs::core::Tensor::zeros(lfs::core::TensorShape(dims), state->grad.device());
                 state->grad.index_put_(indices, zeros);
             }
         }
@@ -248,44 +267,79 @@ namespace lfs::training {
         }
 
         struct CannyWorkspace {
-            lfs::core::Tensor grayscale;
-            lfs::core::Tensor blurred;
-            lfs::core::Tensor magnitude;
-            lfs::core::Tensor angle;
             lfs::core::Tensor nms_output;
         };
 
         [[nodiscard]] CannyWorkspace create_canny_workspace(const int height, const int width) {
-            const size_t hw = static_cast<size_t>(height) * static_cast<size_t>(width);
             const auto dev = lfs::core::Device::CUDA;
             const auto dt = lfs::core::DataType::Float32;
             return {
-                lfs::core::Tensor::zeros({hw}, dev, dt),
-                lfs::core::Tensor::zeros({hw}, dev, dt),
-                lfs::core::Tensor::zeros({hw}, dev, dt),
-                lfs::core::Tensor::zeros({hw}, dev, dt),
                 lfs::core::Tensor::zeros({static_cast<size_t>(height), static_cast<size_t>(width)}, dev, dt)};
         }
 
+        void ensure_canny_workspace(lfs::core::Tensor& nms_output, const int height, const int width) {
+            if (!nms_output.is_valid() ||
+                nms_output.ndim() != 2 ||
+                height != static_cast<int>(nms_output.shape()[0]) ||
+                width != static_cast<int>(nms_output.shape()[1])) {
+                nms_output = lfs::core::Tensor::zeros(
+                    {static_cast<size_t>(height), static_cast<size_t>(width)},
+                    lfs::core::Device::CUDA,
+                    lfs::core::DataType::Float32);
+            }
+        }
+
         void apply_canny_filter(const lfs::core::Tensor& input_data, CannyWorkspace& ws) {
-            assert(input_data.dtype() == lfs::core::DataType::Float32);
+            assert(input_data.dtype() == lfs::core::DataType::Float32 ||
+                   input_data.dtype() == lfs::core::DataType::UInt8);
             assert(input_data.device() == lfs::core::Device::CUDA);
             assert(input_data.ndim() == 3);
+            assert(input_data.shape()[0] >= 3);
 
             const int width = static_cast<int>(input_data.shape()[2]);
             const int height = static_cast<int>(input_data.shape()[1]);
 
-            ws.grayscale.zero_();
-            ws.blurred.zero_();
-            ws.magnitude.zero_();
-            ws.angle.zero_();
-            ws.nms_output.zero_();
-
             auto input_contig = input_data.contiguous();
-            kernels::launch_grayscale_filter(input_contig.ptr<float>(), ws.grayscale.ptr<float>(), height, width);
-            kernels::launch_gausssian_blur(ws.grayscale.ptr<float>(), ws.blurred.ptr<float>(), 3, height, width);
-            kernels::launch_sobel_gradient_filter(ws.blurred.ptr<float>(), ws.magnitude.ptr<float>(), ws.angle.ptr<float>(), height, width);
-            kernels::launch_nms_kernel(ws.magnitude.ptr<float>(), ws.angle.ptr<float>(), ws.nms_output.ptr<float>(), height, width);
+            if (input_contig.dtype() == lfs::core::DataType::UInt8) {
+                kernels::launch_fused_canny_edge_filter_chw(
+                    input_contig.ptr<uint8_t>(),
+                    ws.nms_output.ptr<float>(),
+                    height,
+                    width);
+            } else {
+                kernels::launch_fused_canny_edge_filter_chw(
+                    input_contig.ptr<float>(),
+                    ws.nms_output.ptr<float>(),
+                    height,
+                    width);
+            }
+        }
+
+        void apply_canny_filter(const lfs::core::Tensor& input_data, lfs::core::Tensor& nms_output) {
+            assert(input_data.dtype() == lfs::core::DataType::Float32 ||
+                   input_data.dtype() == lfs::core::DataType::UInt8);
+            assert(input_data.device() == lfs::core::Device::CUDA);
+            assert(input_data.ndim() == 3);
+            assert(input_data.shape()[0] >= 3);
+
+            const int width = static_cast<int>(input_data.shape()[2]);
+            const int height = static_cast<int>(input_data.shape()[1]);
+
+            ensure_canny_workspace(nms_output, height, width);
+            auto input_contig = input_data.contiguous();
+            if (input_contig.dtype() == lfs::core::DataType::UInt8) {
+                kernels::launch_fused_canny_edge_filter_chw(
+                    input_contig.ptr<uint8_t>(),
+                    nms_output.ptr<float>(),
+                    height,
+                    width);
+            } else {
+                kernels::launch_fused_canny_edge_filter_chw(
+                    input_contig.ptr<float>(),
+                    nms_output.ptr<float>(),
+                    height,
+                    width);
+            }
         }
 
         void normalize_by_positive_median_inplace(lfs::core::Tensor& tensor) {
@@ -296,8 +350,15 @@ namespace lfs::training {
                 return;
             }
             auto [sorted, _] = valid.sort();
-            const float median = sorted[valid.numel() / 2].item_as<float>();
-            tensor.div_(std::max(median, 1e-9f));
+            if (tensor.device() == lfs::core::Device::CUDA) {
+                kernels::launch_normalize_by_device_scalar(
+                    tensor.ptr<float>(),
+                    tensor.numel(),
+                    sorted.ptr<float>() + valid.numel() / 2);
+            } else {
+                const float median = sorted[valid.numel() / 2].item_as<float>();
+                tensor.div_(std::max(median, 1e-9f));
+            }
         }
 
         [[nodiscard]] lfs::core::Tensor normalized_by_positive_median(const lfs::core::Tensor& tensor) {
@@ -320,21 +381,39 @@ namespace lfs::training {
             LOG_INFO("MRNF: pre-allocating capacity for {} Gaussians (current: {}, utilization: {:.1f}%)",
                      capacity, current_size, 100.0f * current_size / capacity);
 
-            auto replace_with_direct = [capacity](Tensor& param) {
+            // When init_model_from_pointcloud was called with capacity = max_cap, every param
+            // is already direct-allocated at that capacity. Re-allocating would briefly hold
+            // both old and new buffers (≈2× peak) before the cuda caching allocator releases the
+            // freed chunk — so only replace if the param's capacity is actually below the target.
+            auto ensure_capacity_direct = [capacity](Tensor& param) {
+                if (param.capacity() >= capacity)
+                    return;
                 auto new_param = Tensor::zeros_direct(param.shape(), capacity);
                 cudaMemcpy(new_param.ptr<float>(), param.ptr<float>(),
                            param.numel() * sizeof(float), cudaMemcpyDeviceToDevice);
                 param = new_param;
             };
 
-            replace_with_direct(_splat_data->means());
-            replace_with_direct(_splat_data->sh0());
-            if (_splat_data->shN().is_valid() && _splat_data->shN().ndim() > 0) {
-                replace_with_direct(_splat_data->shN());
+            // shN is 1D swizzled — its capacity must be in FLOATS, not row count.
+            const auto layout_rest = static_cast<uint32_t>(_splat_data->max_sh_coeffs_rest());
+            auto ensure_shN_capacity_direct = [capacity, layout_rest](Tensor& param) {
+                const size_t cap_floats = lfs::core::sh_swizzled_float_count(capacity, layout_rest);
+                if (param.capacity() >= cap_floats)
+                    return;
+                auto new_param = Tensor::zeros_direct(param.shape(), cap_floats);
+                cudaMemcpy(new_param.ptr<float>(), param.ptr<float>(),
+                           param.numel() * sizeof(float), cudaMemcpyDeviceToDevice);
+                param = new_param;
+            };
+
+            ensure_capacity_direct(_splat_data->means());
+            ensure_capacity_direct(_splat_data->sh0());
+            if (layout_rest > 0 && _splat_data->shN().is_valid() && _splat_data->shN().numel() > 0) {
+                ensure_shN_capacity_direct(_splat_data->shN());
             }
-            replace_with_direct(_splat_data->scaling_raw());
-            replace_with_direct(_splat_data->rotation_raw());
-            replace_with_direct(_splat_data->opacity_raw());
+            ensure_capacity_direct(_splat_data->scaling_raw());
+            ensure_capacity_direct(_splat_data->rotation_raw());
+            ensure_capacity_direct(_splat_data->opacity_raw());
         }
 
         _optimizer = create_optimizer(*_splat_data, *_params);
@@ -370,22 +449,36 @@ namespace lfs::training {
         LOG_INFO("MRNF strategy initialized with {} Gaussians", n);
     }
 
-    void MRNF::pre_step(int iter, RenderOutput& /*render_output*/) {
+    void MRNF::pre_step(int iter, RenderOutput& render_output) {
         _precomputed_edge_scores = lfs::core::Tensor();
         _edge_precompute_valid = false;
 
-        if (!_params || !_params->use_edge_map || !is_refining(iter)) {
+        if (!_params || !_params->use_edge_map || iter >= static_cast<int>(_params->stop_refine)) {
+            reset_edge_accumulator();
             return;
         }
 
-        if (!_views || !_image_loader || _views->size() == 0 || _splat_data->size() == 0) {
+        if (should_accumulate_edge_sample(iter)) {
+            accumulate_edge_sample(iter, render_output);
+        }
+
+        if (!is_refining(iter)) {
             return;
         }
 
-        _precomputed_edge_scores = compute_edge_scores(iter);
-        _edge_precompute_valid = _precomputed_edge_scores.is_valid() &&
-                                 _precomputed_edge_scores.ndim() == 1 &&
-                                 _precomputed_edge_scores.numel() == static_cast<size_t>(_splat_data->size());
+        if (_edge_sample_count <= 0 ||
+            !_edge_score_sum.is_valid() ||
+            _edge_score_sum.ndim() != 1 ||
+            _edge_score_sum.numel() != static_cast<size_t>(_splat_data->size())) {
+            reset_edge_accumulator();
+            return;
+        }
+
+        _precomputed_edge_scores = _edge_score_sum.clone();
+        _precomputed_edge_scores.div_(static_cast<float>(_edge_sample_count));
+        zero_frozen_scores_inplace(*_splat_data, _precomputed_edge_scores);
+        _edge_precompute_valid = true;
+        reset_edge_accumulator();
     }
 
     void MRNF::ensure_densification_info_shape() {
@@ -397,6 +490,82 @@ namespace lfs::training {
             info.shape()[1] != n) {
             _splat_data->_densification_info = lfs::core::Tensor::zeros({2, n}, _splat_data->means().device());
         }
+    }
+
+    int MRNF::edge_target_samples_per_refine_window() const {
+        const int refine_window = _params ? static_cast<int>(_params->refine_every) : 1;
+        if (!_views || _views->size() == 0) {
+            return std::max(1, std::min(refine_window, MRNF_EDGE_MIN_VIEW_SAMPLES));
+        }
+
+        const int num_cam_dataset = static_cast<int>(_views->size());
+        const int requested_samples = num_cam_dataset < MRNF_EDGE_MIN_VIEW_SAMPLES
+                                          ? num_cam_dataset
+                                          : std::max(
+                                                MRNF_EDGE_MIN_VIEW_SAMPLES,
+                                                static_cast<int>(0.08f * static_cast<float>(num_cam_dataset)));
+        return std::max(1, std::min(refine_window, requested_samples));
+    }
+
+    bool MRNF::should_accumulate_edge_sample(int iter) const {
+        if (!_params || !_params->use_edge_map ||
+            iter <= static_cast<int>(_params->start_refine) ||
+            iter >= static_cast<int>(_params->stop_refine) ||
+            _splat_data->size() == 0) {
+            return false;
+        }
+
+        if (is_refining(iter)) {
+            return true;
+        }
+
+        const int target_samples = edge_target_samples_per_refine_window();
+        const int refine_every = std::max(1, static_cast<int>(_params->refine_every));
+        const int stride = std::max(1, refine_every / target_samples);
+        return (iter % stride) == 0;
+    }
+
+    void MRNF::reset_edge_accumulator() {
+        _edge_score_sum = lfs::core::Tensor();
+        _edge_sample_count = 0;
+        _edge_last_sample_iter = -1;
+    }
+
+    void MRNF::accumulate_edge_sample(int iter, const RenderOutput& render_output) {
+        using namespace lfs::core;
+
+        if (_edge_last_sample_iter == iter) {
+            return;
+        }
+        if (!render_output.camera ||
+            !render_output.target_image.is_valid() ||
+            render_output.target_image.device() != Device::CUDA ||
+            (render_output.target_image.dtype() != DataType::Float32 &&
+             render_output.target_image.dtype() != DataType::UInt8) ||
+            render_output.target_image.ndim() != 3 ||
+            render_output.target_image.shape()[0] < 3) {
+            return;
+        }
+
+        const size_t n = static_cast<size_t>(_splat_data->size());
+        if (!_edge_score_sum.is_valid() ||
+            _edge_score_sum.ndim() != 1 ||
+            _edge_score_sum.numel() != n) {
+            _edge_score_sum = Tensor::zeros({n}, _splat_data->means().device());
+            _edge_sample_count = 0;
+        }
+
+        apply_canny_filter(render_output.target_image, _edge_canny_nms_output);
+        normalize_by_positive_median_inplace(_edge_canny_nms_output);
+
+        auto score_render = edge_rasterize(
+            *render_output.camera,
+            this->get_model(),
+            _edge_canny_nms_output);
+        normalize_by_positive_median_inplace(score_render.edges_score);
+        _edge_score_sum.add_(zero_frozen_scores(*_splat_data, score_render.edges_score));
+        ++_edge_sample_count;
+        _edge_last_sample_iter = iter;
     }
 
     void MRNF::post_backward(int iter, RenderOutput& /*render_output*/) {
@@ -411,6 +580,7 @@ namespace lfs::training {
             _splat_data->_densification_info = Tensor::empty({0});
             _precomputed_edge_scores = Tensor();
             _edge_precompute_valid = false;
+            reset_edge_accumulator();
         }
 
         if (iter >= static_cast<int>(_params->stop_refine)) {
@@ -439,6 +609,8 @@ namespace lfs::training {
                 _vis_count.ptr<float>(),
                 vis_row,
                 n);
+            zero_frozen_scores_inplace(*_splat_data, _refine_weight_max);
+            zero_frozen_scores_inplace(*_splat_data, _vis_count);
         }
 
         _splat_data->_densification_info.zero_();
@@ -492,6 +664,7 @@ namespace lfs::training {
         auto dist_from_center = (means - center).abs().max(1);
 
         auto prune_mask = (raw_opacities < MRNF_RAW_OPACITY_PRUNE_THRESHOLD) |
+                          compute_near_zero_rotation_mask(_splat_data->rotation_raw()) |
                           (scale_min < MRNF_LOG_MIN_SCALE_THRESHOLD) |
                           (scale_max > log_max_allowed) |
                           (dist_from_center > max_allowed);
@@ -500,6 +673,7 @@ namespace lfs::training {
             auto active_mask = _free_mask.slice(0, 0, n).logical_not();
             prune_mask = prune_mask.logical_and(active_mask);
         }
+        prune_mask = exclude_frozen_from_mask(*_splat_data, prune_mask);
 
         const int pruned_count = static_cast<int>(prune_mask.sum().item());
 
@@ -512,15 +686,17 @@ namespace lfs::training {
             auto zero_rotation = Tensor::zeros({static_cast<size_t>(pruned_count), 4}, _splat_data->rotation_raw().device());
             _splat_data->rotation_raw().index_put_(prune_indices, zero_rotation);
 
+            const auto layout_rest = static_cast<uint32_t>(_splat_data->max_sh_coeffs_rest());
             reset_optimizer_state_at_indices(*_optimizer, ParamType::Means, prune_indices);
             reset_optimizer_state_at_indices(*_optimizer, ParamType::Sh0, prune_indices);
-            reset_optimizer_state_at_indices(*_optimizer, ParamType::ShN, prune_indices);
+            reset_optimizer_state_at_indices(*_optimizer, ParamType::ShN, prune_indices, layout_rest);
             reset_optimizer_state_at_indices(*_optimizer, ParamType::Scaling, prune_indices);
             reset_optimizer_state_at_indices(*_optimizer, ParamType::Rotation, prune_indices);
             reset_optimizer_state_at_indices(*_optimizer, ParamType::Opacity, prune_indices);
 
             LOG_DEBUG("MRNF: soft-pruned {} splats at iter {} (active: {}, total slots: {})",
                       pruned_count, iter, active_count(), _splat_data->size());
+            LFS_COUNTER_ADD("strategy.mrnf.pruned", pruned_count);
         }
 
         // Replacement should stay active even after growth stop.
@@ -542,12 +718,21 @@ namespace lfs::training {
 
         const size_t n = static_cast<size_t>(_splat_data->size());
         const size_t current_active = active_count();
+        lfs::core::Tensor active_mask;
+        if (_free_mask.is_valid() && n > 0) {
+            active_mask = _free_mask.slice(0, 0, n).logical_not();
+        }
+        lfs::core::Tensor trainable_mask = make_trainable_mask(*_splat_data, n, _splat_data->means().device());
+        auto refine_candidates = (_refine_weight_max > _params->growth_grad_threshold) &&
+                                 (_vis_count > 0.0f);
+        if (active_mask.is_valid()) {
+            refine_candidates = refine_candidates.logical_and(active_mask);
+        }
+        if (trainable_mask.is_valid()) {
+            refine_candidates = refine_candidates.logical_and(trainable_mask);
+        }
         const int desired_total = static_cast<int>(
-            std::round(static_cast<float>(
-                           ((_refine_weight_max > _params->growth_grad_threshold) &&
-                            (_vis_count > 0.0f))
-                               .sum()
-                               .item()) *
+            std::round(static_cast<float>(refine_candidates.sum().item()) *
                        _params->grow_fraction));
         const int budget = (_params->max_cap > 0)
                                ? std::max(0, _params->max_cap - static_cast<int>(current_active))
@@ -555,10 +740,6 @@ namespace lfs::training {
         const int requested_replace = std::min(pruned_count, budget);
         int n_grow = 0;
         lfs::core::Tensor above_threshold;
-        lfs::core::Tensor active_mask;
-        if (_free_mask.is_valid() && n > 0) {
-            active_mask = _free_mask.slice(0, 0, n).logical_not();
-        }
 
         auto seed = static_cast<uint64_t>(
             std::chrono::high_resolution_clock::now().time_since_epoch().count());
@@ -579,6 +760,9 @@ namespace lfs::training {
             if (active_mask.is_valid()) {
                 replace_weights = replace_weights * active_mask;
             }
+            if (trainable_mask.is_valid()) {
+                replace_weights = replace_weights * trainable_mask;
+            }
             if (edge_guidance.is_valid()) {
                 replace_weights = replace_weights * edge_guidance;
             }
@@ -597,11 +781,7 @@ namespace lfs::training {
         }
 
         if (iter < static_cast<int>(_params->grow_until_iter)) {
-            above_threshold = (_refine_weight_max > _params->growth_grad_threshold) &&
-                              (_vis_count > 0.0f);
-            if (active_mask.is_valid()) {
-                above_threshold = above_threshold.logical_and(active_mask);
-            }
+            above_threshold = refine_candidates;
             n_grow = std::max(0, desired_total - actual_replace);
             n_grow = std::min(n_grow, budget - actual_replace);
         }
@@ -644,10 +824,11 @@ namespace lfs::training {
                current_active + split_indices.numel() <= static_cast<size_t>(_params->max_cap));
 
         const size_t K = split_indices.numel();
-        const size_t sh_rest = (_splat_data->shN().is_valid() && _splat_data->shN().ndim() >= 2)
-                                   ? _splat_data->shN().shape()[1]
-                                   : 0;
-        const int shN_dim = static_cast<int>(sh_rest * 3);
+        const size_t sh_rest = _splat_data->max_sh_coeffs_rest();
+        const auto layout_rest = static_cast<uint32_t>(sh_rest);
+        const bool use_shN = layout_rest > 0 &&
+                             _splat_data->shN().is_valid() &&
+                             _splat_data->shN().numel() > 0;
 
         auto child_means = Tensor::empty({K, 3}, Device::CUDA);
         auto child_log_scales = Tensor::empty({K, 3}, Device::CUDA);
@@ -655,32 +836,43 @@ namespace lfs::training {
         auto child_rotations = Tensor::empty({K, 4}, Device::CUDA);
         auto child_sh0 = Tensor::empty({K, 1, 3}, Device::CUDA);
         Tensor child_shN;
-        if (sh_rest > 0) {
+        if (use_shN) {
             child_shN = Tensor::empty({K, sh_rest, 3}, Device::CUDA);
-        } else {
-            child_shN = Tensor::empty({K, 0, 3}, Device::CUDA);
         }
 
+        // The LAS kernel only needs linear shN to copy child rows. shN itself is unchanged
+        // for the parent rows, so keep the resident swizzled buffer in place and gather the
+        // selected child rows below.
         kernels::launch_long_axis_split_gaussians_inplace(
             _splat_data->means().ptr<float>(),
             _splat_data->rotation_raw().ptr<float>(),
             _splat_data->scaling_raw().ptr<float>(),
             _splat_data->sh0().ptr<float>(),
-            shN_dim > 0 ? _splat_data->shN().ptr<float>() : nullptr,
+            nullptr,
             _splat_data->opacity_raw().ptr<float>(),
             child_means.ptr<float>(),
             child_rotations.ptr<float>(),
             child_log_scales.ptr<float>(),
             child_sh0.ptr<float>(),
-            shN_dim > 0 ? child_shN.ptr<float>() : nullptr,
+            nullptr,
             child_raw_opacities.ptr<float>(),
             split_indices.ptr<int64_t>(),
             static_cast<int>(K),
-            shN_dim);
+            0);
+
+        if (use_shN) {
+            shN_swizzled_gather_to_linear_i64(
+                _splat_data->shN().ptr<float>(),
+                split_indices.ptr<int64_t>(),
+                child_shN.ptr<float>(),
+                K,
+                layout_rest,
+                layout_rest);
+        }
 
         reset_optimizer_state_at_indices(*_optimizer, ParamType::Means, split_indices);
         reset_optimizer_state_at_indices(*_optimizer, ParamType::Sh0, split_indices);
-        reset_optimizer_state_at_indices(*_optimizer, ParamType::ShN, split_indices);
+        reset_optimizer_state_at_indices(*_optimizer, ParamType::ShN, split_indices, layout_rest);
         reset_optimizer_state_at_indices(*_optimizer, ParamType::Scaling, split_indices);
         reset_optimizer_state_at_indices(*_optimizer, ParamType::Rotation, split_indices);
         reset_optimizer_state_at_indices(*_optimizer, ParamType::Opacity, split_indices);
@@ -700,6 +892,7 @@ namespace lfs::training {
 
         const size_t n_append = K - append_start;
         if (n_append > 0) {
+            const size_t old_size = static_cast<size_t>(_splat_data->size());
             append_live_deleted_rows(*_splat_data, _free_mask, n_append);
             if (_free_mask.is_valid() && _free_mask.numel() < _splat_data->size() + n_append) {
                 _free_mask.reserve(_splat_data->size() + n_append);
@@ -708,7 +901,10 @@ namespace lfs::training {
 
             auto append_means = child_means.slice(0, append_start, K);
             auto append_sh0 = child_sh0.slice(0, append_start, K);
-            auto append_shN = child_shN.slice(0, append_start, K);
+            Tensor append_shN;
+            if (use_shN) {
+                append_shN = child_shN.slice(0, append_start, K);
+            }
             auto append_scaling = child_log_scales.slice(0, append_start, K);
             auto append_rotation = child_rotations.slice(0, append_start, K);
             auto append_opacity = child_raw_opacities.slice(0, append_start, K);
@@ -718,7 +914,27 @@ namespace lfs::training {
 
             _optimizer->add_new_params(ParamType::Means, append_means, true);
             _optimizer->add_new_params(ParamType::Sh0, append_sh0, true);
-            _optimizer->add_new_params(ParamType::ShN, append_shN, false);
+
+            if (use_shN && append_shN.is_valid() && append_shN.numel() > 0) {
+                const size_t new_size = old_size + n_append;
+                const size_t needed_floats = sh_swizzled_float_count(new_size, layout_rest);
+                if (_splat_data->shN().numel() < needed_floats) {
+                    _splat_data->shN().append_zeros(needed_floats - _splat_data->shN().numel());
+                }
+            }
+
+            if (use_shN && append_shN.is_valid() && append_shN.numel() > 0) {
+                shN_swizzled_gather_from_linear(
+                    _splat_data->shN().ptr<float>(),
+                    old_size,
+                    append_shN.ptr<float>(),
+                    n_append,
+                    layout_rest,
+                    layout_rest);
+                _optimizer->extend_state_for_new_params(ParamType::ShN, n_append);
+            } else {
+                _optimizer->extend_state_for_new_params(ParamType::ShN, n_append);
+            }
             _optimizer->add_new_params(ParamType::Scaling, append_scaling, true);
             _optimizer->add_new_params(ParamType::Rotation, append_rotation, true);
             _optimizer->add_new_params(ParamType::Opacity, append_opacity, true);
@@ -726,6 +942,10 @@ namespace lfs::training {
 
         LOG_DEBUG("MRNF: split {} splats at iter {} (reused: {}, appended: {}, active: {}, total slots: {})",
                   K, iter, append_start, n_append, active_count(), _splat_data->size());
+        LFS_COUNTER_ADD("strategy.mrnf.split", K);
+        LFS_COUNTER_ADD("strategy.mrnf.appended", n_append);
+        LFS_GAUGE("model.gaussians.live", active_count());
+        LFS_GAUGE("model.gaussians.capacity", static_cast<double>(_splat_data->size()));
     }
 
     void MRNF::compact_splats(const lfs::core::Tensor& keep_mask) {
@@ -746,10 +966,50 @@ namespace lfs::training {
             t = std::move(compacted);
         };
 
+        // shN is swizzled — compact via block-aware gather.
+        const auto layout_rest_u32 = static_cast<uint32_t>(_splat_data->max_sh_coeffs_rest());
+        auto compact_shN_swizzled = [&](Tensor& t, size_t cap_rows, int uint8_fill = -1) {
+            if (!t.is_valid() || t.numel() == 0)
+                return;
+            if (layout_rest_u32 == 0)
+                return;
+            auto idx_i32 = valid_indices.dtype() == lfs::core::DataType::Int32
+                               ? valid_indices
+                               : valid_indices.to(lfs::core::DataType::Int32);
+            const size_t cap_floats = cap_rows > 0 ? lfs::core::sh_swizzled_float_count(cap_rows, layout_rest_u32)
+                                                   : lfs::core::sh_swizzled_float_count(new_size, layout_rest_u32);
+            const size_t logical_floats = lfs::core::sh_swizzled_float_count(new_size, layout_rest_u32);
+            auto fresh = Tensor::zeros_direct(TensorShape({logical_floats}), cap_floats, t.device(), t.dtype());
+            if (t.dtype() == DataType::Float32) {
+                lfs::core::shN_swizzled_gather_self(
+                    t.ptr<float>(), fresh.ptr<float>(),
+                    idx_i32.ptr<int>(), new_size, 0, layout_rest_u32);
+            } else if (t.dtype() == DataType::UInt8 || t.dtype() == DataType::Bool) {
+                if (uint8_fill >= 0 && cap_floats > 0) {
+                    const cudaError_t err = cudaMemsetAsync(
+                        fresh.ptr<uint8_t>(),
+                        static_cast<unsigned char>(uint8_fill),
+                        cap_floats * sizeof(uint8_t),
+                        fresh.stream());
+                    if (err != cudaSuccess) {
+                        throw std::runtime_error(
+                            std::string("MRNF::compact_splats: cudaMemsetAsync failed: ") +
+                            cudaGetErrorString(err));
+                    }
+                }
+                lfs::core::shN_swizzled_gather_self_u8(
+                    t.ptr<uint8_t>(), fresh.ptr<uint8_t>(),
+                    idx_i32.ptr<int>(), new_size, 0, layout_rest_u32);
+            } else {
+                throw std::runtime_error("MRNF::compact_splats: unsupported swizzled shN dtype");
+            }
+            t = std::move(fresh);
+        };
+
         compact(_splat_data->means());
         compact(_splat_data->sh0());
-        if (_splat_data->shN().is_valid() && _splat_data->shN().ndim() > 0)
-            compact(_splat_data->shN());
+        if (_splat_data->shN().is_valid() && _splat_data->shN().numel() > 0)
+            compact_shN_swizzled(_splat_data->shN(), cap);
         compact(_splat_data->scaling_raw());
         compact(_splat_data->rotation_raw());
         compact(_splat_data->opacity_raw());
@@ -762,15 +1022,34 @@ namespace lfs::training {
             auto* state = _optimizer->get_state_mutable(pt);
             if (!state)
                 continue;
-            compact(state->exp_avg);
-            compact(state->exp_avg_sq);
+            if (pt == ParamType::ShN) {
+                compact_shN_swizzled(state->exp_avg, cap, 128);
+                compact_shN_swizzled(state->exp_avg_sq, cap);
+                compact(state->exp_avg_scale);
+                compact(state->exp_avg_sq_scale);
+                state->size = lfs::core::sh_swizzled_float_count(new_size, layout_rest_u32);
+                state->capacity = cap > 0 ? lfs::core::sh_swizzled_float_count(cap, layout_rest_u32)
+                                          : lfs::core::sh_swizzled_float_count(new_size, layout_rest_u32);
+            } else {
+                compact(state->exp_avg);
+                compact(state->exp_avg_sq);
+                compact(state->exp_avg_scale);
+                compact(state->exp_avg_sq_scale);
+                state->size = new_size;
+                state->capacity = cap;
+            }
             if (state->exp_avg.is_valid()) {
-                state->grad = Tensor::zeros(state->exp_avg.shape(), state->exp_avg.device());
-                if (cap > 0)
+                if (pt == ParamType::ShN && state->capacity > state->size) {
+                    state->grad = Tensor::zeros_direct(
+                        state->exp_avg.shape(),
+                        state->capacity,
+                        state->exp_avg.device());
+                } else {
+                    state->grad = Tensor::zeros(state->exp_avg.shape(), state->exp_avg.device());
+                }
+                if (cap > 0 && pt != ParamType::ShN)
                     state->grad.reserve(cap);
             }
-            state->size = new_size;
-            state->capacity = cap;
         }
 
         const auto& info = _splat_data->_densification_info;
@@ -798,6 +1077,9 @@ namespace lfs::training {
             _vis_count = _vis_count.index_select(0, valid_indices).contiguous();
         if (_precomputed_edge_scores.is_valid() && _precomputed_edge_scores.numel() > new_size)
             _precomputed_edge_scores = _precomputed_edge_scores.index_select(0, valid_indices).contiguous();
+
+        remap_frozen_ranges_after_compaction(*_splat_data, valid_indices, old_size);
+        apply_frozen_ranges_to_optimizer(*_splat_data, *_optimizer);
     }
 
     void MRNF::inject_noise(int /*iter*/) {
@@ -809,11 +1091,14 @@ namespace lfs::training {
 
         auto seed = static_cast<uint64_t>(
             std::chrono::high_resolution_clock::now().time_since_epoch().count());
+        const auto frozen_mask = make_frozen_mask(*_splat_data, n, _splat_data->means().device());
 
         mrnf_strategy::launch_mrnf_noise_injection(
             _splat_data->means().ptr<float>(),
             _splat_data->opacity_raw().ptr<float>(),
             _vis_count.ptr<float>(),
+            frozen_mask.is_valid() ? frozen_mask.ptr<bool>() : nullptr,
+            frozen_mask.is_valid() ? frozen_mask.numel() : 0,
             lr_mean,
             _params->means_noise_weight,
             _bounds.median_size,
@@ -826,10 +1111,13 @@ namespace lfs::training {
             return;
 
         const float train_t = static_cast<float>(iter) / static_cast<float>(_params->iterations);
+        const auto frozen_mask = make_frozen_mask(*_splat_data, n, _splat_data->means().device());
 
         mrnf_strategy::launch_mrnf_decay(
             _splat_data->opacity_raw().ptr<float>(),
             _splat_data->scaling_raw().ptr<float>(),
+            frozen_mask.is_valid() ? frozen_mask.ptr<bool>() : nullptr,
+            frozen_mask.is_valid() ? frozen_mask.numel() : 0,
             _params->opacity_decay,
             _params->scale_decay,
             train_t,
@@ -856,14 +1144,29 @@ namespace lfs::training {
         auto seed = static_cast<uint64_t>(
             std::chrono::high_resolution_clock::now().time_since_epoch().count());
 
-        auto keep_indices = Tensor::empty({cap}, Device::CUDA, DataType::Int64);
-        mrnf_strategy::launch_gumbel_topk(
-            opacities.ptr<float>(), n, cap, seed,
-            keep_indices.ptr<int64_t>());
-
         auto keep_mask = Tensor::zeros_bool({n}, opacities.device());
-        auto true_vals = Tensor::ones_bool({cap}, opacities.device());
-        keep_mask.index_put_(keep_indices, true_vals);
+        const auto frozen_mask = make_frozen_mask(*_splat_data, n, opacities.device());
+        size_t keep_budget = cap;
+        if (frozen_mask.is_valid()) {
+            const size_t frozen_count = frozen_row_count(*_splat_data, n);
+            if (frozen_count > cap) {
+                LOG_WARN("MRNF: {} frozen splats exceed max_cap {}; preserving frozen rows", frozen_count, cap);
+                return;
+            }
+            keep_mask = frozen_mask.clone();
+            keep_budget = cap - frozen_count;
+            opacities = opacities.masked_fill(frozen_mask, 0.0f);
+        }
+
+        if (keep_budget > 0) {
+            auto keep_indices = Tensor::empty({keep_budget}, Device::CUDA, DataType::Int64);
+            mrnf_strategy::launch_gumbel_topk(
+                opacities.ptr<float>(), n, keep_budget, seed,
+                keep_indices.ptr<int64_t>());
+
+            auto true_vals = Tensor::ones_bool({keep_budget}, opacities.device());
+            keep_mask.index_put_(keep_indices, true_vals);
+        }
         compact_splats(keep_mask);
 
         assert(_splat_data->size() <= cap);
@@ -917,8 +1220,18 @@ namespace lfs::training {
             return;
         }
 
-        auto true_vals = lfs::core::Tensor::ones_bool({static_cast<size_t>(indices.numel())}, indices.device());
-        _free_mask.index_put_(indices, true_vals);
+        auto target_indices = indices;
+        if (auto frozen_mask = make_frozen_mask(*_splat_data, _splat_data->size(), indices.device());
+            frozen_mask.is_valid()) {
+            auto trainable = frozen_mask.index_select(0, indices).logical_not();
+            target_indices = indices.masked_select(trainable);
+            if (target_indices.numel() == 0) {
+                return;
+            }
+        }
+
+        auto true_vals = lfs::core::Tensor::ones_bool({static_cast<size_t>(target_indices.numel())}, target_indices.device());
+        _free_mask.index_put_(target_indices, true_vals);
     }
 
     std::pair<lfs::core::Tensor, int64_t> MRNF::fill_free_slots_with_data(
@@ -939,6 +1252,11 @@ namespace lfs::training {
         const size_t current_size = static_cast<size_t>(_splat_data->size());
         auto active_region = _free_mask.slice(0, 0, current_size);
         auto free_indices = active_region.nonzero().squeeze(-1);
+        if (auto frozen_mask = make_frozen_mask(*_splat_data, current_size, free_indices.device());
+            frozen_mask.is_valid() && free_indices.numel() > 0) {
+            auto trainable = frozen_mask.index_select(0, free_indices).logical_not();
+            free_indices = free_indices.masked_select(trainable);
+        }
         const int64_t num_free = free_indices.numel();
 
         if (num_free == 0) {
@@ -959,13 +1277,25 @@ namespace lfs::training {
         }
         _splat_data->opacity_raw().index_put_(target_indices, opacity_slice);
 
-        if (shN.is_valid() && has_shN_coefficients(_splat_data->shN())) {
-            _splat_data->shN().index_put_(target_indices, shN.slice(0, 0, slots_to_fill));
+        const auto layout_rest = static_cast<uint32_t>(_splat_data->max_sh_coeffs_rest());
+        if (layout_rest > 0 && shN.is_valid() && shN.numel() > 0 &&
+            _splat_data->shN().is_valid() && _splat_data->shN().numel() > 0) {
+            auto target_i32 = target_indices.dtype() == DataType::Int32
+                                  ? target_indices
+                                  : target_indices.to(DataType::Int32);
+            auto shN_slice = shN.slice(0, 0, slots_to_fill);
+            shN_swizzled_scatter_linear(
+                _splat_data->shN().ptr<float>(),
+                target_i32.ptr<int>(),
+                shN_slice.ptr<float>(),
+                static_cast<size_t>(slots_to_fill),
+                layout_rest,
+                layout_rest);
         }
 
         reset_optimizer_state_at_indices(*_optimizer, ParamType::Means, target_indices);
         reset_optimizer_state_at_indices(*_optimizer, ParamType::Sh0, target_indices);
-        reset_optimizer_state_at_indices(*_optimizer, ParamType::ShN, target_indices);
+        reset_optimizer_state_at_indices(*_optimizer, ParamType::ShN, target_indices, layout_rest);
         reset_optimizer_state_at_indices(*_optimizer, ParamType::Scaling, target_indices);
         reset_optimizer_state_at_indices(*_optimizer, ParamType::Rotation, target_indices);
         reset_optimizer_state_at_indices(*_optimizer, ParamType::Opacity, target_indices);
@@ -978,16 +1308,34 @@ namespace lfs::training {
     }
 
     void MRNF::compute_bounds() {
-        const size_t n = active_count();
+        const size_t current_size = static_cast<size_t>(_splat_data->size());
+        lfs::core::Tensor active_indices;
+        lfs::core::Tensor active_means = _splat_data->means();
+        size_t n = active_count();
+
+        if (_free_mask.is_valid() && free_count() > 0) {
+            active_indices = get_active_indices();
+        }
+        if (auto frozen_mask = make_frozen_mask(*_splat_data, current_size, _splat_data->means().device());
+            frozen_mask.is_valid()) {
+            if (!active_indices.is_valid()) {
+                active_indices = get_active_indices();
+            }
+            if (active_indices.numel() > 0) {
+                auto trainable = frozen_mask.index_select(0, active_indices).logical_not();
+                active_indices = active_indices.masked_select(trainable);
+            }
+        }
+        if (active_indices.is_valid()) {
+            n = active_indices.numel();
+            if (n > 0) {
+                active_means = _splat_data->means().index_select(0, active_indices).contiguous();
+            }
+        }
+
         if (n == 0) {
             _bounds_valid = false;
             return;
-        }
-
-        lfs::core::Tensor active_means = _splat_data->means();
-        if (_free_mask.is_valid() && free_count() > 0) {
-            auto active_indices = get_active_indices();
-            active_means = _splat_data->means().index_select(0, active_indices).contiguous();
         }
 
         mrnf_strategy::launch_percentile_bounds(
@@ -1020,7 +1368,8 @@ namespace lfs::training {
     void MRNF::remove_gaussians(const lfs::core::Tensor& mask) {
         using namespace lfs::core;
 
-        Tensor keep_mask = mask.logical_not();
+        const Tensor prune_mask = exclude_frozen_from_mask(*_splat_data, mask);
+        Tensor keep_mask = prune_mask.logical_not();
         const size_t old_size = static_cast<size_t>(_splat_data->size());
         const int n_remove = static_cast<int>(old_size - keep_mask.to(DataType::Int32).sum().template item<int>());
 
@@ -1073,6 +1422,7 @@ namespace lfs::training {
             lfs::io::LoadParams params;
             params.resize_factor = _views->get_resize_factor();
             params.max_width = _views->get_max_width();
+            params.output_uint8 = true;
             if (cam->is_undistort_prepared()) {
                 params.undistort = &cam->undistort_params();
             }
@@ -1094,8 +1444,7 @@ namespace lfs::training {
             apply_canny_filter(image, canny_ws);
             normalize_by_positive_median_inplace(canny_ws.nms_output);
 
-            lfs::core::Tensor bg;
-            auto score_render = edge_rasterize(*cam, this->get_model(), bg, canny_ws.nms_output);
+            auto score_render = edge_rasterize(*cam, this->get_model(), canny_ws.nms_output);
             normalize_by_positive_median_inplace(score_render.edges_score);
             gaussian_scores.add_(score_render.edges_score);
         }

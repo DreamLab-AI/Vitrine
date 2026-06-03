@@ -5,6 +5,7 @@
 #include "io/loader_service.hpp"
 #include "core/logger.hpp"
 #include "core/path_utils.hpp"
+#include "core/splat_data.hpp"
 #include "io/error.hpp"
 #include "io/loaders/blender_loader.hpp"
 #include "io/loaders/checkpoint_loader.hpp"
@@ -32,6 +33,80 @@ namespace lfs::io {
         registry_->registerLoader(std::make_unique<MeshLoader>());
 
         LOG_DEBUG("LoaderService initialized with {} loaders", registry_->size());
+    }
+
+    namespace {
+        [[nodiscard]] bool splat_tensor_renderer_ready(const lfs::core::Tensor& tensor) {
+            if (!tensor.is_valid() || tensor.numel() == 0) {
+                return true; // empty/absent — nothing to migrate
+            }
+            // Match what the Vulkan splat renderer actually binds (vksplat requires this kind).
+            return tensor.is_external_storage() &&
+                   tensor.external_storage_kind() == "vulkan_external_buffer";
+        }
+    } // namespace
+
+    Result<void> migrateSplatTensorsToAllocator(lfs::core::SplatData& model,
+                                                const SplatTensorAllocator& allocator) {
+        if (!allocator) {
+            return {};
+        }
+        if (splat_tensor_renderer_ready(model.means_raw()) &&
+            splat_tensor_renderer_ready(model.sh0_raw()) &&
+            splat_tensor_renderer_ready(model.scaling_raw()) &&
+            splat_tensor_renderer_ready(model.rotation_raw()) &&
+            splat_tensor_renderer_ready(model.opacity_raw()) &&
+            splat_tensor_renderer_ready(model.shN_raw())) {
+            model.set_tensor_allocator(allocator);
+            return {};
+        }
+
+        try {
+            const auto copy_to_allocator =
+                [&](const lfs::core::Tensor& source, const std::string_view name) -> lfs::core::Tensor {
+                lfs::core::Tensor source_cuda =
+                    source.device() == lfs::core::Device::CUDA ? source : source.cuda();
+                if (!source_cuda.is_contiguous()) {
+                    source_cuda = source_cuda.contiguous();
+                }
+                const auto& shape = source_cuda.shape();
+                const size_t capacity = shape.rank() > 0 ? shape[0] : source_cuda.numel();
+                lfs::core::Tensor dst = allocator(shape, capacity, source_cuda.dtype(), name);
+                dst.set_name(std::string{name});
+                dst.copy_from(source_cuda);
+                return dst;
+            };
+
+            const int max_sh = model.get_max_sh_degree();
+            const int active_sh = model.get_active_sh_degree();
+            const float scene_scale = model.get_scene_scale();
+            lfs::core::Tensor deleted = model.has_deleted_mask() ? model.deleted() : lfs::core::Tensor{};
+
+            lfs::core::Tensor shN;
+            if (model.shN_raw().is_valid() && model.shN_raw().numel() > 0) {
+                shN = copy_to_allocator(model.shN_raw(), "SplatData.shN");
+            }
+            lfs::core::SplatData migrated(max_sh,
+                                          copy_to_allocator(model.means_raw(), "SplatData.means"),
+                                          copy_to_allocator(model.sh0_raw(), "SplatData.sh0"),
+                                          std::move(shN),
+                                          copy_to_allocator(model.scaling_raw(), "SplatData.scaling"),
+                                          copy_to_allocator(model.rotation_raw(), "SplatData.rotation"),
+                                          copy_to_allocator(model.opacity_raw(), "SplatData.opacity"),
+                                          scene_scale,
+                                          lfs::core::SplatData::ShNLayout::Swizzled);
+            migrated.set_active_sh_degree(active_sh);
+            if (deleted.is_valid()) {
+                migrated.deleted() = std::move(deleted);
+            }
+            model = std::move(migrated);
+            model.set_tensor_allocator(allocator);
+            lfs::core::Tensor::trim_memory_pool();
+        } catch (const std::exception& e) {
+            return make_error(ErrorCode::CORRUPTED_DATA,
+                              std::format("Failed to migrate splat tensors to renderer storage: {}", e.what()));
+        }
+        return {};
     }
 
     Result<LoadResult> LoaderService::load(
@@ -82,7 +157,21 @@ namespace lfs::io {
         LOG_INFO("Using {} loader for: {}", loader->name(), lfs::core::path_to_utf8(path));
 
         // Perform the load - let the loader return proper errors
-        return loader->load(path, options);
+        auto result = loader->load(path, options);
+
+        // Guarantee a renderer-ready model regardless of the format's decoder: formats that
+        // don't honor splat_tensor_allocator (SOG, SPZ, ...) land in plain CUDA storage, which
+        // the Vulkan splat renderer rejects. This migrates them in one place; PLY/checkpoint are
+        // already external, so it's a no-op for them.
+        if (result && options.splat_tensor_allocator) {
+            if (auto* splat = std::get_if<std::shared_ptr<SplatData>>(&result->data); splat && *splat) {
+                if (auto migrated = migrateSplatTensorsToAllocator(**splat, options.splat_tensor_allocator);
+                    !migrated) {
+                    return std::unexpected(migrated.error());
+                }
+            }
+        }
+        return result;
     }
 
     std::vector<std::string> LoaderService::getAvailableLoaders() const {

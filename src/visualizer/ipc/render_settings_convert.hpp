@@ -8,15 +8,11 @@
 
 namespace lfs::vis {
 
-    // Bump this after updating proxy conversions when RenderSettings layout changes.
-    inline constexpr size_t kRenderSettingsExpectedSize = 368;
-    static_assert(sizeof(RenderSettings) == kRenderSettingsExpectedSize,
-                  "RenderSettings layout changed — update proxy conversions in render_settings_convert.hpp, "
-                  "then bump kRenderSettingsExpectedSize.");
-
     namespace detail {
         inline std::array<float, 3> to_array(const glm::vec3& v) { return {v.x, v.y, v.z}; }
         inline glm::vec3 to_vec3(const std::array<float, 3>& a) { return {a[0], a[1], a[2]}; }
+        inline std::array<float, 4> to_array(const glm::quat& q) { return {q.w, q.x, q.y, q.z}; }
+        inline glm::quat to_quat(const std::array<float, 4>& a) { return {a[0], a[1], a[2], a[3]}; }
     } // namespace detail
 
     inline RenderSettingsProxy to_proxy(const RenderSettings& s) {
@@ -27,6 +23,7 @@ namespace lfs::vis {
         p.mip_filter = s.mip_filter;
         p.sh_degree = s.sh_degree;
         p.render_scale = s.render_scale;
+        p.camera_metrics_mode = static_cast<int>(s.camera_metrics_mode);
         p.show_crop_box = s.show_crop_box;
         p.use_crop_box = s.use_crop_box;
         p.show_ellipsoid = s.show_ellipsoid;
@@ -39,6 +36,10 @@ namespace lfs::vis {
         p.ppisp_mode = static_cast<int>(s.ppisp_mode);
         p.ppisp = s.ppisp_overrides;
         p.background_color = detail::to_array(s.background_color);
+        p.environment_mode = static_cast<int>(s.environment_mode);
+        p.environment_map_path = s.environment_map_path;
+        p.environment_exposure = s.environment_exposure;
+        p.environment_rotation_degrees = s.environment_rotation_degrees;
         p.show_coord_axes = s.show_coord_axes;
         p.axes_size = s.axes_size;
         p.axes_visibility = s.axes_visibility;
@@ -57,7 +58,8 @@ namespace lfs::vis {
         p.show_pivot = s.show_pivot;
         p.split_view_mode = static_cast<int>(s.split_view_mode);
         p.split_position = s.split_position;
-        p.gut = s.gut;
+        p.raster_backend = static_cast<int>(s.raster_backend);
+        p.gut = lfs::rendering::isGutBackend(s.raster_backend);
         p.equirectangular = s.equirectangular;
         p.orthographic = s.orthographic;
         p.ortho_scale = s.ortho_scale;
@@ -78,6 +80,8 @@ namespace lfs::vis {
         p.depth_filter_enabled = s.depth_filter_enabled;
         p.depth_filter_min = detail::to_array(s.depth_filter_min);
         p.depth_filter_max = detail::to_array(s.depth_filter_max);
+        p.depth_filter_rotation = detail::to_array(s.depth_filter_transform.getRotation());
+        p.depth_filter_translation = detail::to_array(s.depth_filter_transform.getTranslation());
         return p;
     }
 
@@ -88,6 +92,7 @@ namespace lfs::vis {
         s.mip_filter = p.mip_filter;
         s.sh_degree = p.sh_degree;
         s.render_scale = p.render_scale;
+        s.camera_metrics_mode = static_cast<RenderSettings::CameraMetricsMode>(p.camera_metrics_mode);
         s.show_crop_box = p.show_crop_box;
         s.use_crop_box = p.use_crop_box;
         s.show_ellipsoid = p.show_ellipsoid;
@@ -100,6 +105,10 @@ namespace lfs::vis {
         s.ppisp_mode = static_cast<RenderSettings::PPISPMode>(p.ppisp_mode);
         s.ppisp_overrides = p.ppisp;
         s.background_color = detail::to_vec3(p.background_color);
+        s.environment_mode = static_cast<EnvironmentBackgroundMode>(p.environment_mode);
+        s.environment_map_path = p.environment_map_path;
+        s.environment_exposure = p.environment_exposure;
+        s.environment_rotation_degrees = p.environment_rotation_degrees;
         s.show_coord_axes = p.show_coord_axes;
         s.axes_size = p.axes_size;
         s.axes_visibility = p.axes_visibility;
@@ -118,8 +127,16 @@ namespace lfs::vis {
         s.show_pivot = p.show_pivot;
         s.split_view_mode = static_cast<SplitViewMode>(p.split_view_mode);
         s.split_position = p.split_position;
-        s.gut = p.gut;
+        const auto previous_backend = s.raster_backend;
+        const bool previous_gut = s.gut;
+        const auto requested_backend = static_cast<lfs::rendering::GaussianRasterBackend>(p.raster_backend);
+        const bool gut_toggle_only = requested_backend == previous_backend && p.gut != previous_gut;
+        s.raster_backend = gut_toggle_only
+                               ? lfs::rendering::viewerRasterBackendForGutMode(p.gut)
+                               : lfs::rendering::normalizeViewerRasterBackend(requested_backend, p.gut);
+        s.gut = lfs::rendering::isGutBackend(s.raster_backend);
         s.equirectangular = p.equirectangular;
+        enforceProjectionBackend(s);
         s.orthographic = p.orthographic;
         s.ortho_scale = p.ortho_scale;
         s.selection_color_committed = detail::to_vec3(p.selection_color_committed);
@@ -139,6 +156,9 @@ namespace lfs::vis {
         s.depth_filter_enabled = p.depth_filter_enabled;
         s.depth_filter_min = detail::to_vec3(p.depth_filter_min);
         s.depth_filter_max = detail::to_vec3(p.depth_filter_max);
+        s.depth_filter_transform =
+            lfs::geometry::EuclideanTransform(detail::to_quat(p.depth_filter_rotation),
+                                              detail::to_vec3(p.depth_filter_translation));
     }
 
 } // namespace lfs::vis

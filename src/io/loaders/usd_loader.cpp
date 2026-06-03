@@ -6,12 +6,14 @@
 #include "core/logger.hpp"
 #include "core/path_utils.hpp"
 #include "core/splat_data.hpp"
+#include "formats/nurec_usdz.hpp"
 #include "formats/usd.hpp"
 #include "io/error.hpp"
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <format>
+#include <string_view>
 
 namespace lfs::io {
 
@@ -22,6 +24,8 @@ namespace lfs::io {
     Result<LoadResult> USDLoader::load(
         const std::filesystem::path& path,
         const LoadOptions& options) {
+
+        constexpr std::string_view kNurecLoaderName = "NuRec USDZ";
 
         LOG_TIMER("USD Loading");
         const auto start_time = std::chrono::high_resolution_clock::now();
@@ -42,10 +46,36 @@ namespace lfs::io {
                               path);
         }
 
+        auto extension = path.extension().string();
+        std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
+
         if (options.validate_only) {
             LOG_DEBUG("Validation only mode for USD: {}", lfs::core::path_to_utf8(path));
 
-            auto validation_result = validate_usd(path);
+            std::expected<void, std::string> validation_result = std::unexpected(std::string{"USD validation not started"});
+            std::string validation_loader = name();
+
+            if (extension == ".usdz") {
+                const auto nurec_hint = is_nurec_usdz(path);
+                if (nurec_hint && *nurec_hint) {
+                    validation_result = validate_nurec_usdz(path);
+                    if (validation_result) {
+                        validation_loader = std::string(kNurecLoaderName);
+                    }
+                } else {
+                    validation_result = validate_usd(path);
+                    if (!validation_result && !nurec_hint) {
+                        auto nurec_validation = validate_nurec_usdz(path);
+                        if (nurec_validation) {
+                            validation_result = std::move(nurec_validation);
+                            validation_loader = std::string(kNurecLoaderName);
+                        }
+                    }
+                }
+            } else {
+                validation_result = validate_usd(path);
+            }
+
             if (!validation_result) {
                 return make_error(ErrorCode::INVALID_HEADER,
                                   std::format("Invalid USD gaussian file: {}", validation_result.error()),
@@ -59,22 +89,73 @@ namespace lfs::io {
             LoadResult result;
             result.data = std::shared_ptr<SplatData>{};
             result.scene_center = Tensor::zeros({3}, Device::CPU);
-            result.loader_used = name();
+            result.loader_used = validation_loader;
             result.load_time = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::high_resolution_clock::now() - start_time);
             result.warnings = {};
             return result;
         }
 
-        if (options.progress) {
-            options.progress(50.0f, "Parsing OpenUSD ParticleField...");
-        }
+        std::string loader_used = name();
+        std::expected<SplatData, std::string> splat_result = std::unexpected(std::string{"USD loader not initialized"});
 
-        auto splat_result = load_usd(path);
-        if (!splat_result) {
-            return make_error(ErrorCode::CORRUPTED_DATA,
-                              std::format("Failed to load USD gaussian file: {}", splat_result.error()),
-                              path);
+        if (extension == ".usdz") {
+            const auto nurec_hint = is_nurec_usdz(path);
+            if (nurec_hint && *nurec_hint) {
+                if (options.progress) {
+                    options.progress(50.0f, "Parsing NuRec USDZ...");
+                }
+
+                loader_used = std::string(kNurecLoaderName);
+                splat_result = load_nurec_usdz(path);
+                if (!splat_result) {
+                    return make_error(ErrorCode::CORRUPTED_DATA,
+                                      std::format("Failed to load USD gaussian file: {}", splat_result.error()),
+                                      path);
+                }
+            } else {
+                if (options.progress) {
+                    options.progress(50.0f, "Parsing OpenUSD data...");
+                }
+
+                auto openusd_result = load_usd(path);
+                if (openusd_result) {
+                    splat_result = std::move(openusd_result);
+                } else if (!nurec_hint) {
+                    LOG_INFO("USDZ archive inspection failed for {}: {}. Trying NuRec fallback after OpenUSD failure.",
+                             lfs::core::path_to_utf8(path), nurec_hint.error());
+                    if (options.progress) {
+                        options.progress(75.0f, "Parsing NuRec USDZ...");
+                    }
+
+                    auto nurec_result = load_nurec_usdz(path);
+                    if (nurec_result) {
+                        loader_used = std::string(kNurecLoaderName);
+                        splat_result = std::move(nurec_result);
+                    } else {
+                        return make_error(ErrorCode::CORRUPTED_DATA,
+                                          std::format("Failed to load USD gaussian file: OpenUSD: {}; NuRec USDZ: {}",
+                                                      openusd_result.error(),
+                                                      nurec_result.error()),
+                                          path);
+                    }
+                } else {
+                    return make_error(ErrorCode::CORRUPTED_DATA,
+                                      std::format("Failed to load USD gaussian file: {}", openusd_result.error()),
+                                      path);
+                }
+            }
+        } else {
+            if (options.progress) {
+                options.progress(50.0f, "Parsing OpenUSD ParticleField...");
+            }
+
+            splat_result = load_usd(path);
+            if (!splat_result) {
+                return make_error(ErrorCode::CORRUPTED_DATA,
+                                  std::format("Failed to load USD gaussian file: {}", splat_result.error()),
+                                  path);
+            }
         }
 
         if (options.progress) {
@@ -87,7 +168,7 @@ namespace lfs::io {
         LoadResult result{
             .data = std::make_shared<SplatData>(std::move(*splat_result)),
             .scene_center = Tensor::zeros({3}, Device::CPU),
-            .loader_used = name(),
+            .loader_used = loader_used,
             .load_time = load_time,
             .warnings = {}};
 

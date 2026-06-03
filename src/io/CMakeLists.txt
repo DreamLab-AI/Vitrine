@@ -24,6 +24,7 @@ target_link_libraries(lfs_io_cuda
         INTERFACE
         lfs_core      # Propagate to consumers, not linked during device linking
         PRIVATE
+        lfs_diagnostics
         CUDA::cudart
 )
 
@@ -92,7 +93,9 @@ target_include_directories(lfs_video
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_SOURCE_DIR}/src/core/include
         ${CMAKE_SOURCE_DIR}/src
-        ${CMAKE_SOURCE_DIR}/external
+)
+target_include_directories(lfs_video SYSTEM PRIVATE
+    ${CMAKE_SOURCE_DIR}/external
 )
 
 target_link_libraries(lfs_video
@@ -142,10 +145,14 @@ add_library(lfs_io STATIC
         formats/html.hpp
         formats/html.cpp
         formats/html_viewer_resources.hpp
+        formats/rad.hpp
+        formats/rad.cpp
         formats/spz.hpp
         formats/spz.cpp
         formats/usd.hpp
         formats/usd.cpp
+        formats/nurec_usdz.hpp
+        formats/nurec_usdz.cpp
 
         # Concrete loader implementations
         loaders/loader_utils.hpp
@@ -185,9 +192,11 @@ target_include_directories(lfs_io
         $<INSTALL_INTERFACE:include>
         PRIVATE
         ${CMAKE_SOURCE_DIR}/src
-        ${CMAKE_SOURCE_DIR}/external
-        ${CMAKE_SOURCE_DIR}/external/nvImageCodec/include
         ${CMAKE_SOURCE_DIR}/external/spz
+)
+target_include_directories(lfs_io SYSTEM PRIVATE
+    ${CMAKE_SOURCE_DIR}/external
+    ${CMAKE_SOURCE_DIR}/external/nvImageCodec/include
 )
 
 # Find the actual WebP library targets
@@ -232,12 +241,14 @@ target_link_libraries(lfs_io
         PUBLIC
         lfs_core            # Link to modular core library for SplatData, Camera, etc.
         PRIVATE
+        lfs_geometry
         TBB::tbb
         spdlog::spdlog
         nlohmann_json::nlohmann_json
         ${WEBP_DECODE_LIB}     # WebP for SOG decompression
         ${WEBP_ENCODE_LIB}     # WebP for SOG/HTML export
         ${ARCHIVE_LIB}         # LibArchive for SOG bundle support
+        ZLIB::ZLIB             # gzip/msgpack payloads inside NuRec USDZ
         CUDA::cudart           # CUDA runtime for nvImageCodec
         lfs_io_cuda            # IO-specific CUDA kernels (morton, k-means)
         lfs_core_cuda          # Core CUDA utilities (lanczos_resize for nvcodec)
@@ -254,6 +265,19 @@ if(TARGET nvimgcodec)
     message(STATUS "Linking nvImageCodec to lfs_io")
 else()
     message(WARNING "nvImageCodec target not found - JPEG hardware decode will not work")
+endif()
+
+if(TARGET nvimgcodec_imgproc_static)
+    target_compile_options(nvimgcodec_imgproc_static PRIVATE
+        $<$<COMPILE_LANGUAGE:CUDA>:--diag-suppress=860,3004>
+        $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CXX_COMPILER_FRONTEND_VARIANT:MSVC>>:-Xcompiler "/wd4834">
+    )
+endif()
+
+if(TARGET nvimgcodec)
+    target_compile_options(nvimgcodec PRIVATE
+        $<$<CXX_COMPILER_FRONTEND_VARIANT:MSVC>:/wd4267>
+    )
 endif()
 
 # Set C++ standard

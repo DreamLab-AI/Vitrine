@@ -75,13 +75,19 @@ namespace lfs::core {
             scale_steps(1.0f / steps_scaler);
         }
 
-        int OptimizationParameters::resolved_ppisp_controller_activation_step() const {
+        int OptimizationParameters::resolved_total_iterations() const {
+            const int base_iters = static_cast<int>(iterations);
+            const int sparse_tail = enable_sparsity ? std::max(0, sparsify_steps) : 0;
+            return base_iters + sparse_tail;
+        }
+
+        int OptimizationParameters::resolved_ppisp_controller_activation_step(const int total_iterations) const {
             if (ppisp_controller_activation_step >= 0)
                 return ppisp_controller_activation_step;
 
             const float clamped_scaler = std::max(steps_scaler, 1.0f);
             const int tail_iters = static_cast<int>(std::lround(5000.0f * clamped_scaler));
-            return std::max(0, static_cast<int>(iterations) - tail_iters);
+            return std::max(0, total_iterations - tail_iters);
         }
 
         nlohmann::json OptimizationParameters::to_json() const {
@@ -194,6 +200,23 @@ namespace lfs::core {
         std::string TrainingParameters::validate() const {
             if (auto error = optimization.validate(); !error.empty()) {
                 return error;
+            }
+            if (!add_splat_paths.empty()) {
+                if (resume_checkpoint.has_value()) {
+                    return "--add-splat cannot be used together with --resume";
+                }
+                if (!add_splat_freeze.empty() && add_splat_freeze.size() != add_splat_paths.size()) {
+                    return "--add-splat freeze metadata is inconsistent";
+                }
+                for (const auto& path : add_splat_paths) {
+                    if (path.empty()) {
+                        return "--add-splat path cannot be empty";
+                    }
+                    if (!std::filesystem::exists(path)) {
+                        return std::format("Added splat does not exist: '{}'",
+                                           lfs::core::path_to_utf8(path));
+                    }
+                }
             }
             if (optimization.ppisp_freeze_from_sidecar && !resume_checkpoint.has_value()) {
                 if (optimization.ppisp_sidecar_path.empty()) {
@@ -549,6 +572,7 @@ namespace lfs::core {
 
                 nlohmann::json json;
                 json["dataset"] = params.dataset.to_json();
+                json["server"] = params.server.to_json();
                 json["optimization"] = opt_copy.to_json();
 
                 const auto now = std::chrono::system_clock::now();
@@ -610,6 +634,31 @@ namespace lfs::core {
             return loading_json;
         }
 
+        nlohmann::json ServerConfig::to_json() const {
+            nlohmann::json json;
+            json["tcp_server_connection_port"] = tcp_server_connection_port;
+            json["tcp_broadcast_connection_port"] = tcp_broadcast_connection_port;
+            json["tcp_connection"] = tcp_connection;
+
+            return json;
+        }
+
+        ServerConfig ServerConfig::from_json(const nlohmann::json& j) {
+            ServerConfig server;
+
+            if (j.contains("tcp_server_connection_port")) {
+                server.tcp_server_connection_port = j["tcp_server_connection_port"].get<int>();
+            }
+            if (j.contains("tcp_broadcast_connection_port")) {
+                server.tcp_broadcast_connection_port = j["tcp_broadcast_connection_port"].get<int>();
+            }
+            if (j.contains("tcp_connection")) {
+                server.tcp_connection = j["tcp_connection"].get<bool>();
+            }
+
+            return server;
+        }
+
         nlohmann::json DatasetConfig::to_json() const {
             nlohmann::json json;
 
@@ -622,6 +671,8 @@ namespace lfs::core {
             json["loading_params"] = loading_params.to_json();
             json["invert_masks"] = invert_masks;
             json["mask_threshold"] = mask_threshold;
+            if (!output_name.empty())
+                json["output_name"] = output_name;
 
             return json;
         }
@@ -637,6 +688,9 @@ namespace lfs::core {
             dataset.test_every = j["test_every"].get<int>();
             dataset.output_path = utf8_to_path(j["output_folder"].get<std::string>());
 
+            if (j.contains("output_name")) {
+                dataset.output_name = j["output_name"].get<std::string>();
+            }
             if (j.contains("loading_params")) {
                 dataset.loading_params = LoadingParams::from_json(j["loading_params"]);
             }

@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <args.hxx>
 #include <array>
+#include <charconv>
 #include <cmath>
 #include <cstdlib>
 #include <expected>
@@ -31,6 +32,113 @@ namespace {
     };
 
     const std::set<std::string> VALID_STRATEGIES = {"mcmc", "mrnf", "mnrf", "lfs", "igs+"};
+
+    std::optional<lfs::core::param::BackgroundMode> parse_bg_mode(const std::string& mode) {
+        using lfs::core::param::BackgroundMode;
+        if (mode == "solidcolor")
+            return BackgroundMode::SolidColor;
+        if (mode == "modulation")
+            return BackgroundMode::Modulation;
+        if (mode == "image")
+            return BackgroundMode::Image;
+        if (mode == "random")
+            return BackgroundMode::Random;
+        return std::nullopt;
+    }
+
+    std::string_view trim_view(std::string_view value) {
+        constexpr std::string_view whitespace = " \t\n\r\v\f";
+        const auto first = value.find_first_not_of(whitespace);
+        if (first == std::string_view::npos)
+            return {};
+        const auto last = value.find_last_not_of(whitespace);
+        return value.substr(first, (last - first + 1));
+    }
+
+    std::optional<std::array<float, 3>> parse_bg_hex_color(std::string_view color) {
+        if (color.size() != 7 || color[0] != '#')
+            return std::nullopt;
+
+        std::array<float, 3> values{};
+        for (size_t i = 0; i < values.size(); ++i) {
+            int channel = 0;
+            auto [ptr, ec] = std::from_chars(color.data() + 1 + i * 2, color.data() + 1 + i * 2 + 2, channel, 16);
+            if (ec != std::errc() || ptr != color.data() + 1 + i * 2 + 2)
+                return std::nullopt;
+            values[i] = static_cast<float>(channel) / 255.0f;
+        }
+
+        return values;
+    }
+
+    std::optional<std::array<float, 3>> parse_bg_rgb_color(std::string_view color) {
+        if (color.size() < 7 || color.front() != '(' || color.back() != ')')
+            return std::nullopt;
+
+        std::array<float, 3> values{};
+        std::string_view inner = color.substr(1, color.size() - 2);
+
+        for (size_t i = 0; i < values.size(); ++i) {
+            auto comma_pos = inner.find(',');
+            if (i < 2 && comma_pos == std::string_view::npos)
+                return std::nullopt;
+            if (i == 2 && comma_pos != std::string_view::npos)
+                return std::nullopt;
+
+            std::string_view token = inner.substr(0, comma_pos);
+            token = trim_view(token);
+
+            int channel = 0;
+            auto [ptr, ec] = std::from_chars(token.data(), token.data() + token.size(), channel);
+            if (ec != std::errc() || ptr != token.data() + token.size() || channel < 0 || channel > 255)
+                return std::nullopt;
+
+            values[i] = static_cast<float>(channel) / 255.0f;
+            if (i < 2) {
+                inner.remove_prefix(comma_pos + 1);
+            }
+        }
+
+        return values;
+    }
+
+    std::optional<std::array<float, 3>> parse_bg_color(const std::string& color) {
+        const auto trimmed = trim_view(color);
+        if (auto value = parse_bg_hex_color(trimmed))
+            return value;
+        if (auto value = parse_bg_rgb_color(trimmed))
+            return value;
+        return std::nullopt;
+    }
+
+    std::expected<std::vector<bool>, std::string> parse_add_splat_freeze_modifiers(
+        const std::vector<std::string>& args) {
+        std::vector<bool> freeze;
+        for (size_t i = 1; i < args.size(); ++i) {
+            const auto& arg = args[i];
+            if (arg == "--add-splat") {
+                if (i + 1 >= args.size()) {
+                    return std::unexpected("--add-splat requires a path");
+                }
+                const bool frozen = (i + 2 < args.size() && args[i + 2] == "--freeze");
+                freeze.push_back(frozen);
+                i += frozen ? 2 : 1;
+                continue;
+            }
+            if (arg.starts_with("--add-splat=")) {
+                const bool frozen = (i + 1 < args.size() && args[i + 1] == "--freeze");
+                freeze.push_back(frozen);
+                if (frozen) {
+                    ++i;
+                }
+                continue;
+            }
+            if (arg == "--freeze") {
+                return std::unexpected("--freeze must immediately follow --add-splat <path>");
+            }
+        }
+        return freeze;
+    }
 
     // Parse log level from string
     lfs::core::LogLevel parse_log_level(const std::string& level_str) {
@@ -62,6 +170,7 @@ namespace {
                 "LichtFeld Studio: High-performance CUDA implementation of 3D Gaussian Splatting algorithm.\n",
                 "\nSUBCOMMANDS:\n"
                 "convert -- Convert between .ply, .sog, .spz, .usd/.usda/.usdc, .html\n"
+                "mesh2splat -- Convert a mesh file to Gaussian splats\n"
                 "plugin -- Manage plugins (create, check, list)\n"
                 "\n"
                 "Run '<subcommand> --help' for details.\n"
@@ -71,6 +180,7 @@ namespace {
                 "lichtfeld-studio --resume checkpoint.resume\n"
                 "lichtfeld-studio -v model.ply\n"
                 "lichtfeld-studio convert in.ply out.spz\n"
+                "lichtfeld-studio mesh2splat model.obj -o model_splat.ply\n"
                 "lichtfeld-studio plugin create my_plugin\n"
                 "\n"
                 "ENVIRONMENT:\n"
@@ -94,8 +204,11 @@ namespace {
             ::args::Group paths_group(parser, "TRAINING PATHS:");
             ::args::ValueFlag<std::string> data_path(paths_group, "data_path", "Path to training data", {'d', "data-path"});
             ::args::ValueFlag<std::string> output_path(paths_group, "output_path", "Path to output", {'o', "output-path"});
+            ::args::ValueFlag<std::string> output_name(paths_group, "output_name", "Output filename (replaces default splat_ITER.ply stem)", {"output-name"});
             ::args::ValueFlag<std::string> config_file(paths_group, "config_file", "LichtFeldStudio config file (json)", {"config"});
             ::args::ValueFlag<std::string> init_path(paths_group, "path", "Initialize from splat file (.ply, .sog, .spz, .usd, .usda, .usdc, .usdz, .resume)", {"init"});
+            ::args::ValueFlagList<std::string> add_splats(paths_group, "path", "Append trained splat file(s) to the training model before optimizer initialization", {"add-splat"});
+            ::args::CounterFlag freeze(paths_group, "freeze", "Freeze the immediately preceding --add-splat rows from optimizer gradients and densification", {"freeze"});
 
             ::args::ValueFlag<std::string> import_cameras(paths_group, "path", "Import COLMAP cameras from sparse folder (no images required)", {"import-cameras"});
 
@@ -111,9 +224,12 @@ namespace {
             ::args::ValueFlag<int> max_cap(training_group, "max_cap", "Maximum number of Gaussians", {"max-cap"});
             ::args::ValueFlag<float> min_opacity(training_group, "min_opacity", "Minimum opacity threshold", {"min-opacity"});
             ::args::ValueFlag<float> steps_scaler(training_group, "steps_scaler", "Scale training steps by factor", {"steps-scaler"});
-            ::args::ValueFlag<int> tile_mode(training_group, "tile_mode", "Tile mode for memory-efficient training: 1=1 tile, 2=2 tiles, 4=4 tiles (default: 1)", {"tile-mode"});
+            ::args::ValueFlag<int> tile_mode(training_group, "tile_mode", "Tile mode for 3DGUT memory-efficient training: 1=1 tile, 2=2 tiles, 4=4 tiles (default: 1; ignored for 3DGS/FastGS)", {"tile-mode"});
             ::args::Flag use_error_map(training_group, "use_error_map", "Weight MRNF refine signal by per-pixel SSIM error map", {"use-error-map"});
             ::args::Flag use_edge_map(training_group, "use_edge_map", "Weight MRNF refine signal by Sobel edge map on GT images", {"use-edge-map"});
+            ::args::ValueFlag<std::string> bg_mode(training_group, "mode", "Background mode: solidcolor, modulation, image, random (default: solidcolor)", {"bg-mode"});
+            ::args::ValueFlag<std::string> bg_color(training_group, "color", "solidcolor background color as #RRGGBB or (R,G,B) with 0-255 channels (default: #000000)", {"bg-color"});
+            ::args::ValueFlag<std::string> bg_image_path(training_group, "path", "Background image path (required when --bg-mode image)", {"bg-image-path"});
 
             // =============================================================================
             // INITIALIZATION
@@ -140,10 +256,17 @@ namespace {
                                                                 {"2", 2},
                                                                 {"4", 4},
                                                                 {"8", 8}});
-            ::args::ValueFlag<int> max_width(dataset_group, "max_width", "Max width of images in px (default: 3840)", {"max-width"});
+            ::args::ValueFlag<int> max_width(dataset_group, "max_width", "Max width of images in px; 0 disables the cap (default: 3840)", {"max-width"});
             ::args::Flag no_cpu_cache(dataset_group, "no_cpu_cache", "Disable CPU memory caching (default: enabled)", {"no-cpu-cache"});
             ::args::Flag no_fs_cache(dataset_group, "no_fs_cache", "Disable filesystem caching (default: enabled)", {"no-fs-cache"});
             ::args::Flag undistort(dataset_group, "undistort", "Undistort images on-the-fly before training", {"undistort"});
+            ::args::MapFlag<std::string, std::string> centralize(dataset_group, "mode",
+                                                                 "Centralize dataset origin: off, by_pointcloud, by_cameras (default: off)",
+                                                                 {"centralize"},
+                                                                 std::unordered_map<std::string, std::string>{
+                                                                     {"off", "off"},
+                                                                     {"by_pointcloud", "by_pointcloud"},
+                                                                     {"by_cameras", "by_cameras"}});
 
             // =============================================================================
             // MASK OPTIONS
@@ -167,7 +290,7 @@ namespace {
             ::args::Group sparsity_sep(parser, " ");
             ::args::Group sparsity_group(parser, "SPARSITY OPTIMIZATION:");
             ::args::Flag enable_sparsity(sparsity_group, "enable_sparsity", "Enable sparsity optimization", {"enable-sparsity"});
-            ::args::ValueFlag<int> sparsify_steps(sparsity_group, "sparsify_steps", "Number of steps for sparsification (default: 15000)", {"sparsify-steps"});
+            ::args::ValueFlag<int> sparsify_steps(sparsity_group, "sparsify_steps", "Number of sparsification steps to run after regular training (default: 15000)", {"sparsify-steps"});
             ::args::ValueFlag<float> init_rho(sparsity_group, "init_rho", "Initial ADMM penalty parameter (default: 0.0005)", {"init-rho"});
             ::args::ValueFlag<float> prune_ratio(sparsity_group, "prune_ratio", "Final pruning ratio for sparsity (default: 0.6)", {"prune-ratio"});
 
@@ -182,7 +305,6 @@ namespace {
             ::args::Flag ppisp_controller(rendering_group, "ppisp_controller", "Enable PPISP controller for novel views", {"ppisp-controller"});
             ::args::Flag ppisp_freeze_from_sidecar(rendering_group, "ppisp_freeze", "Freeze PPISP learning and load PPISP weights from a sidecar file", {"ppisp-freeze"});
             ::args::ValueFlag<std::string> ppisp_sidecar_path(rendering_group, "path", "Path to PPISP sidecar (.ppisp) used for frozen PPISP training", {"ppisp-sidecar"});
-            ::args::Flag bg_modulation(rendering_group, "bg_modulation", "Enable sinusoidal background modulation", {"bg-modulation"});
             ::args::Flag gut(rendering_group, "gut", "Enable GUT mode", {"gut"});
 
             // =============================================================================
@@ -206,7 +328,6 @@ namespace {
 #ifndef LFS_BUILD_PORTABLE
             ::args::Flag no_splash(ui_group, "no_splash", "Skip splash screen on startup", {"no-splash"});
 #endif
-            ::args::Flag no_interop(ui_group, "no_interop", "Disable CUDA-GL interop (use CPU fallback for display)", {"no-interop"});
             ::args::Flag debug_python(ui_group, "debug_python", "Start debugpy listener on port 5678 for plugin debugging", {"debug-python"});
             ::args::ValueFlag<int> debug_python_port(ui_group, "port", "Port for debugpy listener (default: 5678)", {"debug-python-port"});
 
@@ -220,6 +341,9 @@ namespace {
             ::args::Flag quiet(logging_group, "quiet", "Suppress non-error output (equivalent to --log-level error)", {'q', "quiet"});
             ::args::ValueFlag<std::string> log_file(logging_group, "file", "Optional log file path", {"log-file"});
             ::args::ValueFlag<std::string> log_filter(logging_group, "pattern", "Filter log messages (glob: *foo*, regex: \\\\d+)", {"log-filter"});
+            ::args::Flag tcp_connection(parser, "tcp_connection", "Use TCP connection for signals and events", {"tcp-connection"});
+            ::args::ValueFlag<int> tcp_server_connection_port(parser, "tcp_server_connection_port", "TCP connection port when tcp connection is in use for server requests, -1 for auto", {"tcp-server-port"});
+            ::args::ValueFlag<int> tcp_broadcast_connection_port(parser, "tcp_broadcast_connection_port", "TCP connection port when tcp connection is in use for broadcasting, -1 for auto", {"tcp-broadcast-port"});
 
             // =============================================================================
             // EXTENSIONS
@@ -375,6 +499,26 @@ namespace {
                 }
             }
 
+            auto add_splat_freeze = parse_add_splat_freeze_modifiers(args);
+            if (!add_splat_freeze) {
+                return std::unexpected(add_splat_freeze.error());
+            }
+            if (add_splats) {
+                const auto add_splat_values = ::args::get(add_splats);
+                if (add_splat_freeze->size() != add_splat_values.size()) {
+                    return std::unexpected("--add-splat parser metadata is inconsistent");
+                }
+                for (size_t i = 0; i < add_splat_values.size(); ++i) {
+                    const auto& path_str = add_splat_values[i];
+                    const auto splat_path = lfs::core::utf8_to_path(path_str);
+                    if (!std::filesystem::exists(splat_path)) {
+                        return std::unexpected(std::format("Added splat does not exist: {}", path_str));
+                    }
+                    params.add_splat_paths.push_back(splat_path);
+                    params.add_splat_freeze.push_back((*add_splat_freeze)[i]);
+                }
+            }
+
             // Training mode
             const bool has_data_path = data_path && !::args::get(data_path).empty();
             const bool has_output_path = output_path && !::args::get(output_path).empty();
@@ -384,6 +528,12 @@ namespace {
             if (headless && !has_data_path && !has_resume) {
                 return std::unexpected(std::format(
                     "ERROR: Headless mode requires --data-path or --resume\n\n{}",
+                    parser.Help()));
+            }
+
+            if (tcp_connection && !headless) {
+                return std::unexpected(std::format(
+                    "ERROR: TCP connection mode requires --headless\n\n{}",
                     parser.Help()));
             }
 
@@ -448,11 +598,8 @@ namespace {
 
             if (max_width) {
                 int width = ::args::get(max_width);
-                if (width <= 0) {
-                    return std::unexpected("ERROR: --max-width must be greather than 0");
-                }
-                if (width > 4096) {
-                    return std::unexpected("ERROR: --max-width cannot be higher than 4096");
+                if (width < 0) {
+                    return std::unexpected("ERROR: --max-width must be 0 or greater");
                 }
             }
 
@@ -495,6 +642,27 @@ namespace {
                 }
             }
 
+            std::optional<lfs::core::param::BackgroundMode> parsed_bg_mode;
+            if (bg_mode) {
+                parsed_bg_mode = parse_bg_mode(::args::get(bg_mode));
+                if (!parsed_bg_mode) {
+                    return std::unexpected("ERROR: --bg-mode must be one of solidcolor, modulation, image, or random");
+                }
+            }
+
+            std::optional<std::array<float, 3>> parsed_bg_color;
+            if (bg_color) {
+                parsed_bg_color = parse_bg_color(::args::get(bg_color));
+                if (!parsed_bg_color) {
+                    return std::unexpected("ERROR: --bg-color must be #RRGGBB or (R,G,B) with 0-255 channels");
+                }
+            }
+
+            if (parsed_bg_mode == lfs::core::param::BackgroundMode::Image &&
+                (!bg_image_path || ::args::get(bg_image_path).empty())) {
+                return std::unexpected("ERROR: --bg-image-path is required when --bg-mode image");
+            }
+
             const auto cli_option_present = [&args](const std::initializer_list<std::string_view> names) {
                 for (size_t i = 1; i < args.size(); ++i) {
                     const std::string_view arg = args[i];
@@ -518,9 +686,12 @@ namespace {
                                         // Capture values, not references
                                         iterations_val = cli_option_present({"-i", "--iter"}) ? std::optional<uint32_t>(::args::get(iterations)) : std::optional<uint32_t>(),
                                         resize_factor_val = resize_factor ? std::optional<int>(::args::get(resize_factor)) : std::optional<int>(1), // default 1
-                                        max_width_val = max_width ? std::optional<int>(::args::get(max_width)) : std::optional<int>(3840),          // default 3840
+                                        max_width_val = max_width ? std::optional<int>(::args::get(max_width)) : std::optional<int>(3840),
                                         no_cpu_cache_flag = static_cast<bool>(no_cpu_cache),
                                         no_fs_cache_flag = static_cast<bool>(no_fs_cache),
+                                        tcp_server_connection_port_val = tcp_server_connection_port ? std::optional<int>(::args::get(tcp_server_connection_port)) : std::optional<int>(),
+                                        tcp_broadcast_connection_port_val = tcp_broadcast_connection_port ? std::optional<int>(::args::get(tcp_broadcast_connection_port)) : std::optional<int>(),
+                                        tcp_connection_flag = bool(tcp_connection),
                                         max_cap_val = cli_option_present({"--max-cap"}) ? std::optional<int>(::args::get(max_cap)) : std::optional<int>(),
                                         config_file_val = cli_option_present({"--config"}) ? std::optional<std::string>(::args::get(config_file)) : std::optional<std::string>(),
                                         images_folder_val = cli_option_present({"--images"}) ? std::optional<std::string>(::args::get(images_folder)) : std::optional<std::string>(),
@@ -543,6 +714,7 @@ namespace {
                                         mask_mode_val = cli_option_present({"--mask-mode"}) ? std::optional<lfs::core::param::MaskMode>(::args::get(mask_mode)) : std::optional<lfs::core::param::MaskMode>(),
                                         // Python scripts
                                         python_scripts_val = cli_option_present({"--python-script"}) ? std::optional<std::vector<std::string>>(::args::get(python_scripts)) : std::optional<std::vector<std::string>>(),
+                                        centralize_val = cli_option_present({"--centralize"}) ? std::optional<std::string>(::args::get(centralize)) : std::optional<std::string>(),
                                         // Capture flag states
                                         enable_mip_flag = bool(enable_mip),
                                         use_bilateral_grid_flag = bool(use_bilateral_grid),
@@ -558,11 +730,12 @@ namespace {
 #else
                                         no_splash_flag = bool(no_splash),
 #endif
-                                        no_interop_flag = bool(no_interop),
                                         debug_python_flag = bool(debug_python),
                                         debug_python_port_val = cli_option_present({"--debug-python-port"}) ? std::optional<int>(::args::get(debug_python_port)) : std::optional<int>(),
                                         enable_save_eval_images_flag = bool(enable_save_eval_images),
-                                        bg_modulation_flag = bool(bg_modulation),
+                                        bg_mode_val = parsed_bg_mode,
+                                        bg_color_val = parsed_bg_color,
+                                        bg_image_path_val = cli_option_present({"--bg-image-path"}) ? std::optional<std::string>(::args::get(bg_image_path)) : std::optional<std::string>(),
                                         random_flag = bool(random),
                                         gut_flag = bool(gut),
                                         undistort_flag = bool(undistort),
@@ -570,8 +743,10 @@ namespace {
                                         invert_masks_flag = bool(invert_masks),
                                         no_alpha_as_mask_flag = bool(no_alpha_as_mask),
                                         use_error_map_flag = bool(use_error_map),
-                                        use_edge_map_flag = bool(use_edge_map)]() {
+                                        use_edge_map_flag = bool(use_edge_map),
+                                        output_name_val = cli_option_present({"--output-name"}) ? std::optional<std::string>(::args::get(output_name)) : std::optional<std::string>()]() {
                 auto& opt = params.optimization;
+                auto& svs = params.server;
                 auto& ds = params.dataset;
 
                 // Simple lambdas to apply if flag/value exists
@@ -594,6 +769,9 @@ namespace {
                 if (no_fs_cache_flag)
                     ds.loading_params.use_fs_cache = false;
                 setVal(max_cap_val, opt.max_cap);
+                setVal(tcp_server_connection_port_val, svs.tcp_server_connection_port);
+                setVal(tcp_broadcast_connection_port_val, svs.tcp_broadcast_connection_port);
+                setFlag(tcp_connection_flag, svs.tcp_connection);
                 setVal(images_folder_val, ds.images);
                 setVal(test_every_val, ds.test_every);
                 setVal(steps_scaler_val, opt.steps_scaler);
@@ -605,6 +783,7 @@ namespace {
                 setVal(strategy_val, opt.strategy);
                 setVal(timelapse_images_val, ds.timelapse_images);
                 setVal(timelapse_every_val, ds.timelapse_every);
+                setVal(output_name_val, ds.output_name);
                 setVal(tile_mode_val, opt.tile_mode);
 
                 // Sparsity parameters
@@ -628,11 +807,20 @@ namespace {
                 setFlag(headless_flag, opt.headless);
                 setFlag(auto_train_flag, opt.auto_train);
                 setFlag(no_splash_flag, opt.no_splash);
-                setFlag(no_interop_flag, opt.no_interop);
                 setFlag(debug_python_flag, opt.debug_python);
                 setVal(debug_python_port_val, opt.debug_python_port);
                 setFlag(enable_save_eval_images_flag, opt.enable_save_eval_images);
-                setFlag(bg_modulation_flag, opt.bg_modulation);
+                if (bg_mode_val) {
+                    opt.bg_mode = *bg_mode_val;
+                    opt.bg_modulation = *bg_mode_val == lfs::core::param::BackgroundMode::Modulation;
+                }
+                setVal(bg_color_val, opt.bg_color);
+                if (bg_color_val) {
+                    params.cli_bg_color_set = true;
+                }
+                if (bg_image_path_val) {
+                    opt.bg_image_path = lfs::core::utf8_to_path(*bg_image_path_val);
+                }
                 setFlag(random_flag, opt.random);
                 setFlag(gut_flag, opt.gut);
                 setFlag(undistort_flag, opt.undistort);
@@ -648,6 +836,7 @@ namespace {
                 // Also propagate to dataset config for loading
                 ds.invert_masks = opt.invert_masks;
                 ds.mask_threshold = opt.mask_threshold;
+                setVal(centralize_val, ds.centralize_dataset);
 
                 // Python scripts
                 if (python_scripts_val) {
@@ -675,7 +864,8 @@ namespace {
             return;
 
         if (opt.ppisp_controller_activation_step < 0) {
-            opt.ppisp_controller_activation_step = opt.resolved_ppisp_controller_activation_step();
+            opt.ppisp_controller_activation_step =
+                opt.resolved_ppisp_controller_activation_step(opt.resolved_total_iterations());
         }
     }
 
@@ -759,7 +949,22 @@ namespace {
         "\n"
         "SUPPORTED FORMATS:\n"
         "  Input:  .ply, .sog, .spz, .usd, .usda, .usdc, .usdz, .resume (checkpoint)\n"
-        "  Output: .ply, .sog, .spz, .usd, .usda, .usdc, .html\n"
+        "  Output: .ply, .sog, .spz, .usd, .usda, .usdc, .html, .rad\n"
+        "\n";
+
+    constexpr const char* MESH2SPLAT_HELP_HEADER = "LichtFeld Studio - Convert mesh files to Gaussian splats\n";
+    constexpr const char* MESH2SPLAT_HELP_FOOTER =
+        "\n"
+        "EXAMPLES:\n"
+        "  LichtFeld-Studio mesh2splat model.obj -o model_splat.ply\n"
+        "  LichtFeld-Studio mesh2splat model.glb output.spz --resolution 1024 --sigma 0.65\n"
+        "  LichtFeld-Studio mesh2splat model.glb -o ./splats/model -f ply,spz,html --overwrite\n"
+        "  LichtFeld-Studio mesh2splat ./meshes/ -o ./splats/ -f ply,spz --overwrite\n"
+        "\n"
+        "SUPPORTED FORMATS:\n"
+        "  Input:  .obj, .fbx, .gltf, .glb, .stl, .dae, .3ds, .ply\n"
+        "  Output: .ply, .sog, .spz, .usd, .usda, .usdc, .html, .rad\n"
+        "  Multiple output formats: pass a comma-separated list to --format\n"
         "\n";
 
     std::optional<lfs::core::param::OutputFormat> parseFormat(const std::string& str) {
@@ -778,7 +983,224 @@ namespace {
             return OutputFormat::USDA;
         if (str == "usdc" || str == ".usdc")
             return OutputFormat::USDC;
+        if (str == "rad" || str == ".rad")
+            return OutputFormat::RAD;
         return std::nullopt;
+    }
+
+    std::expected<std::vector<lfs::core::param::OutputFormat>, std::string> parseFormatList(const std::string& formats_str) {
+        std::vector<lfs::core::param::OutputFormat> formats;
+        size_t start = 0;
+        while (start < formats_str.size()) {
+            size_t end = formats_str.find(',', start);
+            if (end == std::string::npos)
+                end = formats_str.size();
+            std::string token = formats_str.substr(start, end - start);
+            const size_t first = token.find_first_not_of(" \t");
+            const size_t last = token.find_last_not_of(" \t");
+            if (first != std::string::npos && last != std::string::npos) {
+                token = token.substr(first, last - first + 1);
+            }
+            if (!token.empty()) {
+                auto fmt = parseFormat(token);
+                if (!fmt) {
+                    return std::unexpected(std::format("Invalid format '{}'. Use: ply, sog, spz, html, usd, usda, usdc, rad", token));
+                }
+                if (std::ranges::find(formats, *fmt) == formats.end()) {
+                    formats.push_back(*fmt);
+                }
+            }
+            start = end + 1;
+        }
+        if (formats.empty()) {
+            return std::unexpected("No output formats specified");
+        }
+        return formats;
+    }
+
+    std::expected<std::vector<float>, std::string> parseLodLevels(const std::string& levels_str) {
+        std::vector<float> levels;
+        size_t start = 0;
+        while (start < levels_str.size()) {
+            size_t end = levels_str.find(',', start);
+            if (end == std::string::npos)
+                end = levels_str.size();
+            std::string token = levels_str.substr(start, end - start);
+            const size_t first = token.find_first_not_of(" \t");
+            const size_t last = token.find_last_not_of(" \t");
+            if (first != std::string::npos && last != std::string::npos) {
+                token = token.substr(first, last - first + 1);
+            }
+            if (!token.empty()) {
+                try {
+                    const float percentage = std::stof(token);
+                    levels.push_back(percentage / 100.0f);
+                } catch (...) {
+                    return std::unexpected(std::format("Invalid LOD level value: '{}'", token));
+                }
+            }
+            start = end + 1;
+        }
+        return levels;
+    }
+
+    std::expected<lfs::core::args::ParsedArgs, std::string> parseConvertArgs(const int argc, const char* const argv[]) {
+        namespace core_args = lfs::core::args;
+        namespace param = lfs::core::param;
+
+        ::args::ArgumentParser parser(CONVERT_HELP_HEADER, CONVERT_HELP_FOOTER);
+        ::args::HelpFlag help(parser, "help", "Display help menu", {'h', "help"});
+        ::args::Positional<std::string> input(parser, "input", "Input file or directory");
+        ::args::Positional<std::string> output(parser, "output", "Output file (optional)");
+        ::args::ValueFlag<int> sh_degree(parser, "degree", "SH degree [0-3], -1 to keep original (default: -1)", {"sh-degree"});
+        ::args::ValueFlag<std::string> format(parser, "format", "Output format: ply, sog, spz, html, usd, usda, usdc, rad", {'f', "format"});
+        ::args::ValueFlag<int> sog_iter(parser, "iterations", "K-means iterations for SOG (default: 10)", {"sog-iterations"});
+        ::args::ValueFlag<std::string> lod_levels(parser, "levels", "LOD levels for RAD format as comma-separated percentages (default: 100)", {"lod-levels"});
+        ::args::Flag overwrite(parser, "overwrite", "Overwrite existing files without prompting", {'y', "overwrite"});
+
+        std::vector<std::string> args_vec(argv + 1, argv + argc);
+        args_vec[0] = std::string(argv[0]) + " convert";
+        parser.Prog(args_vec[0]);
+
+        try {
+            parser.ParseArgs(std::vector<std::string>(args_vec.begin() + 1, args_vec.end()));
+        } catch (const ::args::Help&) {
+            std::print("{}", parser.Help());
+            return core_args::HelpMode{};
+        } catch (const ::args::ParseError& e) {
+            return std::unexpected(std::format("{}\n\n{}", e.what(), parser.Help()));
+        }
+
+        if (!input) {
+            return std::unexpected(std::format("Missing input path\n\n{}", parser.Help()));
+        }
+
+        param::ConvertParameters params;
+        params.input_path = lfs::core::utf8_to_path(::args::get(input));
+        params.sh_degree = sh_degree ? ::args::get(sh_degree) : -1;
+
+        if (!std::filesystem::exists(params.input_path)) {
+            return std::unexpected(std::format("Input not found: {}", lfs::core::path_to_utf8(params.input_path)));
+        }
+
+        if (params.sh_degree < -1 || params.sh_degree > 3) {
+            return std::unexpected("SH degree must be -1 (keep) or 0-3");
+        }
+
+        if (output)
+            params.output_path = lfs::core::utf8_to_path(::args::get(output));
+        if (sog_iter)
+            params.sog_iterations = ::args::get(sog_iter);
+        if (lod_levels) {
+            auto levels = parseLodLevels(::args::get(lod_levels));
+            if (!levels)
+                return std::unexpected(levels.error());
+            params.rad_lod_levels = std::move(*levels);
+        }
+        params.overwrite = overwrite;
+
+        if (format) {
+            if (const auto fmt = parseFormat(::args::get(format))) {
+                params.format = *fmt;
+            } else {
+                return std::unexpected(std::format("Invalid format '{}'. Use: ply, sog, spz, html, usd, usda, usdc, rad", ::args::get(format)));
+            }
+        } else if (!params.output_path.empty()) {
+            if (const auto fmt = parseFormat(params.output_path.extension().string())) {
+                params.format = *fmt;
+            } else {
+                return std::unexpected(std::format("Unknown extension '{}'. Use --format", params.output_path.extension().string()));
+            }
+        }
+
+        return core_args::ConvertMode{params};
+    }
+
+    std::expected<lfs::core::args::ParsedArgs, std::string> parseMesh2SplatArgs(const int argc, const char* const argv[]) {
+        namespace core_args = lfs::core::args;
+        namespace param = lfs::core::param;
+
+        ::args::ArgumentParser parser(MESH2SPLAT_HELP_HEADER, MESH2SPLAT_HELP_FOOTER);
+        ::args::HelpFlag help(parser, "help", "Display help menu", {'h', "help"});
+        ::args::Positional<std::string> input(parser, "input", "Input mesh file or directory");
+        ::args::Positional<std::string> output(parser, "output", "Output file or directory (optional)");
+        ::args::ValueFlag<std::string> output_flag(parser, "path", "Output file or directory", {'o', "output"});
+        ::args::ValueFlag<std::string> format(parser, "formats", "Output format(s): ply, sog, spz, html, usd, usda, usdc, rad. Use commas for multiple outputs", {'f', "format"});
+        ::args::ValueFlag<int> resolution(parser, "pixels", "Mesh2Splat raster resolution target (default: 1024)", {"resolution"});
+        ::args::ValueFlag<float> sigma(parser, "scale", "Gaussian scale sigma (default: 0.65)", {"sigma"});
+        ::args::ValueFlag<int> sog_iter(parser, "iterations", "K-means iterations for SOG/HTML output (default: 10)", {"sog-iterations"});
+        ::args::ValueFlag<std::string> lod_levels(parser, "levels", "LOD levels for RAD format as comma-separated percentages (default: 100)", {"lod-levels"});
+        ::args::Flag overwrite(parser, "overwrite", "Overwrite existing files without prompting", {'y', "overwrite"});
+
+        std::vector<std::string> args_vec(argv + 1, argv + argc);
+        args_vec[0] = std::string(argv[0]) + " mesh2splat";
+        parser.Prog(args_vec[0]);
+
+        try {
+            parser.ParseArgs(std::vector<std::string>(args_vec.begin() + 1, args_vec.end()));
+        } catch (const ::args::Help&) {
+            std::print("{}", parser.Help());
+            return core_args::HelpMode{};
+        } catch (const ::args::ParseError& e) {
+            return std::unexpected(std::format("{}\n\n{}", e.what(), parser.Help()));
+        }
+
+        if (!input) {
+            return std::unexpected(std::format("Missing input mesh path\n\n{}", parser.Help()));
+        }
+        if (output && output_flag) {
+            return std::unexpected("Use either positional output or --output, not both");
+        }
+
+        param::Mesh2SplatParameters params;
+        params.input_path = lfs::core::utf8_to_path(::args::get(input));
+
+        if (!std::filesystem::exists(params.input_path)) {
+            return std::unexpected(std::format("Input not found: {}", lfs::core::path_to_utf8(params.input_path)));
+        }
+
+        if (output_flag) {
+            params.output_path = lfs::core::utf8_to_path(::args::get(output_flag));
+        } else if (output) {
+            params.output_path = lfs::core::utf8_to_path(::args::get(output));
+        }
+        if (resolution)
+            params.options.resolution_target = ::args::get(resolution);
+        if (sigma)
+            params.options.sigma = ::args::get(sigma);
+        if (sog_iter)
+            params.sog_iterations = ::args::get(sog_iter);
+        if (lod_levels) {
+            auto levels = parseLodLevels(::args::get(lod_levels));
+            if (!levels)
+                return std::unexpected(levels.error());
+            params.rad_lod_levels = std::move(*levels);
+        }
+        params.overwrite = overwrite;
+
+        if (params.options.resolution_target < lfs::core::Mesh2SplatOptions::kMinResolution) {
+            return std::unexpected(std::format("Mesh2Splat resolution must be at least {}", lfs::core::Mesh2SplatOptions::kMinResolution));
+        }
+        if (params.options.sigma <= 0.0f) {
+            return std::unexpected("Mesh2Splat sigma must be positive");
+        }
+
+        if (format) {
+            auto formats = parseFormatList(::args::get(format));
+            if (!formats)
+                return std::unexpected(formats.error());
+            params.formats = std::move(*formats);
+            params.format = params.formats.front();
+        } else if (!params.output_path.empty()) {
+            if (const auto fmt = parseFormat(params.output_path.extension().string())) {
+                params.format = *fmt;
+                params.formats = {*fmt};
+            } else if (!params.output_path.extension().empty() && !std::filesystem::is_directory(params.output_path)) {
+                return std::unexpected(std::format("Unknown extension '{}'. Use --format", params.output_path.extension().string()));
+            }
+        }
+
+        return core_args::Mesh2SplatMode{params};
     }
 } // namespace
 
@@ -796,7 +1218,9 @@ lfs::core::args::parse_args(const int argc, const char* const argv[]) {
         }
 
         if (arg1 == "convert") {
-            // Handle convert subcommand below
+            return parseConvertArgs(argc, argv);
+        } else if (arg1 == "mesh2splat" || arg1 == "mesh-to-splat") {
+            return parseMesh2SplatArgs(argc, argv);
         } else if (arg1 == "plugin") {
             if (argc < 3) {
                 return std::unexpected("Usage: LichtFeld-Studio plugin <create|check|list> [name]");
@@ -845,65 +1269,4 @@ Commands:
             return std::unexpected(result.error());
         return TrainingMode{std::move(*result)};
     }
-
-    // Convert subcommand
-    ::args::ArgumentParser parser(CONVERT_HELP_HEADER, CONVERT_HELP_FOOTER);
-    ::args::HelpFlag help(parser, "help", "Display help menu", {'h', "help"});
-    ::args::Positional<std::string> input(parser, "input", "Input file or directory");
-    ::args::Positional<std::string> output(parser, "output", "Output file (optional)");
-    ::args::ValueFlag<int> sh_degree(parser, "degree", "SH degree [0-3], -1 to keep original (default: -1)", {"sh-degree"});
-    ::args::ValueFlag<std::string> format(parser, "format", "Output format: ply, sog, spz, html, usd, usda, usdc", {'f', "format"});
-    ::args::ValueFlag<int> sog_iter(parser, "iterations", "K-means iterations for SOG (default: 10)", {"sog-iterations"});
-    ::args::Flag overwrite(parser, "overwrite", "Overwrite existing files without prompting", {'y', "overwrite"});
-
-    std::vector<std::string> args_vec(argv + 1, argv + argc);
-    args_vec[0] = std::string(argv[0]) + " convert";
-    parser.Prog(args_vec[0]);
-
-    try {
-        parser.ParseArgs(std::vector<std::string>(args_vec.begin() + 1, args_vec.end()));
-    } catch (const ::args::Help&) {
-        std::print("{}", parser.Help());
-        return HelpMode{};
-    } catch (const ::args::ParseError& e) {
-        return std::unexpected(std::format("{}\n\n{}", e.what(), parser.Help()));
-    }
-
-    if (!input) {
-        return std::unexpected(std::format("Missing input path\n\n{}", parser.Help()));
-    }
-
-    param::ConvertParameters params;
-    params.input_path = lfs::core::utf8_to_path(::args::get(input));
-    params.sh_degree = sh_degree ? ::args::get(sh_degree) : -1;
-
-    if (!std::filesystem::exists(params.input_path)) {
-        return std::unexpected(std::format("Input not found: {}", lfs::core::path_to_utf8(params.input_path)));
-    }
-
-    if (params.sh_degree < -1 || params.sh_degree > 3) {
-        return std::unexpected("SH degree must be -1 (keep) or 0-3");
-    }
-
-    if (output)
-        params.output_path = lfs::core::utf8_to_path(::args::get(output));
-    if (sog_iter)
-        params.sog_iterations = ::args::get(sog_iter);
-    params.overwrite = overwrite;
-
-    if (format) {
-        if (const auto fmt = parseFormat(::args::get(format))) {
-            params.format = *fmt;
-        } else {
-            return std::unexpected(std::format("Invalid format '{}'. Use: ply, sog, spz, html, usd, usda, usdc", ::args::get(format)));
-        }
-    } else if (!params.output_path.empty()) {
-        if (const auto fmt = parseFormat(params.output_path.extension().string())) {
-            params.format = *fmt;
-        } else {
-            return std::unexpected(std::format("Unknown extension '{}'. Use --format", params.output_path.extension().string()));
-        }
-    }
-
-    return ConvertMode{params};
 }

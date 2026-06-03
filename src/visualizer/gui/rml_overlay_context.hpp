@@ -3,7 +3,6 @@
 
 #pragma once
 
-#include "gui/rmlui/rml_fbo.hpp"
 #include "sequencer/rml_sequencer_panel.hpp"
 #include <core/export.hpp>
 #include <cstddef>
@@ -44,12 +43,11 @@ namespace lfs::vis::gui {
         void showContextMenu(const std::string& element_id, float x, float y, const std::string& inner_rml);
         void hideContextMenu(const std::string& element_id);
 
-        void destroyGLResources();
+        void releaseRendererResources();
 
     private:
         void initContext();
         void syncTheme();
-        std::string generateThemeRCSS(const lfs::vis::Theme& t) const;
 
         RmlUIManager* mgr_;
         std::string context_name_;
@@ -57,8 +55,6 @@ namespace lfs::vis::gui {
 
         Rml::Context* ctx_ = nullptr;
         Rml::ElementDocument* doc_ = nullptr;
-        RmlFBO fbo_;
-
         std::string base_rcss_;
         std::size_t last_theme_signature_ = 0;
         bool has_theme_signature_ = false;

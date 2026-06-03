@@ -7,11 +7,20 @@ import lichtfeld as lf
 from .types import Operator
 
 
+def _shortcut(action, fallback):
+    try:
+        if not lf.keymap.is_bound(action, lf.keymap.ToolMode.GLOBAL):
+            return ""
+        return lf.keymap.get_trigger_description(action, lf.keymap.ToolMode.GLOBAL)
+    except (AttributeError, RuntimeError, TypeError):
+        return fallback
+
+
 class AddKeyframeOperator(Operator):
     """Add a keyframe at the current camera position."""
 
     label = "Add Keyframe Here"
-    shortcut = "K"
+    shortcut = ""
 
     def execute(self, context):
         lf.ui.add_keyframe()
@@ -22,7 +31,7 @@ class UpdateKeyframeOperator(Operator):
     """Update selected keyframe to current camera position."""
 
     label = "Update to Current View"
-    shortcut = "U"
+    shortcut = ""
 
     def execute(self, context):
         lf.ui.update_keyframe()
@@ -33,7 +42,7 @@ class PlayPauseOperator(Operator):
     """Toggle sequencer playback."""
 
     label = "Play/Pause"
-    shortcut = "Space"
+    shortcut = ""
 
     def execute(self, context):
         lf.ui.play_pause()
@@ -41,6 +50,9 @@ class PlayPauseOperator(Operator):
 
 
 def register():
+    AddKeyframeOperator.shortcut = _shortcut(lf.keymap.Action.SEQUENCER_ADD_KEYFRAME, "K")
+    UpdateKeyframeOperator.shortcut = _shortcut(lf.keymap.Action.SEQUENCER_UPDATE_KEYFRAME, "U")
+    PlayPauseOperator.shortcut = _shortcut(lf.keymap.Action.SEQUENCER_PLAY_PAUSE, "Space")
     lf.register_class(AddKeyframeOperator)
     lf.register_class(UpdateKeyframeOperator)
     lf.register_class(PlayPauseOperator)

@@ -140,6 +140,7 @@ namespace lfs::core {
           _image_path(std::move(other._image_path)),
           _image_name(std::move(other._image_name)),
           _mask_path(std::move(other._mask_path)),
+          _split(other._split),
           _camera_width(other._camera_width),
           _camera_height(other._camera_height),
           _image_width(other._image_width),
@@ -148,6 +149,7 @@ namespace lfs::core {
           _cam_position(std::move(other._cam_position)),
           _cached_mask(std::move(other._cached_mask)),
           _mask_loaded(other._mask_loaded),
+          _in_memory_mask_raw(std::move(other._in_memory_mask_raw)),
           _undistort_precomputed(other._undistort_precomputed),
           _undistort_prepared(other._undistort_prepared),
           _undistort_params(other._undistort_params),
@@ -182,6 +184,7 @@ namespace lfs::core {
             _image_path = std::move(other._image_path);
             _image_name = std::move(other._image_name);
             _mask_path = std::move(other._mask_path);
+            _split = other._split;
             _camera_width = other._camera_width;
             _camera_height = other._camera_height;
             _image_width = other._image_width;
@@ -190,6 +193,7 @@ namespace lfs::core {
             _cam_position = std::move(other._cam_position);
             _cached_mask = std::move(other._cached_mask);
             _mask_loaded = other._mask_loaded;
+            _in_memory_mask_raw = std::move(other._in_memory_mask_raw);
             _undistort_precomputed = other._undistort_precomputed;
             _undistort_prepared = other._undistort_prepared;
             _undistort_params = other._undistort_params;
@@ -219,6 +223,7 @@ namespace lfs::core {
           _image_name(other._image_name),
           _image_path(other._image_path),
           _mask_path(other._mask_path),
+          _split(other._split),
           _camera_width(other._camera_width),
           _camera_height(other._camera_height),
           _image_width(other._image_width),
@@ -254,18 +259,22 @@ namespace lfs::core {
         return {_focal_x * x_scale, _focal_y * y_scale, _center_x * x_scale, _center_y * y_scale};
     }
 
-    Tensor Camera::load_and_get_image(int resize_factor, int max_width) {
+    Tensor Camera::load_and_get_image(int resize_factor, int max_width, const bool output_uint8,
+                                      const bool update_dimensions) {
         const ImageLoadParams params{
             .path = _image_path,
             .resize_factor = resize_factor,
             .max_width = max_width,
-            .stream = _stream};
+            .stream = _stream,
+            .output_uint8 = output_uint8};
 
         auto image = load_image_cached(params);
 
-        const auto shape = image.shape();
-        _image_width = shape[2];
-        _image_height = shape[1];
+        if (update_dimensions) {
+            const auto shape = image.shape();
+            _image_width = shape[2];
+            _image_height = shape[1];
+        }
 
         if (image.device() != Device::CUDA) {
             image = image.to(Device::CUDA, _stream);
@@ -346,14 +355,21 @@ namespace lfs::core {
             }
         }
 
-        size_t num_bytes = w * h * c * sizeof(float);
+        size_t num_bytes = w * h * c * sizeof(uint8_t);
         return num_bytes;
     }
 
     size_t Camera::get_num_bytes_from_file() const {
         auto [w, h, c] = get_image_info(_image_path);
-        size_t num_bytes = w * h * c * sizeof(float);
+        size_t num_bytes = w * h * c * sizeof(uint8_t);
         return num_bytes;
+    }
+
+    void Camera::set_mask_tensor(Tensor mask) {
+        _in_memory_mask_raw = std::move(mask);
+        // Force reprocessing on the next load_and_get_mask call.
+        _cached_mask = Tensor();
+        _mask_loaded = false;
     }
 
     Tensor Camera::load_and_get_mask(const int resize_factor, const int max_width,
@@ -362,44 +378,65 @@ namespace lfs::core {
             return _cached_mask;
         }
 
-        if (_mask_path.empty() || !std::filesystem::exists(_mask_path)) {
-            return Tensor();
-        }
-
-        const ImageLoadParams params{
-            .path = _mask_path,
-            .resize_factor = resize_factor,
-            .max_width = max_width,
-            .stream = _stream};
-
-        auto mask = load_image_cached(params);
-
-        if (mask.device() != Device::CUDA) {
-            mask = mask.to(Device::CUDA, _stream);
-            if (_stream) {
-                cudaStreamSynchronize(_stream);
+        Tensor mask;
+        if (_in_memory_mask_raw.is_valid()) {
+            // In-memory mask (set via set_mask_tensor). The plugin supplies it
+            // at the image's on-disk resolution; further resize_factor /
+            // max_width handling is the trainer's responsibility upstream.
+            mask = _in_memory_mask_raw;
+            if (mask.device() != Device::CUDA) {
+                mask = mask.to(Device::CUDA, _stream);
+                if (_stream) {
+                    cudaStreamSynchronize(_stream);
+                }
             }
-        }
+            if (mask.dtype() == DataType::UInt8) {
+                mask = mask.to(DataType::Float32).div(255.0f);
+            } else if (mask.dtype() != DataType::Float32) {
+                mask = mask.to(DataType::Float32);
+            }
+            // Allow (1, H, W) or (H, W, 1) shapes by squeezing the singleton.
+            if (mask.ndim() == 3 && mask.shape()[0] == 1) {
+                mask = mask.squeeze(0);
+            } else if (mask.ndim() == 3 && mask.shape()[2] == 1) {
+                mask = mask.squeeze(2);
+            }
+        } else if (!_mask_path.empty() && std::filesystem::exists(_mask_path)) {
+            const ImageLoadParams params{
+                .path = _mask_path,
+                .resize_factor = resize_factor,
+                .max_width = max_width,
+                .stream = _stream};
 
-        // Convert RGB [C,H,W] to grayscale [H,W]
-        if (mask.ndim() == 3 && mask.shape()[0] >= 3) {
-            const auto r = mask.slice(0, 0, 1).squeeze(0);
-            const auto g = mask.slice(0, 1, 2).squeeze(0);
-            const auto b = mask.slice(0, 2, 3).squeeze(0);
-            mask = (r + g + b) / 3.0f;
-        } else if (mask.ndim() == 3 && mask.shape()[0] == 1) {
-            mask = mask.squeeze(0);
+            mask = load_image_cached(params);
+
+            if (mask.device() != Device::CUDA) {
+                mask = mask.to(Device::CUDA, _stream);
+                if (_stream) {
+                    cudaStreamSynchronize(_stream);
+                }
+            }
+
+            // Convert RGB [C,H,W] to grayscale [H,W]
+            if (mask.ndim() == 3 && mask.shape()[0] >= 3) {
+                const auto r = mask.slice(0, 0, 1).squeeze(0);
+                const auto g = mask.slice(0, 1, 2).squeeze(0);
+                const auto b = mask.slice(0, 2, 3).squeeze(0);
+                mask = (r + g + b) / 3.0f;
+            } else if (mask.ndim() == 3 && mask.shape()[0] == 1) {
+                mask = mask.squeeze(0);
+            }
+        } else {
+            return Tensor();
         }
 
         if (invert_mask) {
             mask = Tensor::full(mask.shape(), 1.0f, mask.device()) - mask;
         }
 
-        // Threshold: values >= threshold become 1.0
+        // Threshold before undistort; final binarization happens after geometric resampling.
         if (mask_threshold > 0.0f && mask_threshold < 1.0f) {
-            const auto ones = Tensor::full(mask.shape(), 1.0f, mask.device());
-            const auto threshold_mask = mask.ge(mask_threshold);
-            mask = ones.where(threshold_mask, mask);
+            mask = mask.ge(mask_threshold).to(DataType::Float32);
         }
 
         if (_undistort_prepared) {
@@ -410,6 +447,7 @@ namespace lfs::core {
             mask = undistort_mask(mask, scaled, _stream);
         }
 
+        mask = mask.ge(0.5f).to(DataType::UInt8).contiguous();
         _cached_mask = mask;
         _mask_loaded = true;
 
@@ -450,6 +488,31 @@ namespace lfs::core {
         _FoVx = focal2fov(_focal_x, _camera_width);
         _FoVy = focal2fov(_focal_y, _camera_height);
         _undistort_prepared = true;
+    }
+
+    void Camera::translate(const Tensor& trans) {
+        // Shift the camera's world-space position by trans.
+        // For the view transform: new T = T - R * trans
+        // (so that p_cam = R*p_world_new + T_new still holds after shifting world by trans)
+        auto R_cpu = _R.cpu().contiguous();
+        auto T_cpu = _T.cpu().contiguous();
+        auto t_cpu = trans.cpu().contiguous();
+
+        auto R_acc = R_cpu.accessor<float, 2>();
+        auto T_acc = T_cpu.accessor<float, 1>();
+        auto t_acc = t_cpu.accessor<float, 1>();
+
+        std::vector<float> T_new(3);
+        for (int i = 0; i < 3; ++i) {
+            float Rt_i = 0.f;
+            for (int j = 0; j < 3; ++j)
+                Rt_i += R_acc(i, j) * t_acc(j);
+            T_new[i] = T_acc(i) - Rt_i;
+        }
+
+        _T = Tensor::from_vector(T_new, {3}, Device::CPU);
+        _world_view_transform = world_to_view(_R, _T);
+        _cam_position = _cam_position + trans.to(Device::CUDA).contiguous();
     }
 
     bool Camera::has_distortion() const noexcept {

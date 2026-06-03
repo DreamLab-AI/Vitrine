@@ -19,14 +19,18 @@
 #include "optimizer/scheduler.hpp"
 #include "progress.hpp"
 #include "strategies/istrategy.hpp"
+#include <array>
 #include <atomic>
+#include <cstdint>
 #include <expected>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
 #include <stop_token>
+#include <string_view>
 #include <unordered_map>
+#include <utility>
 
 namespace lfs::core {
     class Scene;
@@ -77,6 +81,18 @@ namespace lfs::training {
             int resize_factor = 1;
             int max_width = 0;
             bool undistort = false;
+        };
+
+        struct CameraMetricsAppearanceConfig {
+            bool enabled = false;
+            PPISPViewportOverrides overrides{};
+            bool use_controller = true;
+        };
+
+        struct CameraMetricsSnapshot {
+            float psnr = 0.0f;
+            std::optional<float> ssim;
+            bool used_mask = false;
         };
 
         // Legacy constructor - takes ownership of strategy and shares datasets
@@ -132,8 +148,11 @@ namespace lfs::training {
 
         // Get current training state
         int get_current_iteration() const { return current_iteration_.load(); }
+        int get_total_iterations() const;
         const std::filesystem::path& get_output_path() const { return params_.dataset.output_path; }
         float get_current_loss() const { return current_loss_.load(); }
+        bool fillCameraLossColors(const std::vector<std::shared_ptr<const lfs::core::Camera>>& cameras,
+                                  std::vector<std::array<float, 3>>& colors) const;
 
         // just for viewer to get model
         const IStrategy& get_strategy() const { return *strategy_; }
@@ -146,12 +165,19 @@ namespace lfs::training {
 
         const lfs::core::param::TrainingParameters& getParams() const { return params_; }
         void setParams(const lfs::core::param::TrainingParameters& params);
+        void setSplatTensorAllocator(lfs::core::SplatTensorAllocator allocator) {
+            splat_tensor_allocator_ = std::move(allocator);
+        }
 
         void setOnIterationStart(std::function<void()> cb) { on_iteration_start_ = std::move(cb); }
 
         lfs::core::Scene* getScene() const { return scene_; }
         std::shared_ptr<lfs::io::PipelinedImageLoader> getActiveImageLoader() const;
         GTLoadConfigSnapshot getGTLoadConfigSnapshot() const;
+        std::expected<CameraMetricsSnapshot, std::string> computeCameraMetrics(
+            const lfs::core::Camera& camera,
+            bool include_ssim,
+            CameraMetricsAppearanceConfig appearance);
 
         /// Apply PPISP correction to a rendered image for viewport display
         /// @param rgb rendered image [C,H,W] or [H,W,C]
@@ -223,27 +249,47 @@ namespace lfs::training {
             std::stop_token stop_token = {});
 
         void setActiveImageLoader(std::shared_ptr<lfs::io::PipelinedImageLoader> loader);
+        int get_regular_iterations() const;
+        int get_active_sparsify_steps() const;
+        int get_sparsity_boundary_iteration() const;
+        lfs::core::param::OptimizationParameters get_runtime_optimization_params() const;
+        void sync_strategy_optimization_params();
+        std::expected<void, std::string> initialize_camera_loss_heatmap(
+            const std::vector<std::shared_ptr<lfs::core::Camera>>& cameras);
+        void update_camera_loss_heatmap(const lfs::core::Camera& camera,
+                                        const lfs::core::Tensor& image_loss);
+        void maybe_publish_camera_loss_heatmap(int iter, bool force = false);
+        void publish_camera_loss_heatmap_snapshot();
+
+        struct PhotometricLossResult {
+            lfs::core::Tensor loss;
+            lfs::core::Tensor grad_corrected;
+            lfs::core::Tensor grad_raw;
+        };
 
         // Compute photometric loss AND gradient manually (no autograd)
-        // Returns GPU tensor for loss (avoid sync!)
-        std::expected<std::pair<lfs::core::Tensor, lfs::core::Tensor>, std::string> compute_photometric_loss_with_gradient(
-            const lfs::core::Tensor& rendered,
+        // Returns GPU tensors for loss and gradients (avoid sync!)
+        std::expected<PhotometricLossResult, std::string> compute_photometric_loss_with_gradient(
+            const lfs::core::Tensor& corrected,
             const lfs::core::Tensor& gt_image,
-            const lfs::core::param::OptimizationParameters& opt_params);
+            const lfs::core::param::OptimizationParameters& opt_params,
+            const lfs::core::Tensor& raw_rendered);
 
         struct MaskLossResult {
             lfs::core::Tensor loss;
-            lfs::core::Tensor grad_image;
+            lfs::core::Tensor grad_corrected;
+            lfs::core::Tensor grad_raw;
             lfs::core::Tensor grad_alpha;
         };
 
         // Masked photometric loss with optional alpha gradient
         std::expected<MaskLossResult, std::string> compute_photometric_loss_with_mask(
-            const lfs::core::Tensor& rendered,
+            const lfs::core::Tensor& corrected,
             const lfs::core::Tensor& gt_image,
             const lfs::core::Tensor& mask,
             const lfs::core::Tensor& alpha,
-            const lfs::core::param::OptimizationParameters& opt_params);
+            const lfs::core::param::OptimizationParameters& opt_params,
+            const lfs::core::Tensor& raw_rendered);
 
         // Validate masks exist for all cameras when mask mode is enabled
         std::expected<void, std::string> validate_masks();
@@ -293,13 +339,59 @@ namespace lfs::training {
                    !params_.optimization.ppisp_sidecar_path.empty();
         }
         [[nodiscard]] PPISPControllerPool* controller_pool_for_save(int iteration) const;
+        [[nodiscard]] lfs::core::param::TrainingParameters params_for_checkpoint_save() const;
+        [[nodiscard]] TrainingProgress::Phase get_progress_phase(
+            int iter,
+            bool in_controller_phase = false) const;
 
         // Handle control requests
         void handle_control_requests(int iter, std::stop_token stop_token = {});
 
-        void save_ply(const std::filesystem::path& save_path, int iter_num, bool join_threads = true);
+        void save_ply(const std::filesystem::path& save_path,
+                      const std::string& filename,
+                      int iter_num,
+                      bool join_threads = true,
+                      bool save_checkpoint = true);
         void updateGTLoadConfigSnapshot();
         void clearActiveImageLoader();
+
+        struct CameraLossHeatmapState {
+            std::vector<int> camera_uids;
+            std::unordered_map<int, std::size_t> uid_to_slot;
+            lfs::core::Tensor latest_loss_gpu;
+            lfs::core::Tensor ema_loss_gpu;
+            lfs::core::Tensor ema_loss_stage_cpu;
+            std::vector<std::array<float, 3>> published_colors;
+            std::vector<uint8_t> published_valid;
+            mutable std::shared_mutex snapshot_mutex;
+            cudaStream_t copy_stream = nullptr;
+            cudaEvent_t ready_event = nullptr;
+            cudaEvent_t done_event = nullptr;
+            cudaStream_t producer_stream = nullptr;
+            bool copy_in_flight = false;
+            bool dirty = false;
+
+            ~CameraLossHeatmapState() {
+                if (copy_stream) {
+                    cudaStreamSynchronize(copy_stream);
+                }
+                if (done_event) {
+                    cudaEventDestroy(done_event);
+                }
+                if (ready_event) {
+                    cudaEventDestroy(ready_event);
+                }
+                if (copy_stream) {
+                    cudaStreamDestroy(copy_stream);
+                }
+            }
+        };
+
+        std::shared_ptr<CameraLossHeatmapState> getCameraLossHeatmap() const;
+        void setCameraLossHeatmap(std::shared_ptr<CameraLossHeatmapState> heatmap);
+        std::expected<void, std::string> ensureModelTensorAllocatorStorage(
+            lfs::core::SplatData& model,
+            std::string_view reason);
 
         lfs::core::Scene* scene_ = nullptr;
         std::shared_ptr<CameraDataset> base_dataset_;
@@ -308,6 +400,7 @@ namespace lfs::training {
         std::shared_ptr<lfs::io::PipelinedImageLoader> active_image_loader_;
         std::unique_ptr<IStrategy> strategy_;
         lfs::core::param::TrainingParameters params_;
+        lfs::core::SplatTensorAllocator splat_tensor_allocator_;
         std::optional<std::tuple<std::vector<std::string>, std::vector<std::string>>> provided_splits_;
 
         lfs::core::Tensor background_{};
@@ -318,6 +411,7 @@ namespace lfs::training {
         std::unique_ptr<TrainingProgress> progress_;
         size_t train_dataset_size_ = 0;
         size_t total_cameras_count_ = 0;
+        std::shared_ptr<CameraLossHeatmapState> camera_loss_heatmap_;
 
         // Pre-loaded mask from pipelined dataloader (used in train_step)
         lfs::core::Tensor pipelined_mask_;
@@ -343,6 +437,8 @@ namespace lfs::training {
         // Pre-allocated SSIM-map workspace for densification error maps.
         lfs::training::kernels::SSIMMapWorkspace densification_ssim_workspace_;
         lfs::training::kernels::MaskedFusedL1SSIMWorkspace masked_fused_workspace_;
+        lfs::training::kernels::DecoupledFusedL1SSIMWorkspace decoupled_fused_workspace_;
+        lfs::training::kernels::MaskedDecoupledFusedL1SSIMWorkspace masked_decoupled_fused_workspace_;
 
         // Pre-allocated error map buffer for densification (avoids per-iteration allocation)
         core::Tensor densification_error_map_;
@@ -359,6 +455,7 @@ namespace lfs::training {
         // Mutex for initialization to ensure thread safety
         mutable std::mutex init_mutex_;
         mutable std::mutex active_image_loader_mutex_;
+        mutable std::mutex camera_loss_heatmap_mutex_;
         mutable std::mutex gt_load_config_mutex_;
 
         // Control flags for thread communication
@@ -379,6 +476,7 @@ namespace lfs::training {
         bool memory_breakdown_logged_first_batch_ = false;
         bool memory_breakdown_logged_first_raster_ = false;
         bool memory_breakdown_logged_first_step_ = false;
+        bool fastgs_tiling_warning_logged_ = false;
 
         // Current training state
         std::atomic<int> current_iteration_{0};

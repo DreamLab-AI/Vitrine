@@ -14,6 +14,7 @@ namespace lfs::vis::gui {
         ViewportOverlay,
         MainPanelTab,
         SceneHeader,
+        BottomDock,
         StatusBar
     };
 

@@ -104,6 +104,7 @@ MAIN_PANEL_RML = '''<rml>
 '''
 
 MAIN_PANEL_RCSS = '''body.plugin-panel {
+    font-family: Inter;
     padding: 0;
 }
 
@@ -122,7 +123,7 @@ MAIN_PANEL_RCSS = '''body.plugin-panel {
 
 .panel-kicker {
     color: #7fb8ff;
-    font-size: 10dp;
+    font-size: 12dp;
     font-weight: bold;
     letter-spacing: 0.8dp;
     text-transform: uppercase;

@@ -10,6 +10,7 @@
 #include "app/mcp_runtime_tools.hpp"
 #include "app/mcp_sequencer_tools.hpp"
 #include "app/mcp_ui_registry_tools.hpp"
+#include "app/view_info_json.hpp"
 
 #include "core/event_bridge/command_center_bridge.hpp"
 #include "core/event_bridge/scoped_handler.hpp"
@@ -20,14 +21,17 @@
 #include "core/splat_data_transform.hpp"
 #include "core/tensor.hpp"
 #include "io/exporter.hpp"
+#include "io/formats/colmap.hpp"
 #include "mcp/llm_client.hpp"
 #include "mcp/mcp_tools.hpp"
 #include "mcp/render_capture_utils.hpp"
 #include "mcp/shared_scene_tools.hpp"
 #include "python/python_runtime.hpp"
 #include "python/runner.hpp"
-#include "rendering/gs_rasterizer_tensor.hpp"
+#include "rendering/coordinate_conventions.hpp"
+#include "rendering/render_constants.hpp"
 #include "sequencer/keyframe.hpp"
+#include "training/training_manager.hpp"
 #include "visualizer/gui/html_viewer_export.hpp"
 #include "visualizer/gui/panels/python_console_panel.hpp"
 #include "visualizer/gui_capabilities.hpp"
@@ -37,10 +41,10 @@
 #include "visualizer/operator/operator_properties.hpp"
 #include "visualizer/rendering/rendering_manager.hpp"
 #include "visualizer/scene/scene_manager.hpp"
+#include "visualizer/scene_coordinate_utils.hpp"
 #include "visualizer/visualizer.hpp"
 #include "visualizer/visualizer_impl.hpp"
-
-#include <glad/glad.h>
+#include "visualizer/window/vulkan_context.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -50,6 +54,7 @@
 #include <future>
 #include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -104,35 +109,43 @@ namespace lfs::app {
             int camera_index = 0,
             int width = 0,
             int height = 0) {
+            (void)scene;
+            (void)camera_index;
+            (void)width;
+            (void)height;
+            return std::unexpected(
+                "Camera-index CUDA scene rendering has been removed; use live Vulkan viewport capture");
+        }
 
-            auto* model = scene.getTrainingModel();
-            if (!model) {
-                const auto* node = find_first_visible_splat_node(scene);
-                if (node)
-                    model = node->model.get();
+        template <typename F>
+        auto post_render_and_wait(vis::VisualizerImpl* viewer_impl, F&& fn) {
+            using R = std::invoke_result_t<F>;
+
+            if (viewer_impl->isOnViewerThread()) {
+                if (!viewer_impl->acceptsPostedWork())
+                    return make_post_failure<R>("Viewer is shutting down");
+                if (!viewer_impl->isProcessingRenderWork())
+                    return make_post_failure<R>(
+                        "Composited capture must be requested from a non-viewer thread unless already running in render work");
+                return std::invoke(std::forward<F>(fn));
             }
-            if (!model)
-                return std::unexpected("No model to render");
 
-            auto cameras = scene.getAllCameras();
-            if (cameras.empty())
-                return std::unexpected("No cameras available");
+            return detail::post_and_wait_impl(
+                [viewer_impl](vis::Visualizer::WorkItem work) {
+                    return viewer_impl->postRenderWork(std::move(work));
+                },
+                std::forward<F>(fn));
+        }
 
-            if (camera_index < 0 || camera_index >= static_cast<int>(cameras.size()))
-                camera_index = 0;
+        template <typename F>
+        auto capture_after_gui_render(vis::Visualizer* viewer, F&& fn) {
+            using R = std::invoke_result_t<F>;
 
-            auto& camera = cameras[camera_index];
-            if (!camera)
-                return std::unexpected("Failed to get camera");
+            auto* const viewer_impl = dynamic_cast<vis::VisualizerImpl*>(viewer);
+            if (!viewer_impl)
+                return make_post_failure<R>("Composited capture requires a GUI visualizer");
 
-            core::Tensor bg = core::Tensor::zeros({3}, core::Device::CUDA);
-
-            try {
-                auto [image, alpha] = rendering::rasterize_tensor(*camera, *model, bg);
-                return mcp::encode_render_tensor_to_base64(std::move(image), width, height);
-            } catch (const std::exception& e) {
-                return std::unexpected(std::string("Render failed: ") + e.what());
-            }
+            return post_render_and_wait(viewer_impl, std::forward<F>(fn));
         }
 
         std::expected<std::string, std::string> capture_live_viewport_to_base64(
@@ -143,83 +156,40 @@ namespace lfs::app {
             if (!viewer_impl)
                 return std::unexpected("Live viewport capture requires a GUI visualizer");
 
-            auto* const gui_manager = viewer_impl->getGuiManager();
-            auto* const window_manager = viewer_impl->getWindowManager();
-            if (!gui_manager || !window_manager)
+            auto* const rendering_manager = viewer_impl->getRenderingManager();
+            if (!rendering_manager)
                 return std::unexpected("Viewport capture is not initialized");
 
-            const glm::vec2 viewport_pos = gui_manager->getViewportPos();
-            const glm::vec2 viewport_size = gui_manager->getViewportSize();
-            const glm::ivec2 window_size = window_manager->getWindowSize();
-            const glm::ivec2 framebuffer_size = window_manager->getFramebufferSize();
-            if (window_size.x <= 0 || window_size.y <= 0 ||
-                framebuffer_size.x <= 0 || framebuffer_size.y <= 0) {
-                return std::unexpected("Window framebuffer size is unavailable");
-            }
+            auto image = rendering_manager->captureViewportImage();
+            if (!image || !image->is_valid())
+                return std::unexpected("No rendered viewport image is available yet");
 
-            const float scale_x = static_cast<float>(framebuffer_size.x) / static_cast<float>(window_size.x);
-            const float scale_y = static_cast<float>(framebuffer_size.y) / static_cast<float>(window_size.y);
+            return mcp::encode_render_tensor_to_base64(*image, width, height);
+        }
 
-            const int capture_x = std::max(0, static_cast<int>(viewport_pos.x * scale_x));
-            const int capture_y_top = std::max(0, static_cast<int>(viewport_pos.y * scale_y));
-            const int capture_width = std::min(
-                framebuffer_size.x - capture_x,
-                std::max(1, static_cast<int>(viewport_size.x * scale_x)));
-            const int capture_height = std::min(
-                framebuffer_size.y - capture_y_top,
-                std::max(1, static_cast<int>(viewport_size.y * scale_y)));
-            if (capture_width <= 0 || capture_height <= 0)
-                return std::unexpected("Viewport capture size is empty");
+        std::expected<std::string, std::string> capture_full_window_to_base64(
+            vis::Visualizer* viewer,
+            int width = 0,
+            int height = 0) {
+            auto* const viewer_impl = dynamic_cast<vis::VisualizerImpl*>(viewer);
+            if (!viewer_impl)
+                return std::unexpected("Full-window capture requires a GUI visualizer");
 
-            const int capture_y_bottom = framebuffer_size.y - capture_y_top - capture_height;
-            if (capture_y_bottom < 0)
-                return std::unexpected("Viewport capture bounds are invalid");
+            auto* const window_manager = viewer_impl->getWindowManager();
+            auto* const vulkan_context = window_manager ? window_manager->getVulkanContext() : nullptr;
+            if (!vulkan_context)
+                return std::unexpected("Full-window capture requires a Vulkan window");
 
-            std::vector<uint8_t> pixels(static_cast<size_t>(capture_width) * capture_height * 4u);
+            auto capture = vulkan_context->captureActiveFrameRgba();
+            if (!capture)
+                return std::unexpected(capture.error());
 
-            GLint previous_read_fbo = 0;
-            GLint previous_read_buffer = GL_BACK;
-            GLint previous_pack_alignment = 4;
-            glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &previous_read_fbo);
-            glGetIntegerv(GL_READ_BUFFER, &previous_read_buffer);
-            glGetIntegerv(GL_PACK_ALIGNMENT, &previous_pack_alignment);
-
-            glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-            glReadBuffer(GL_FRONT);
-            glPixelStorei(GL_PACK_ALIGNMENT, 1);
-            glFinish();
-            glReadPixels(
-                capture_x,
-                capture_y_bottom,
-                capture_width,
-                capture_height,
-                GL_RGBA,
-                GL_UNSIGNED_BYTE,
-                pixels.data());
-            const GLenum read_error = glGetError();
-
-            glPixelStorei(GL_PACK_ALIGNMENT, previous_pack_alignment);
-            glReadBuffer(static_cast<GLenum>(previous_read_buffer));
-            glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(previous_read_fbo));
-
-            if (read_error != GL_NO_ERROR)
-                return std::unexpected("glReadPixels failed while capturing the live viewport");
-
-            const size_t row_bytes = static_cast<size_t>(capture_width) * 4u;
-            std::vector<uint8_t> flipped(pixels.size());
-            for (int row = 0; row < capture_height; ++row) {
-                const size_t src_offset = static_cast<size_t>(capture_height - 1 - row) * row_bytes;
-                const size_t dst_offset = static_cast<size_t>(row) * row_bytes;
-                std::copy_n(pixels.data() + src_offset, row_bytes, flipped.data() + dst_offset);
-            }
-
-            return mcp::encode_pixels_to_base64(
-                flipped.data(),
-                capture_width,
-                capture_height,
-                4,
-                width,
-                height);
+            return mcp::encode_pixels_to_base64(capture->rgba.data(),
+                                                capture->width,
+                                                capture->height,
+                                                4,
+                                                width,
+                                                height);
         }
 
         json selection_state_json(core::Scene& scene, const int max_indices = 100000) {
@@ -266,6 +236,8 @@ namespace lfs::app {
                 return "pointcloud";
             case core::NodeType::GROUP:
                 return "group";
+            case core::NodeType::PLY_SEQUENCE:
+                return "ply_sequence";
             case core::NodeType::CROPBOX:
                 return "crop_box";
             case core::NodeType::ELLIPSOID:
@@ -330,7 +302,7 @@ namespace lfs::app {
 
         json transform_info_json(const core::Scene& scene, const core::SceneNode& node) {
             const glm::mat4 local = scene.getNodeTransform(node.name);
-            const glm::mat4 world = scene.getWorldTransform(node.id);
+            const glm::mat4 world = vis::scene_coords::nodeVisualizerWorldTransform(scene, node.id);
             const auto local_components = decompose_transform(local);
             const auto world_components = decompose_transform(world);
 
@@ -519,7 +491,7 @@ namespace lfs::app {
                 {"rotation", vec3_to_json(components.rotation)},
                 {"scale", vec3_to_json(components.scale)},
                 {"local_matrix", mat4_to_json(scene.getNodeTransform(node->name))},
-                {"world_matrix", mat4_to_json(scene.getWorldTransform(cropbox_id))},
+                {"world_matrix", mat4_to_json(vis::scene_coords::nodeVisualizerWorldTransform(scene, cropbox_id))},
             };
 
             if (node->parent_id != core::NULL_NODE) {
@@ -557,29 +529,6 @@ namespace lfs::app {
             vis::RenderingManager* rendering_manager,
             const core::NodeId cropbox_id) {
             return vis::cap::resetCropBox(scene_manager, rendering_manager, cropbox_id);
-        }
-
-        json view_info_json(const vis::ViewInfo& info) {
-            const json rotation = json::array({
-                json::array({info.rotation[0], info.rotation[1], info.rotation[2]}),
-                json::array({info.rotation[3], info.rotation[4], info.rotation[5]}),
-                json::array({info.rotation[6], info.rotation[7], info.rotation[8]}),
-            });
-
-            return json{
-                {"success", true},
-                {"camera", {
-                               {"eye", json::array({info.translation[0], info.translation[1], info.translation[2]})},
-                               {"target", json::array({info.pivot[0], info.pivot[1], info.pivot[2]})},
-                               {"pivot", json::array({info.pivot[0], info.pivot[1], info.pivot[2]})},
-                               {"up", json::array({info.rotation[1], info.rotation[4], info.rotation[7]})},
-                               {"forward", json::array({info.rotation[2], info.rotation[5], info.rotation[8]})},
-                               {"rotation_matrix", rotation},
-                               {"width", info.width},
-                               {"height", info.height},
-                               {"fov_degrees", info.fov},
-                           }},
-            };
         }
 
         json render_settings_json(const vis::RenderSettingsProxy& settings) {
@@ -622,6 +571,10 @@ namespace lfs::app {
                                                {"crf_shoulder", settings.ppisp.crf_shoulder},
                                            }},
                                  {"background_color", json::array({settings.background_color[0], settings.background_color[1], settings.background_color[2]})},
+                                 {"environment_mode", settings.environment_mode},
+                                 {"environment_map_path", settings.environment_map_path},
+                                 {"environment_exposure", settings.environment_exposure},
+                                 {"environment_rotation_degrees", settings.environment_rotation_degrees},
                                  {"show_coord_axes", settings.show_coord_axes},
                                  {"axes_size", settings.axes_size},
                                  {"axes_visibility", json::array({settings.axes_visibility[0], settings.axes_visibility[1], settings.axes_visibility[2]})},
@@ -640,7 +593,7 @@ namespace lfs::app {
                                  {"show_pivot", settings.show_pivot},
                                  {"split_view_mode", settings.split_view_mode},
                                  {"split_position", settings.split_position},
-                                 {"gut", settings.gut},
+                                 {"raster_backend", std::string(lfs::rendering::gaussianRasterBackendId(static_cast<lfs::rendering::GaussianRasterBackend>(settings.raster_backend)))},
                                  {"equirectangular", settings.equirectangular},
                                  {"orthographic", settings.orthographic},
                                  {"ortho_scale", settings.ortho_scale},
@@ -689,6 +642,30 @@ namespace lfs::app {
                 }
             };
 
+            const auto set_string = [&args, &touched](const char* key, std::string& field) {
+                if (args.contains(key)) {
+                    field = args[key].get<std::string>();
+                    touched = true;
+                }
+            };
+
+            const auto set_raster_backend = [&args, &touched](vis::RenderSettingsProxy& settings)
+                -> std::expected<void, std::string> {
+                if (!args.contains("raster_backend"))
+                    return {};
+                const auto& value = args["raster_backend"];
+                if (!value.is_string())
+                    return std::unexpected("Field 'raster_backend' must be '3dgs' or '3dgut'");
+                const std::string backend_id = value.get<std::string>();
+                if (!lfs::rendering::isGaussianRasterBackendId(backend_id))
+                    return std::unexpected("Field 'raster_backend' must be '3dgs' or '3dgut'");
+                const auto backend = lfs::rendering::gaussianRasterBackendFromId(backend_id);
+                settings.raster_backend = static_cast<int>(backend);
+                settings.gut = lfs::rendering::isGutBackend(backend);
+                touched = true;
+                return {};
+            };
+
             const auto set_vec3 = [&args, &touched](const char* key,
                                                     std::array<float, 3>& field) -> std::expected<void, std::string> {
                 if (!args.contains(key))
@@ -731,6 +708,10 @@ namespace lfs::app {
             set_bool("crop_filter_for_selection", settings.crop_filter_for_selection);
             set_bool("apply_appearance_correction", settings.apply_appearance_correction);
             set_int("ppisp_mode", settings.ppisp_mode);
+            set_int("environment_mode", settings.environment_mode);
+            set_string("environment_map_path", settings.environment_map_path);
+            set_float("environment_exposure", settings.environment_exposure);
+            set_float("environment_rotation_degrees", settings.environment_rotation_degrees);
             set_bool("show_coord_axes", settings.show_coord_axes);
             set_float("axes_size", settings.axes_size);
             set_bool("show_grid", settings.show_grid);
@@ -746,7 +727,8 @@ namespace lfs::app {
             set_bool("show_pivot", settings.show_pivot);
             set_int("split_view_mode", settings.split_view_mode);
             set_float("split_position", settings.split_position);
-            set_bool("gut", settings.gut);
+            if (auto result = set_raster_backend(settings); !result)
+                return std::unexpected(result.error());
             set_bool("equirectangular", settings.equirectangular);
             set_bool("orthographic", settings.orthographic);
             set_float("ortho_scale", settings.ortho_scale);
@@ -1254,7 +1236,7 @@ namespace lfs::app {
                 {"rotation", vec3_to_json(components.rotation)},
                 {"scale", vec3_to_json(components.scale)},
                 {"local_matrix", mat4_to_json(scene.getNodeTransform(node->name))},
-                {"world_matrix", mat4_to_json(scene.getWorldTransform(ellipsoid_id))},
+                {"world_matrix", mat4_to_json(vis::scene_coords::nodeVisualizerWorldTransform(scene, ellipsoid_id))},
             };
 
             if (node->parent_id != core::NULL_NODE) {
@@ -1370,26 +1352,41 @@ namespace lfs::app {
         }
 
         void truncate_sh_degree(core::SplatData& splat, const int target_degree) {
-            if (target_degree >= splat.get_max_sh_degree())
+            if (target_degree < 0)
                 return;
+            splat.set_sh_degree(target_degree);
+        }
 
-            if (target_degree == 0) {
-                splat.shN() = core::Tensor{};
-            } else {
-                const size_t keep_coeffs = static_cast<size_t>((target_degree + 1) * (target_degree + 1) - 1);
-                auto& sh_n = splat.shN();
-                if (sh_n.is_valid() && sh_n.ndim() >= 2 && sh_n.shape()[1] > keep_coeffs) {
-                    if (sh_n.ndim() == 3) {
-                        sh_n = sh_n.slice(1, 0, static_cast<int64_t>(keep_coeffs)).contiguous();
-                    } else {
-                        constexpr size_t channels = 3;
-                        sh_n = sh_n.slice(1, 0, static_cast<int64_t>(keep_coeffs * channels)).contiguous();
-                    }
-                }
+        struct BorrowExportPlan {
+            core::Scene::MergeStorageMode storage_mode = core::Scene::MergeStorageMode::Clone;
+            std::optional<std::shared_lock<std::shared_mutex>> model_lock;
+        };
+
+        BorrowExportPlan make_borrow_single_identity_export_plan(const vis::SceneManager& scene_manager,
+                                                                 const std::vector<std::string>& node_names) {
+            BorrowExportPlan plan;
+            if (node_names.size() != 1)
+                return plan;
+
+            const auto& scene = scene_manager.getScene();
+            const auto* const node = scene.getNode(node_names.front());
+            if (!node || node->type != core::NodeType::SPLAT || !node->model)
+                return plan;
+
+            if (node->model->has_deleted_mask())
+                return plan;
+
+            if (node->name == scene.getTrainingModelNodeName()) {
+                const auto* const trainer_manager = scene_manager.getTrainerManager();
+                const auto* const trainer = trainer_manager ? trainer_manager->getTrainer() : nullptr;
+                if (trainer && trainer->is_running() && !trainer->is_paused())
+                    return plan;
+                if (trainer)
+                    plan.model_lock.emplace(trainer->getRenderMutex());
             }
 
-            splat.set_max_sh_degree(target_degree);
-            splat.set_active_sh_degree(target_degree);
+            plan.storage_mode = core::Scene::MergeStorageMode::BorrowSingleIdentity;
+            return plan;
         }
 
         std::expected<void, std::string> export_scene_nodes(const vis::SceneManager& scene_manager,
@@ -1403,22 +1400,34 @@ namespace lfs::app {
             for (const auto& name : node_names) {
                 const auto* const node = scene.getNode(name);
                 if (node && node->type == core::NodeType::SPLAT && node->model) {
-                    splats.emplace_back(node->model.get(), scene.getWorldTransform(node->id));
+                    splats.emplace_back(node->model.get(), vis::scene_coords::nodeDataWorldTransform(scene, node->id));
                 }
             }
 
             if (splats.empty())
                 return std::unexpected("The requested node set does not contain any splat nodes");
 
-            auto merged = core::Scene::mergeSplatsWithTransforms(splats);
+            auto borrow_plan = make_borrow_single_identity_export_plan(scene_manager, node_names);
+            auto merged = core::Scene::mergeSplatsWithTransforms(splats, borrow_plan.storage_mode);
             if (!merged)
                 return std::unexpected("Failed to merge scene nodes for export");
 
+            struct ExportMemoryCleanup {
+                std::unique_ptr<core::SplatData>& data;
+                ~ExportMemoryCleanup() {
+                    data.reset();
+                    core::Tensor::trim_memory_pool();
+                }
+            } cleanup{merged};
+
             truncate_sh_degree(*merged, sh_degree);
+            borrow_plan.model_lock.reset();
 
             switch (format) {
             case core::ExportFormat::PLY: {
-                if (auto result = io::save_ply(*merged, io::PlySaveOptions{.output_path = path, .binary = true}); !result)
+                if (auto result = io::save_ply(
+                        *merged, io::PlySaveOptions{.output_path = path, .binary = true, .async = false, .extra_attributes = {}});
+                    !result)
                     return std::unexpected(result.error().message);
                 break;
             }
@@ -1442,8 +1451,83 @@ namespace lfs::app {
                     return std::unexpected(result.error().message);
                 break;
             }
+            case core::ExportFormat::NUREC_USDZ: {
+                if (auto result = io::save_nurec_usdz(*merged, io::NurecUsdzSaveOptions{.output_path = path}); !result)
+                    return std::unexpected(result.error().message);
+                break;
+            }
+            case core::ExportFormat::RAD: {
+                if (auto result = io::save_rad(*merged, io::RadSaveOptions{.output_path = path}); !result)
+                    return std::unexpected(result.error().message);
+                break;
+            }
+            case core::ExportFormat::COLMAP:
+                return std::unexpected("COLMAP export uses scene.export_colmap");
             }
 
+            return {};
+        }
+
+        io::ColmapWriteFormat parse_colmap_write_format(const std::string& value) {
+            if (value == "binary")
+                return io::ColmapWriteFormat::Binary;
+            if (value == "text")
+                return io::ColmapWriteFormat::Text;
+            return io::ColmapWriteFormat::Auto;
+        }
+
+        std::expected<void, std::string> export_colmap_reconstruction_from_scene(
+            const vis::SceneManager& scene_manager,
+            const std::filesystem::path& source_path,
+            const std::filesystem::path& output_sparse_path,
+            const io::ColmapWriteFormat format) {
+            const auto& scene = scene_manager.getScene();
+            auto cameras = scene.getAllCameras();
+            if (cameras.empty()) {
+                return std::unexpected("Scene has no COLMAP cameras to export");
+            }
+
+            std::vector<io::ColmapCameraWriteData> camera_exports;
+            camera_exports.reserve(cameras.size());
+            for (const auto& camera : cameras) {
+                if (!camera)
+                    continue;
+                camera_exports.push_back(io::ColmapCameraWriteData{
+                    .camera = camera,
+                    .data_world_transform = scene.getCameraSceneTransformByUid(camera->uid()).value_or(glm::mat4(1.0f)),
+                });
+            }
+
+            const core::PointCloud* point_cloud = nullptr;
+            glm::mat4 point_cloud_transform{1.0f};
+            for (const auto* node : scene.getNodes()) {
+                if (!node || node->type != core::NodeType::POINTCLOUD || !node->point_cloud ||
+                    !scene.isNodeEffectivelyVisible(node->id)) {
+                    continue;
+                }
+                point_cloud = node->point_cloud.get();
+                point_cloud_transform = scene.getWorldTransform(node->id);
+                break;
+            }
+            if (!point_cloud) {
+                for (const auto* node : scene.getNodes()) {
+                    if (node && node->type == core::NodeType::DATASET) {
+                        point_cloud_transform = scene.getWorldTransform(node->id);
+                        break;
+                    }
+                }
+            }
+
+            auto result = io::write_colmap_reconstruction(
+                source_path,
+                output_sparse_path,
+                camera_exports,
+                point_cloud,
+                point_cloud_transform,
+                io::ColmapWriteOptions{.format = format});
+            if (!result) {
+                return std::unexpected(result.error().message);
+            }
             return {};
         }
 
@@ -1775,6 +1859,39 @@ namespace lfs::app {
 
         registry.register_tool(
             McpTool{
+                .name = "render.capture_window",
+                .description = "Capture the current composited app window. Unlike render.capture without camera_index, this includes the full window, including panels, toolbars, and GUI overlays.",
+                .input_schema = {
+                    .type = "object",
+                    .properties = json{
+                        {"width", json{{"type", "integer"}, {"description", "Optional output width; preserves aspect ratio when height is omitted"}}},
+                        {"height", json{{"type", "integer"}, {"description", "Optional output height; preserves aspect ratio when width is omitted"}}}},
+                    .required = {}},
+                .metadata = mcp::McpToolMetadata{
+                    .category = "render",
+                    .kind = "query",
+                    .runtime = "gui",
+                    .thread_affinity = "gui_thread",
+                }},
+            [viewer](const json& args) -> json {
+                const int width = args.value("width", 0);
+                const int height = args.value("height", 0);
+
+                auto result = capture_after_gui_render(viewer, [viewer, width, height]() {
+                    return capture_full_window_to_base64(viewer, width, height);
+                });
+                if (!result)
+                    return json{{"error", result.error()}};
+
+                return json{
+                    {"success", true},
+                    {"mime_type", "image/png"},
+                    {"data", *result},
+                };
+            });
+
+        registry.register_tool(
+            McpTool{
                 .name = "camera.get",
                 .description = "Get the current interactive viewport camera state",
                 .input_schema = {.type = "object", .properties = json::object(), .required = {}}},
@@ -2103,6 +2220,11 @@ namespace lfs::app {
                         {"focal_length_mm", json{{"type", "number"}}},
                         {"render_scale", json{{"type", "number"}}},
                         {"background_color", json{{"type", "array"}, {"items", json{{"type", "number"}}}}},
+                        {"environment_mode", json{{"type", "integer"}}},
+                        {"environment_map_path", json{{"type", "string"}}},
+                        {"environment_exposure", json{{"type", "number"}}},
+                        {"environment_rotation_degrees", json{{"type", "number"}}},
+                        {"raster_backend", json{{"type", "string"}, {"enum", json::array({"3dgs", "3dgut"})}}},
                         {"antialiasing", json{{"type", "boolean"}}},
                         {"show_grid", json{{"type", "boolean"}}},
                         {"show_camera_frustums", json{{"type", "boolean"}}},
@@ -2552,6 +2674,45 @@ namespace lfs::app {
 
         registry.register_tool(
             McpTool{
+                .name = "scene.export_usdz_nurec",
+                .description = "Export one or more scene nodes to NuRec USDZ compatible with PLY_to_USD / Omniverse",
+                .input_schema = {
+                    .type = "object",
+                    .properties = json{
+                        {"path", json{{"type", "string"}, {"description", "Destination .usdz file path"}}},
+                        {"node", json{{"type", "string"}, {"description", "Optional node name"}}},
+                        {"nodes", json{{"type", "array"}, {"items", json{{"type", "string"}}}, {"description", "Optional list of node names"}}},
+                        {"sh_degree", json{{"type", "integer"}, {"description", "Optional SH degree to keep in the export"}}}},
+                    .required = {"path"}}},
+            [viewer_impl](const json& args) -> json {
+                const std::filesystem::path path = args["path"].get<std::string>();
+                const int sh_degree = args.value("sh_degree", 3);
+
+                return post_and_wait(viewer_impl, [viewer_impl, args, path, sh_degree]() -> json {
+                    auto* const scene_manager = viewer_impl->getSceneManager();
+                    if (!scene_manager)
+                        return json{{"error", "Scene manager not initialized"}};
+
+                    auto node_names = resolve_export_nodes(*scene_manager, args);
+                    if (!node_names)
+                        return json{{"error", node_names.error()}};
+
+                    if (auto result = export_scene_nodes(*scene_manager, *node_names, core::ExportFormat::NUREC_USDZ, path, sh_degree); !result)
+                        return json{{"error", result.error()}};
+
+                    return json{
+                        {"success", true},
+                        {"started", false},
+                        {"completed", true},
+                        {"format", "usdz_nurec"},
+                        {"path", core::path_to_utf8(path)},
+                        {"nodes", *node_names},
+                    };
+                });
+            });
+
+        registry.register_tool(
+            McpTool{
                 .name = "scene.export_html",
                 .description = "Start an asynchronous export of one or more scene nodes to the standalone HTML viewer",
                 .input_schema = {
@@ -2585,6 +2746,93 @@ namespace lfs::app {
                         {"format", "html"},
                         {"path", core::path_to_utf8(path)},
                         {"nodes", *node_names},
+                    };
+                });
+            });
+
+        registry.register_tool(
+            McpTool{
+                .name = "scene.export_rad",
+                .description = "Export one or more scene nodes to RAD (Random Access Dataset) format",
+                .input_schema = {
+                    .type = "object",
+                    .properties = json{
+                        {"path", json{{"type", "string"}, {"description", "Destination file path"}}},
+                        {"node", json{{"type", "string"}, {"description", "Optional node name"}}},
+                        {"nodes", json{{"type", "array"}, {"items", json{{"type", "string"}}}, {"description", "Optional list of node names"}}},
+                        {"sh_degree", json{{"type", "integer"}, {"description", "Optional SH degree to keep in the export"}}}},
+                    .required = {"path"}}},
+            [viewer_impl](const json& args) -> json {
+                const std::filesystem::path path = args["path"].get<std::string>();
+                const int sh_degree = args.value("sh_degree", 3);
+
+                return post_and_wait(viewer_impl, [viewer_impl, args, path, sh_degree]() -> json {
+                    auto* const scene_manager = viewer_impl->getSceneManager();
+                    if (!scene_manager)
+                        return json{{"error", "Scene manager not initialized"}};
+
+                    auto node_names = resolve_export_nodes(*scene_manager, args);
+                    if (!node_names)
+                        return json{{"error", node_names.error()}};
+
+                    if (auto result = export_scene_nodes(*scene_manager, *node_names, core::ExportFormat::RAD, path, sh_degree); !result)
+                        return json{{"error", result.error()}};
+
+                    return json{
+                        {"success", true},
+                        {"started", false},
+                        {"completed", true},
+                        {"format", "rad"},
+                        {"path", core::path_to_utf8(path)},
+                        {"nodes", *node_names},
+                    };
+                });
+            });
+
+        registry.register_tool(
+            McpTool{
+                .name = "scene.export_colmap",
+                .description = "Write the current scene camera and sparse point cloud transforms to COLMAP sparse files",
+                .input_schema = {
+                    .type = "object",
+                    .properties = json{
+                        {"path", json{{"type", "string"}, {"description", "Destination COLMAP sparse directory"}}},
+                        {"source_path", json{{"type", "string"}, {"description", "Optional source COLMAP dataset or sparse directory; defaults to the loaded dataset path"}}},
+                        {"format", json{{"type", "string"}, {"description", "Output format: auto, binary, or text"}}}},
+                    .required = {"path"}}},
+            [viewer_impl](const json& args) -> json {
+                const std::filesystem::path path = args["path"].get<std::string>();
+                const auto source_arg = optional_string_arg(args, "source_path");
+                const auto format = parse_colmap_write_format(args.value("format", "auto"));
+
+                return post_and_wait(viewer_impl, [viewer_impl, path, source_arg, format]() -> json {
+                    auto* const scene_manager = viewer_impl->getSceneManager();
+                    if (!scene_manager)
+                        return json{{"error", "Scene manager not initialized"}};
+
+                    std::filesystem::path source_path;
+                    if (source_arg && !source_arg->empty()) {
+                        source_path = *source_arg;
+                    } else {
+                        source_path = scene_manager->getDatasetPath();
+                    }
+                    if (source_path.empty()) {
+                        return json{{"error", "No source COLMAP path provided and no dataset path is loaded"}};
+                    }
+
+                    if (auto result = export_colmap_reconstruction_from_scene(
+                            *scene_manager, source_path, path, format);
+                        !result) {
+                        return json{{"error", result.error()}};
+                    }
+
+                    return json{
+                        {"success", true},
+                        {"started", false},
+                        {"completed", true},
+                        {"format", "colmap"},
+                        {"path", core::path_to_utf8(path)},
+                        {"source_path", core::path_to_utf8(source_path)},
                     };
                 });
             });
@@ -2666,11 +2914,10 @@ namespace lfs::app {
                 if (num_vertices < 3)
                     return json{{"error", "Polygon requires at least 3 vertices"}};
 
-                std::vector<float> vertex_data;
-                vertex_data.reserve(num_vertices * 2);
+                std::vector<glm::vec2> vertex_data;
+                vertex_data.reserve(num_vertices);
                 for (const auto& pt : points) {
-                    vertex_data.push_back(pt[0].get<float>());
-                    vertex_data.push_back(pt[1].get<float>());
+                    vertex_data.emplace_back(pt[0].get<float>(), pt[1].get<float>());
                 }
 
                 const std::string mode = args.value("mode", "replace");
@@ -2702,11 +2949,10 @@ namespace lfs::app {
                 if (num_vertices < 3)
                     return json{{"error", "Lasso requires at least 3 points"}};
 
-                std::vector<float> vertex_data;
-                vertex_data.reserve(num_vertices * 2);
+                std::vector<glm::vec2> vertex_data;
+                vertex_data.reserve(num_vertices);
                 for (const auto& pt : points) {
-                    vertex_data.push_back(pt[0].get<float>());
-                    vertex_data.push_back(pt[1].get<float>());
+                    vertex_data.emplace_back(pt[0].get<float>(), pt[1].get<float>());
                 }
 
                 const std::string mode = args.value("mode", "replace");
@@ -2984,7 +3230,7 @@ namespace lfs::app {
                 .tool_name = "transform.set",
                 .operator_id = vis::op::BuiltinOp::TransformSet,
                 .category = "transform",
-                .description = "Set absolute local transform components for a node or the current shared node selection",
+                .description = "Set absolute visualizer-world transform components for a node or the current shared node selection",
                 .prepare = prepare_transform_set_operator,
                 .on_success = transform_operator_result,
             });
@@ -2995,7 +3241,7 @@ namespace lfs::app {
                 .tool_name = "transform.translate",
                 .operator_id = vis::op::BuiltinOp::TransformTranslate,
                 .category = "transform",
-                .description = "Translate a node or the current shared node selection",
+                .description = "Translate a node or the current shared node selection in visualizer-world coordinates",
                 .required = {"value"},
                 .prepare = prepare_transform_operator,
                 .on_success = transform_operator_result,
@@ -3007,7 +3253,7 @@ namespace lfs::app {
                 .tool_name = "transform.rotate",
                 .operator_id = vis::op::BuiltinOp::TransformRotate,
                 .category = "transform",
-                .description = "Rotate a node or the current shared node selection by XYZ Euler deltas in radians",
+                .description = "Rotate a node or the current shared node selection by visualizer-world XYZ Euler deltas in radians",
                 .required = {"value"},
                 .prepare = prepare_transform_operator,
                 .on_success = transform_operator_result,
@@ -3019,7 +3265,7 @@ namespace lfs::app {
                 .tool_name = "transform.scale",
                 .operator_id = vis::op::BuiltinOp::TransformScale,
                 .category = "transform",
-                .description = "Scale a node or the current shared node selection by XYZ factors",
+                .description = "Scale a node or the current shared node selection by visualizer-world XYZ factors",
                 .required = {"value"},
                 .prepare = prepare_transform_operator,
                 .on_success = transform_operator_result,
@@ -3823,6 +4069,20 @@ namespace lfs::app {
 
                     json field_payloads = json::object();
                     for (const auto& field_name : fields) {
+                        // shN is stored swizzled; expose canonical [N, K, 3] view here.
+                        if (field_name == "shN") {
+                            if (!node->model->shN_raw().is_valid() ||
+                                node->model->shN_raw().numel() == 0 ||
+                                node->model->max_sh_coeffs_rest() == 0) {
+                                field_payloads[field_name] = tensor_payload_json(
+                                    core::Tensor::zeros({static_cast<size_t>(resolved_indices.size()), 0, 3},
+                                                        core::Device::CUDA));
+                                continue;
+                            }
+                            const core::Tensor canon = node->model->shN_canonical();
+                            field_payloads[field_name] = tensor_payload_json(canon.index_select(0, index_tensor));
+                            continue;
+                        }
                         const auto* const field = resolve_gaussian_field(*node->model, field_name);
                         if (!field)
                             return json{{"error", "Unsupported gaussian field: " + field_name}};
@@ -3934,6 +4194,21 @@ namespace lfs::app {
                 .save_path = [](const std::string& path) { return python::save_camera_path(path); },
                 .load_path = [](const std::string& path) { return python::load_camera_path(path); },
                 .set_playback_speed = [](const float speed) { python::set_playback_speed(speed); },
+                .load_ply_sequence =
+                    [](const std::string& directory, const float fps) {
+                        core::events::cmd::SequencerLoadPlySequence{.directory = directory, .fps = fps}.emit();
+                    },
+                .scrub_to_time =
+                    [viewer_impl](const float time) {
+                        auto* const gui_manager = viewer_impl ? viewer_impl->getGuiManager() : nullptr;
+                        if (gui_manager)
+                            gui_manager->sequencer().seek(time);
+                    },
+                .ply_sequence_status =
+                    [viewer_impl]() -> std::string {
+                    auto* const gui_manager = viewer_impl ? viewer_impl->getGuiManager() : nullptr;
+                    return gui_manager ? gui_manager->sequencerUI().plyPlayerStatusJson() : std::string{};
+                },
             });
 
         // --- Plugin tools ---
@@ -4215,7 +4490,7 @@ namespace lfs::app {
             McpResource{
                 .uri = "lichtfeld://render/current",
                 .name = "Current Render",
-                .description = "Base64-encoded PNG capture of the current GUI viewport",
+                .description = "Base64-encoded PNG capture of the live viewport region only; excludes panels, toolbars, and other window UI",
                 .mime_type = "image/png"},
             [viewer](const std::string& uri) -> std::expected<std::vector<McpResourceContent>, std::string> {
                 auto result = post_and_wait(viewer, [viewer]() {
@@ -4227,15 +4502,35 @@ namespace lfs::app {
                 return single_blob_resource(uri, "image/png", *result);
             });
 
+        registry.register_resource(
+            McpResource{
+                .uri = "lichtfeld://render/window",
+                .name = "Current Window",
+                .description = "Base64-encoded PNG capture of the full composited app window, including the live viewport, panels, toolbars, and GUI overlays",
+                .mime_type = "image/png"},
+            [viewer](const std::string& uri) -> std::expected<std::vector<McpResourceContent>, std::string> {
+                auto result = capture_after_gui_render(viewer, [viewer]() {
+                    return capture_full_window_to_base64(viewer);
+                });
+                if (!result)
+                    return std::unexpected(result.error());
+
+                return single_blob_resource(uri, "image/png", *result);
+            });
+
         registry.register_resource_prefix(
             "lichtfeld://render/",
             [viewer](const std::string& uri) -> std::expected<std::vector<McpResourceContent>, std::string> {
-                if (uri != "lichtfeld://render/current")
-                    return std::unexpected("Unknown resource URI: " + uri);
-
-                auto result = post_and_wait(viewer, [viewer]() {
-                    return capture_live_viewport_to_base64(viewer);
-                });
+                std::expected<std::string, std::string> result = std::unexpected("Unknown resource URI: " + uri);
+                if (uri == "lichtfeld://render/current") {
+                    result = post_and_wait(viewer, [viewer]() {
+                        return capture_live_viewport_to_base64(viewer);
+                    });
+                } else if (uri == "lichtfeld://render/window") {
+                    result = capture_after_gui_render(viewer, [viewer]() {
+                        return capture_full_window_to_base64(viewer);
+                    });
+                }
                 if (!result)
                     return std::unexpected(result.error());
 

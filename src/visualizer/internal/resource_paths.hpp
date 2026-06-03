@@ -5,15 +5,26 @@
 #pragma once
 
 #include "core/executable_path.hpp"
+#include "core/path_utils.hpp"
 #include <filesystem>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace lfs::vis {
 
     inline std::filesystem::path getAssetPath(const std::string& asset_name) {
         std::vector<std::filesystem::path> search_paths;
+
+#ifdef LFS_DEV_RMLUI_SOURCE_DIR
+        constexpr std::string_view rmlui_prefix = "rmlui/";
+        if (asset_name.rfind(rmlui_prefix, 0) == 0) {
+            search_paths.push_back(
+                lfs::core::utf8_to_path(LFS_DEV_RMLUI_SOURCE_DIR) /
+                asset_name.substr(rmlui_prefix.size()));
+        }
+#endif
 
         // Primary: Use runtime-detected resource directory
         search_paths.push_back(lfs::core::getAssetsDir() / asset_name);
@@ -30,6 +41,10 @@ namespace lfs::vis {
 
 #ifdef PROJECT_ROOT_PATH
         search_paths.push_back(std::filesystem::path(PROJECT_ROOT_PATH) / "src/visualizer/gui/assets" / asset_name);
+        if (asset_name == "fonts/JetBrainsMono-Regular.ttf") {
+            search_paths.push_back(std::filesystem::path(PROJECT_ROOT_PATH) /
+                                   "src/rendering/resources/assets/JetBrainsMono-Regular.ttf");
+        }
 #endif
 
         // Try each path
@@ -42,41 +57,10 @@ namespace lfs::vis {
         // Build error message showing all searched locations
         std::string error_msg = "Cannot find asset: " + asset_name + "\nSearched in:\n";
         for (const auto& path : search_paths) {
-            error_msg += "  - " + path.string() + "\n";
+            error_msg += "  - " + lfs::core::path_to_utf8(path) + "\n";
         }
-        error_msg += "\nExecutable directory: " + lfs::core::getExecutableDir().string();
+        error_msg += "\nExecutable directory: " + lfs::core::path_to_utf8(lfs::core::getExecutableDir());
 
-        throw std::runtime_error(error_msg);
-    }
-
-    inline std::filesystem::path getShaderPath(const std::string& shader_name) {
-        std::vector<std::filesystem::path> search_paths;
-
-        // Primary: Use runtime-detected resource directory
-        search_paths.push_back(lfs::core::getShadersDir() / shader_name);
-
-#ifdef VISUALIZER_SHADER_PATH
-        search_paths.push_back(std::filesystem::path(VISUALIZER_SHADER_PATH) / shader_name);
-#endif
-
-#ifdef VISUALIZER_SOURCE_SHADER_PATH
-        search_paths.push_back(std::filesystem::path(VISUALIZER_SOURCE_SHADER_PATH) / shader_name);
-#endif
-
-#ifdef PROJECT_ROOT_PATH
-        search_paths.push_back(std::filesystem::path(PROJECT_ROOT_PATH) / "src/visualizer/resources/shaders" / shader_name);
-#endif
-
-        for (const auto& path : search_paths) {
-            if (std::filesystem::exists(path)) {
-                return path;
-            }
-        }
-
-        std::string error_msg = "Cannot find shader: " + shader_name + "\nSearched in:\n";
-        for (const auto& path : search_paths) {
-            error_msg += "  - " + path.string() + "\n";
-        }
         throw std::runtime_error(error_msg);
     }
 

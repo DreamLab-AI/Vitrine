@@ -20,11 +20,14 @@ namespace lfs::core {
     class Scene;
 
     // Export format enum
-    enum class ExportFormat { PLY,
-                              SOG,
-                              SPZ,
-                              HTML_VIEWER,
-                              USD };
+    enum class ExportFormat { PLY = 0,
+                              SOG = 1,
+                              SPZ = 2,
+                              HTML_VIEWER = 3,
+                              USD = 4,
+                              NUREC_USDZ = 5,
+                              RAD = 6,
+                              COLMAP = 7 };
 
 // Event macro using shared event bridge (solves singleton duplication between exe and Python module)
 #define EVENT(Name, ...)                                   \
@@ -55,13 +58,13 @@ namespace lfs::core {
             EVENT(ResetTraining, );
             EVENT(SwitchToLatestCheckpoint, );
             EVENT(SaveCheckpoint, std::optional<int> iteration;);
-            EVENT(LoadFile, std::filesystem::path path; bool is_dataset; std::filesystem::path output_path; std::filesystem::path init_path;);
+            EVENT(LoadFile, std::filesystem::path path; bool is_dataset; std::filesystem::path output_path; std::filesystem::path init_path; std::string centralize_dataset; std::optional<int> max_width; bool apply_auto_crop = false;);
             EVENT(LoadCheckpointForTraining, std::filesystem::path checkpoint_path; std::filesystem::path dataset_path; std::filesystem::path output_path;);
             EVENT(ImportColmapCameras, std::filesystem::path sparse_path;);
             EVENT(LoadConfigFile, std::filesystem::path path;);
             EVENT(ShowDatasetLoadPopup, std::filesystem::path dataset_path;);
             EVENT(ShowResumeCheckpointPopup, std::filesystem::path checkpoint_path;);
-            EVENT(ClearScene, );
+            EVENT(NewProject, );
             EVENT(RequestExit, );
             EVENT(ForceExit, );
             EVENT(SwitchToEditMode, );
@@ -108,8 +111,8 @@ namespace lfs::core {
             EVENT(PasteSelection, );
             EVENT(SelectBrush, float x; float y; float radius; int camera_index; std::string mode;);
             EVENT(SelectRect, float x0; float y0; float x1; float y1; int camera_index; std::string mode;);
-            EVENT(SelectPolygon, std::vector<float> points; int camera_index; std::string mode;);
-            EVENT(SelectLasso, std::vector<float> points; int camera_index; std::string mode;);
+            EVENT(SelectPolygon, std::vector<glm::vec2> points; int camera_index; std::string mode;);
+            EVENT(SelectLasso, std::vector<glm::vec2> points; int camera_index; std::string mode;);
             EVENT(SelectRing, float x; float y; int camera_index; std::string mode;);
             EVENT(SelectByDescription, std::string description; int camera_index;);
             EVENT(ApplySelectionMask, std::vector<uint8_t> mask;);
@@ -122,6 +125,9 @@ namespace lfs::core {
             EVENT(SequencerSelectKeyframe, size_t keyframe_index;);
             EVENT(SequencerDeleteKeyframe, size_t keyframe_index;);
             EVENT(SequencerSetKeyframeEasing, size_t keyframe_index; int easing_type;);
+            EVENT(SequencerLoadPlySequence, std::string directory; float fps;);
+            EVENT(SaveAsset, std::string node_name;);
+            EVENT(SaveAssetAs, std::string node_name; std::string asset_name;);
         } // namespace cmd
 
         // ============================================================================
@@ -162,7 +168,7 @@ namespace lfs::core {
             EVENT(ModelUpdated, int iteration; size_t num_gaussians;);
             EVENT(SceneChanged, uint32_t mutation_flags = 0;);
             EVENT(SelectionChanged, bool has_selection; int count;);
-            // node_type: 0=SPLAT, 1=GROUP, 2=CROPBOX
+            // node_type stores core::NodeType as int.
             EVENT(PLYAdded, std::string name; size_t node_gaussians; size_t total_gaussians; bool is_visible; std::string parent_name; bool is_group; int node_type; bool from_history = false;);
             EVENT(PLYRemoved, std::string name; bool children_kept = false; std::string parent_of_removed; bool from_history = false;);
             EVENT(NodeReparented, std::string name; std::string old_parent; std::string new_parent; bool from_history = false;);
@@ -178,6 +184,7 @@ namespace lfs::core {
                   size_t num_points;);
             EVENT(ConfigLoadFailed, std::filesystem::path path; std::string error;);
             EVENT(FileDropFailed, std::vector<std::string> files; std::string error;);
+            EVENT(SplatFileLoadFailed, std::filesystem::path path; std::string error;);
 
             // Evaluation
             EVENT(EvaluationStarted, int iteration; size_t num_images;);
@@ -270,6 +277,7 @@ namespace lfs::core {
             EVENT(FocusTrainingPanel, );
             EVENT(ToggleUI, );
             EVENT(ToggleFullscreen, );
+            EVENT(ToggleVramHud, );
         } // namespace ui
 
         // ============================================================================

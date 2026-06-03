@@ -100330,11 +100330,11 @@ class SkyElement extends AsyncElement {
     disconnectedCallback() {
         this._unloadSkybox();
     }
-    _generateSkybox(asset) {
-        if (!this._scene)
-            return;
-        const source = asset.resource;
-        const skybox = EnvLighting.generateSkyboxCubemap(source);
+	    _generateSkybox(asset) {
+	        if (!this._scene)
+	            return;
+	        const source = asset.resource;
+	        const skybox = EnvLighting.generateSkyboxCubemap(source);
         skybox.anisotropy = 4;
         this._scene.skybox = skybox;
         if (this._lighting) {
@@ -100348,10 +100348,14 @@ class SkyElement extends AsyncElement {
         }
         this._scene.sky.type = this._type;
         this._scene.sky.node.setLocalScale(this._scale);
-        this._scene.sky.center = this._center;
-        this._scene.skyboxIntensity = this._intensity;
-        this._scene.skyboxMip = this._level;
-    }
+	        this._scene.sky.center = this._center;
+	        this._scene.skyboxIntensity = this._intensity;
+	        this._scene.skyboxMip = this._level;
+	        const app = this.closestApp?.app;
+	        if (app) {
+	            app.renderNextFrame = true;
+	        }
+	    }
     async _loadSkybox() {
         var _a;
         const appElement = await ((_a = this.closestApp) === null || _a === void 0 ? void 0 : _a.ready());
@@ -100374,18 +100378,22 @@ class SkyElement extends AsyncElement {
             app.assets.load(asset);
         }
     }
-    _unloadSkybox() {
-        var _a, _b;
-        if (!this._scene)
-            return;
-        (_a = this._scene.skybox) === null || _a === void 0 ? void 0 : _a.destroy();
+	    _unloadSkybox() {
+	        var _a, _b;
+	        if (!this._scene)
+	            return;
+	        (_a = this._scene.skybox) === null || _a === void 0 ? void 0 : _a.destroy();
         // @ts-ignore
         this._scene.skybox = null;
-        (_b = this._scene.envAtlas) === null || _b === void 0 ? void 0 : _b.destroy();
-        // @ts-ignore
-        this._scene.envAtlas = null;
-        this._scene = null;
-    }
+	        (_b = this._scene.envAtlas) === null || _b === void 0 ? void 0 : _b.destroy();
+	        // @ts-ignore
+	        this._scene.envAtlas = null;
+	        const app = this.closestApp?.app;
+	        if (app) {
+	            app.renderNextFrame = true;
+	        }
+	        this._scene = null;
+	    }
     /**
      * Sets the id of the `pc-asset` to use for the skybox.
      * @param value - The asset ID.
@@ -100407,12 +100415,16 @@ class SkyElement extends AsyncElement {
      * Sets the center of the skybox.
      * @param value - The center.
      */
-    set center(value) {
-        this._center = value;
-        if (this._scene) {
-            this._scene.sky.center = this._center;
-        }
-    }
+	    set center(value) {
+	        this._center = value;
+	        if (this._scene) {
+	            this._scene.sky.center = this._center;
+	            const app = this.closestApp?.app;
+	            if (app) {
+	                app.renderNextFrame = true;
+	            }
+	        }
+	    }
     /**
      * Gets the center of the skybox.
      * @returns The center.
@@ -100424,12 +100436,16 @@ class SkyElement extends AsyncElement {
      * Sets the intensity of the skybox.
      * @param value - The intensity.
      */
-    set intensity(value) {
-        this._intensity = value;
-        if (this._scene) {
-            this._scene.skyboxIntensity = this._intensity;
-        }
-    }
+	    set intensity(value) {
+	        this._intensity = value;
+	        if (this._scene) {
+	            this._scene.skyboxIntensity = this._intensity;
+	            const app = this.closestApp?.app;
+	            if (app) {
+	                app.renderNextFrame = true;
+	            }
+	        }
+	    }
     /**
      * Gets the intensity of the skybox.
      * @returns The intensity.
@@ -100441,12 +100457,16 @@ class SkyElement extends AsyncElement {
      * Sets the mip level of the skybox.
      * @param value - The mip level.
      */
-    set level(value) {
-        this._level = value;
-        if (this._scene) {
-            this._scene.skyboxMip = this._level;
-        }
-    }
+	    set level(value) {
+	        this._level = value;
+	        if (this._scene) {
+	            this._scene.skyboxMip = this._level;
+	            const app = this.closestApp?.app;
+	            if (app) {
+	                app.renderNextFrame = true;
+	            }
+	        }
+	    }
     /**
      * Gets the mip level of the skybox.
      * @returns The mip level.
@@ -100458,9 +100478,13 @@ class SkyElement extends AsyncElement {
      * Sets whether the skybox is used as a light source.
      * @param value - Whether to use lighting.
      */
-    set lighting(value) {
-        this._lighting = value;
-    }
+	    set lighting(value) {
+	        this._lighting = value;
+	        const app = this.closestApp?.app;
+	        if (app) {
+	            app.renderNextFrame = true;
+	        }
+	    }
     /**
      * Gets whether the skybox is used as a light source.
      * @returns Whether to use lighting.
@@ -100472,12 +100496,16 @@ class SkyElement extends AsyncElement {
      * Sets the Euler rotation of the skybox.
      * @param value - The rotation.
      */
-    set rotation(value) {
-        this._rotation = value;
-        if (this._scene) {
-            this._scene.skyboxRotation = new Quat().setFromEulerAngles(value);
-        }
-    }
+	    set rotation(value) {
+	        this._rotation = value;
+	        if (this._scene) {
+	            this._scene.skyboxRotation = new Quat().setFromEulerAngles(value);
+	            const app = this.closestApp?.app;
+	            if (app) {
+	                app.renderNextFrame = true;
+	            }
+	        }
+	    }
     /**
      * Gets the Euler rotation of the skybox.
      * @returns The rotation.
@@ -100489,12 +100517,16 @@ class SkyElement extends AsyncElement {
      * Sets the scale of the skybox.
      * @param value - The scale.
      */
-    set scale(value) {
-        this._scale = value;
-        if (this._scene) {
-            this._scene.sky.node.setLocalScale(this._scale);
-        }
-    }
+	    set scale(value) {
+	        this._scale = value;
+	        if (this._scene) {
+	            this._scene.sky.node.setLocalScale(this._scale);
+	            const app = this.closestApp?.app;
+	            if (app) {
+	                app.renderNextFrame = true;
+	            }
+	        }
+	    }
     /**
      * Gets the scale of the skybox.
      * @returns The scale.
@@ -100506,16 +100538,20 @@ class SkyElement extends AsyncElement {
      * Sets the type of the skybox.
      * @param value - The type.
      */
-    set type(value) {
-        this._type = value;
-        if (this._scene) {
-            this._scene.sky.type = this._type;
-            const layer = this._scene.layers.getLayerById(LAYERID_SKYBOX);
-            if (layer) {
-                layer.enabled = this._type !== 'none';
-            }
-        }
-    }
+	    set type(value) {
+	        this._type = value;
+	        if (this._scene) {
+	            this._scene.sky.type = this._type;
+	            const layer = this._scene.layers.getLayerById(LAYERID_SKYBOX);
+	            if (layer) {
+	                layer.enabled = this._type !== 'none';
+	            }
+	            const app = this.closestApp?.app;
+	            if (app) {
+	                app.renderNextFrame = true;
+	            }
+	        }
+	    }
     /**
      * Gets the type of the skybox.
      * @returns The type.

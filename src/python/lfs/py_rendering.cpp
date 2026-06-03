@@ -2,20 +2,40 @@
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "py_rendering.hpp"
-#include "core/camera.hpp"
+#include "core/checkpoint_format.hpp"
+#include "core/logger.hpp"
+#include "core/mesh_data.hpp"
+#include "core/path_utils.hpp"
+#include "core/point_cloud.hpp"
 #include "core/property_registry.hpp"
 #include "core/scene.hpp"
+#include "core/splat_data.hpp"
+#include "core/splat_data_transform.hpp"
 #include "core/tensor.hpp"
+#include "io/loader.hpp"
 #include "py_scene.hpp"
 #include "python/python_runtime.hpp"
-#include "rendering/gs_rasterizer_tensor.hpp"
-#include "training/dataset.hpp"
+#include "rendering/coordinate_conventions.hpp"
+#include "rendering/image_layout.hpp"
+#include "rendering/render_constants.hpp"
+#include "rendering/rendering.hpp"
+#include "scene/scene_render_state.hpp"
+#include "visualizer/internal/viewport.hpp"
 #include "visualizer/ipc/view_context.hpp"
+#include "visualizer/rendering/rendering_manager.hpp"
+#include "visualizer/visualizer.hpp"
 
+#include <algorithm>
+#include <array>
+#include <atomic>
 #include <cassert>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <future>
 #include <numbers>
+#include <variant>
 
 #include <glm/glm.hpp>
 
@@ -24,6 +44,9 @@ namespace nb = nanobind;
 namespace lfs::python {
 
     namespace {
+        constexpr std::uintmax_t MAX_RENDERED_ASSET_PREVIEW_BYTES =
+            2ull * 1024ull * 1024ull * 1024ull;
+
         [[nodiscard]] std::optional<PyViewportRender> toPyViewportRender(
             const std::optional<vis::ViewportRender>& render,
             const bool clone_for_async) {
@@ -31,7 +54,15 @@ namespace lfs::python {
                 return std::nullopt;
 
             auto image = clone_for_async ? render->image->clone() : *render->image;
-            image = image.permute({1, 2, 0});
+            const auto layout = rendering::detectImageLayout(image);
+            if (layout == rendering::ImageLayout::Unknown)
+                return std::nullopt;
+            image = rendering::flipImageVertical(image, layout);
+            if (layout == rendering::ImageLayout::CHW) {
+                image = image.permute({1, 2, 0});
+            } else {
+                image = image.contiguous();
+            }
 
             std::optional<PyTensor> screen_pos;
             if (render->screen_positions) {
@@ -45,6 +76,476 @@ namespace lfs::python {
                 .image = PyTensor(std::move(image), true),
                 .screen_positions = std::move(screen_pos),
             };
+        }
+
+        [[nodiscard]] std::optional<vis::ViewportRender> captureViewportRenderThreadSafe() {
+            auto invoke_capture = []() -> std::optional<vis::ViewportRender> {
+                return vis::capture_viewport_render();
+            };
+
+            auto* const viewer = get_visualizer();
+            if (!viewer || viewer->isOnViewerThread()) {
+                return invoke_capture();
+            }
+            if (!viewer->acceptsPostedWork()) {
+                return std::nullopt;
+            }
+
+            auto promise = std::make_shared<std::promise<std::optional<vis::ViewportRender>>>();
+            auto future = promise->get_future();
+            auto completed = std::make_shared<std::atomic_bool>(false);
+
+            auto finish = [promise, completed](std::optional<vis::ViewportRender> result) mutable {
+                if (!completed->exchange(true)) {
+                    promise->set_value(std::move(result));
+                }
+            };
+
+            const bool posted = viewer->postWork(vis::Visualizer::WorkItem{
+                .run =
+                    [invoke_capture, finish]() mutable {
+                        finish(invoke_capture());
+                    },
+                .cancel =
+                    [finish]() mutable {
+                        finish(std::nullopt);
+                    }});
+            if (!posted) {
+                return std::nullopt;
+            }
+
+            nb::gil_scoped_release release;
+            return future.get();
+        }
+
+        [[nodiscard]] core::PointCloud pointCloudFromMesh(const core::MeshData& mesh) {
+            core::Tensor colors;
+            const auto vertex_count = static_cast<std::size_t>(mesh.vertex_count());
+            if (mesh.colors.is_valid() && mesh.colors.ndim() == 2 &&
+                mesh.colors.size(0) == mesh.vertex_count() && mesh.colors.size(1) >= 3) {
+                colors = mesh.colors.slice(1, 0, 3).contiguous();
+            } else {
+                colors = core::Tensor::full(
+                    {vertex_count, static_cast<std::size_t>(3)},
+                    0.72f,
+                    mesh.vertices.device(),
+                    core::DataType::Float32);
+            }
+            return core::PointCloud(mesh.vertices, std::move(colors));
+        }
+
+        [[nodiscard]] std::optional<core::Tensor> renderSplatAssetPreview(
+            vis::RenderingManager& rendering_manager,
+            core::SplatData& splat,
+            const int width,
+            const int height,
+            const float focal_length_mm,
+            const glm::mat3* custom_rotation = nullptr,
+            const glm::vec3* custom_translation = nullptr) {
+            if (splat.size() == 0) {
+                return std::nullopt;
+            }
+
+            Viewport preview_viewport(
+                static_cast<std::size_t>(width),
+                static_cast<std::size_t>(height));
+            if (custom_rotation && custom_translation) {
+                preview_viewport.setViewMatrix(*custom_rotation, *custom_translation);
+            } else {
+                preview_viewport.camera.resetToHome();
+            }
+
+            vis::SceneRenderState scene_state;
+            scene_state.combined_model = &splat;
+            scene_state.model_transforms = {
+                rendering::dataWorldTransformToVisualizerWorld(glm::mat4(1.0f)),
+            };
+            scene_state.transform_indices = std::make_shared<core::Tensor>(
+                core::Tensor::zeros(
+                    {static_cast<std::size_t>(splat.size())},
+                    core::Device::CUDA,
+                    core::DataType::Int32));
+            scene_state.node_visibility_mask = {true};
+            scene_state.selected_node_mask = {true};
+            scene_state.visible_splat_count = 1;
+
+            const auto image = rendering_manager.renderPreviewImage(
+                splat,
+                std::move(scene_state),
+                preview_viewport.getRotationMatrix(),
+                preview_viewport.getTranslation(),
+                focal_length_mm,
+                width,
+                height);
+            if (!image || !image->is_valid()) {
+                return std::nullopt;
+            }
+            return image->clone();
+        }
+
+        [[nodiscard]] std::optional<core::Tensor> renderPointCloudAssetPreview(
+            vis::RenderingManager& rendering_manager,
+            const core::PointCloud& point_cloud,
+            const int width,
+            const int height,
+            const float focal_length_mm,
+            const glm::mat3* custom_rotation = nullptr,
+            const glm::vec3* custom_translation = nullptr) {
+            if (point_cloud.size() == 0) {
+                return std::nullopt;
+            }
+
+            auto* const engine = rendering_manager.getRenderingEngine();
+            if (!engine) {
+                return std::nullopt;
+            }
+
+            Viewport preview_viewport(
+                static_cast<std::size_t>(width),
+                static_cast<std::size_t>(height));
+            if (custom_rotation && custom_translation) {
+                preview_viewport.setViewMatrix(*custom_rotation, *custom_translation);
+            } else {
+                preview_viewport.camera.resetToHome();
+            }
+
+            std::vector<glm::mat4> model_transforms{
+                rendering::dataWorldTransformToVisualizerWorld(glm::mat4(1.0f)),
+            };
+            auto transform_indices = std::make_shared<core::Tensor>(
+                core::Tensor::zeros(
+                    {static_cast<std::size_t>(point_cloud.size())},
+                    core::Device::CUDA,
+                    core::DataType::Int32));
+
+            rendering::PointCloudRenderRequest request{};
+            request.frame_view.rotation = preview_viewport.getRotationMatrix();
+            request.frame_view.translation = preview_viewport.getTranslation();
+            request.frame_view.size = {width, height};
+            request.frame_view.focal_length_mm = focal_length_mm;
+            request.render.scaling_modifier = 1.0f;
+            request.render.voxel_size = 0.01f;
+            request.render.equirectangular = false;
+            request.scene.model_transforms = &model_transforms;
+            request.scene.transform_indices = std::move(transform_indices);
+            request.scene.node_visibility_mask = {true};
+            request.transparent_background = false;
+
+            auto render_result = engine->renderPointCloudImage(point_cloud, request);
+            if (!render_result || !render_result->image || !render_result->image->is_valid()) {
+                if (!render_result) {
+                    LOG_DEBUG("Point-cloud asset preview render failed: {}", render_result.error());
+                }
+                return std::nullopt;
+            }
+            return render_result->image->clone();
+        }
+
+        [[nodiscard]] std::optional<core::Tensor> renderAssetPreviewOnViewerThread(
+            const std::string& path,
+            const int width,
+            const int height,
+            const float focal_length_mm,
+            const glm::mat3* rotation = nullptr,
+            const glm::vec3* translation = nullptr) {
+            if (width <= 0 || height <= 0) {
+                return std::nullopt;
+            }
+
+            auto* const viewer = get_visualizer();
+            auto* const rendering_manager = viewer ? viewer->getRenderingManager() : nullptr;
+            if (!rendering_manager) {
+                return std::nullopt;
+            }
+
+            try {
+                auto loader = io::Loader::create();
+                if (!loader) {
+                    return std::nullopt;
+                }
+
+                io::LoadOptions options;
+                options.resize_factor = -1;
+                options.max_width = 0;
+                options.images_folder = "images";
+                options.validate_only = false;
+                options.splat_tensor_allocator = rendering_manager->makeSplatTensorAllocator();
+
+                const auto asset_path = core::utf8_to_path(path);
+                std::error_code file_size_error;
+                if (std::filesystem::is_regular_file(asset_path, file_size_error)) {
+                    const auto file_size = std::filesystem::file_size(asset_path, file_size_error);
+                    if (!file_size_error && file_size > MAX_RENDERED_ASSET_PREVIEW_BYTES) {
+                        LOG_DEBUG("Skipping rendered asset preview for '{}' ({} MB exceeds {} MB budget)",
+                                  path,
+                                  file_size / (1024 * 1024),
+                                  MAX_RENDERED_ASSET_PREVIEW_BYTES / (1024 * 1024));
+                        return std::nullopt;
+                    }
+                }
+                auto ext = asset_path.extension().string();
+                std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+                if (ext == ".ckpt" || ext == ".resume") {
+                    auto checkpoint_result = core::load_checkpoint_splat_data(
+                        asset_path,
+                        rendering_manager->makeSplatTensorAllocator());
+                    if (!checkpoint_result) {
+                        LOG_DEBUG(
+                            "Checkpoint asset preview load failed for '{}': {}",
+                            path,
+                            checkpoint_result.error());
+                        return std::nullopt;
+                    }
+                    return renderSplatAssetPreview(
+                        *rendering_manager,
+                        *checkpoint_result,
+                        width,
+                        height,
+                        focal_length_mm,
+                        rotation,
+                        translation);
+                }
+
+                auto load_result = loader->load(asset_path, options);
+                if (!load_result) {
+                    LOG_DEBUG("Asset preview load failed for '{}': {}", path, load_result.error().format());
+                    return std::nullopt;
+                }
+
+                const auto* loaded_splat = std::get_if<std::shared_ptr<core::SplatData>>(&load_result->data);
+                if (loaded_splat && *loaded_splat) {
+                    return renderSplatAssetPreview(
+                        *rendering_manager,
+                        **loaded_splat,
+                        width,
+                        height,
+                        focal_length_mm,
+                        rotation,
+                        translation);
+                }
+
+                const auto* loaded_scene = std::get_if<io::LoadedScene>(&load_result->data);
+                if (loaded_scene && loaded_scene->point_cloud) {
+                    return renderPointCloudAssetPreview(
+                        *rendering_manager,
+                        *loaded_scene->point_cloud,
+                        width,
+                        height,
+                        focal_length_mm,
+                        rotation,
+                        translation);
+                }
+
+                const auto* loaded_mesh = std::get_if<std::shared_ptr<core::MeshData>>(&load_result->data);
+                if (loaded_mesh && *loaded_mesh && (*loaded_mesh)->vertex_count() > 0) {
+                    auto mesh_points = pointCloudFromMesh(**loaded_mesh);
+                    return renderPointCloudAssetPreview(
+                        *rendering_manager,
+                        mesh_points,
+                        width,
+                        height,
+                        focal_length_mm,
+                        rotation,
+                        translation);
+                }
+            } catch (const std::exception& e) {
+                LOG_DEBUG("Asset preview render failed for '{}': {}", path, e.what());
+            } catch (...) {
+                LOG_DEBUG("Asset preview render failed for '{}': unknown error", path);
+            }
+            return std::nullopt;
+        }
+
+        [[nodiscard]] std::optional<core::Tensor> renderAssetPreviewThreadSafe(
+            const std::string& path,
+            const int width,
+            const int height,
+            const float focal_length_mm,
+            const glm::mat3* rotation = nullptr,
+            const glm::vec3* translation = nullptr) {
+            auto invoke_render = [&]() -> std::optional<core::Tensor> {
+                return renderAssetPreviewOnViewerThread(path, width, height, focal_length_mm, rotation, translation);
+            };
+
+            auto* const viewer = get_visualizer();
+            if (!viewer || viewer->isOnViewerThread()) {
+                return invoke_render();
+            }
+            if (!viewer->acceptsPostedWork()) {
+                return std::nullopt;
+            }
+
+            auto promise = std::make_shared<std::promise<std::optional<core::Tensor>>>();
+            auto future = promise->get_future();
+            auto completed = std::make_shared<std::atomic_bool>(false);
+
+            auto finish = [promise, completed](std::optional<core::Tensor> result) mutable {
+                if (!completed->exchange(true)) {
+                    promise->set_value(std::move(result));
+                }
+            };
+
+            const bool posted = viewer->postWork(vis::Visualizer::WorkItem{
+                .run =
+                    [path, width, height, focal_length_mm, rotation, translation, finish]() mutable {
+                        finish(renderAssetPreviewOnViewerThread(path, width, height, focal_length_mm, rotation, translation));
+                    },
+                .cancel =
+                    [finish]() mutable {
+                        finish(std::nullopt);
+                    }});
+            if (!posted) {
+                return std::nullopt;
+            }
+
+            nb::gil_scoped_release release;
+            return future.get();
+        }
+
+        [[nodiscard]] std::optional<glm::mat3> tensorToVisualizerRotation(const PyTensor& py_tensor) {
+            const auto& tensor = py_tensor.tensor();
+            if (!tensor.is_valid() || tensor.ndim() != 2 || tensor.size(0) != 3 || tensor.size(1) != 3) {
+                return std::nullopt;
+            }
+
+            try {
+                const auto cpu = tensor.to(core::Device::CPU).to(core::DataType::Float32).contiguous();
+                const auto* const data = static_cast<const float*>(cpu.data_ptr());
+                if (!data) {
+                    return std::nullopt;
+                }
+
+                glm::mat3 rotation{};
+                for (int row = 0; row < 3; ++row) {
+                    for (int col = 0; col < 3; ++col) {
+                        const float value = data[row * 3 + col];
+                        if (!std::isfinite(value)) {
+                            return std::nullopt;
+                        }
+                        rotation[col][row] = value;
+                    }
+                }
+                return rotation;
+            } catch (const std::exception& e) {
+                LOG_DEBUG("render_view rotation conversion failed: {}", e.what());
+            } catch (...) {
+                LOG_DEBUG("render_view rotation conversion failed: unknown error");
+            }
+            return std::nullopt;
+        }
+
+        [[nodiscard]] std::optional<glm::vec3> tensorToVisualizerTranslation(const PyTensor& py_tensor) {
+            const auto& tensor = py_tensor.tensor();
+            if (!tensor.is_valid() || tensor.ndim() != 1 || tensor.size(0) != 3) {
+                return std::nullopt;
+            }
+
+            try {
+                const auto cpu = tensor.to(core::Device::CPU).to(core::DataType::Float32).contiguous();
+                const auto* const data = static_cast<const float*>(cpu.data_ptr());
+                if (!data) {
+                    return std::nullopt;
+                }
+
+                const glm::vec3 translation{data[0], data[1], data[2]};
+                if (!std::isfinite(translation.x) || !std::isfinite(translation.y) || !std::isfinite(translation.z)) {
+                    return std::nullopt;
+                }
+                return translation;
+            } catch (const std::exception& e) {
+                LOG_DEBUG("render_view translation conversion failed: {}", e.what());
+            } catch (...) {
+                LOG_DEBUG("render_view translation conversion failed: unknown error");
+            }
+            return std::nullopt;
+        }
+
+        [[nodiscard]] std::optional<core::Tensor> renderViewOnViewerThread(
+            const glm::mat3& rotation,
+            const glm::vec3& translation,
+            const int width,
+            const int height,
+            const float fov_degrees,
+            const bool rgb8_output) {
+            if (width <= 0 || height <= 0 || !std::isfinite(fov_degrees) || fov_degrees <= 0.0f) {
+                return std::nullopt;
+            }
+
+            auto* const viewer = get_visualizer();
+            auto* const rendering_manager = viewer ? viewer->getRenderingManager() : nullptr;
+            auto* const scene_manager = viewer ? viewer->getSceneManager() : nullptr;
+            if (!rendering_manager || !scene_manager) {
+                return std::nullopt;
+            }
+
+            auto image = rgb8_output
+                             ? rendering_manager->renderPreviewImageRgb8(
+                                   scene_manager,
+                                   rotation,
+                                   translation,
+                                   lfs::rendering::vFovToFocalLength(fov_degrees),
+                                   width,
+                                   height)
+                             : rendering_manager->renderPreviewImage(
+                                   scene_manager,
+                                   rotation,
+                                   translation,
+                                   lfs::rendering::vFovToFocalLength(fov_degrees),
+                                   width,
+                                   height);
+            if (rgb8_output) {
+                rendering_manager->releasePreviewImageResources();
+            }
+            if (!image || !image->is_valid()) {
+                return std::nullopt;
+            }
+            return *image;
+        }
+
+        [[nodiscard]] std::optional<core::Tensor> renderViewThreadSafe(
+            const glm::mat3& rotation,
+            const glm::vec3& translation,
+            const int width,
+            const int height,
+            const float fov_degrees,
+            const bool rgb8_output) {
+            auto invoke_render = [&]() -> std::optional<core::Tensor> {
+                return renderViewOnViewerThread(rotation, translation, width, height, fov_degrees, rgb8_output);
+            };
+
+            auto* const viewer = get_visualizer();
+            if (!viewer || viewer->isOnViewerThread()) {
+                return invoke_render();
+            }
+            if (!viewer->acceptsPostedWork()) {
+                return std::nullopt;
+            }
+
+            auto promise = std::make_shared<std::promise<std::optional<core::Tensor>>>();
+            auto future = promise->get_future();
+            auto completed = std::make_shared<std::atomic_bool>(false);
+
+            auto finish = [promise, completed](std::optional<core::Tensor> result) mutable {
+                if (!completed->exchange(true)) {
+                    promise->set_value(std::move(result));
+                }
+            };
+
+            const bool posted = viewer->postWork(vis::Visualizer::WorkItem{
+                .run =
+                    [rotation, translation, width, height, fov_degrees, rgb8_output, finish]() mutable {
+                        finish(renderViewOnViewerThread(rotation, translation, width, height, fov_degrees, rgb8_output));
+                    },
+                .cancel =
+                    [finish]() mutable {
+                        finish(std::nullopt);
+                    }});
+            if (!posted) {
+                return std::nullopt;
+            }
+
+            nb::gil_scoped_release release;
+            return future.get();
         }
     } // namespace
 
@@ -158,8 +659,33 @@ namespace lfs::python {
             group.properties.push_back(std::move(meta));
         };
 
+        auto add_string = [&](std::string Proxy::*member, const std::string& id, const std::string& name,
+                              const std::string& desc, const std::string& default_val) {
+            PropertyMeta meta;
+            meta.id = id;
+            meta.name = name;
+            meta.description = desc;
+            meta.type = PropType::String;
+            meta.default_string = default_val;
+            meta.getter = [member](const PropertyObjectRef& ref) -> std::any {
+                return static_cast<const Proxy*>(ref.ptr)->*member;
+            };
+            meta.setter = [member](PropertyObjectRef& ref, const std::any& val) {
+                static_cast<Proxy*>(ref.ptr)->*member = std::any_cast<std::string>(val);
+            };
+            group.properties.push_back(std::move(meta));
+        };
+
         // Background
         add_color3(&Proxy::background_color, "background_color", "Color", "Viewport background color", {0.0, 0.0, 0.0});
+        add_int_enum(&Proxy::environment_mode, "environment_mode", "Environment", "Viewport background mode",
+                     {{"Solid Color", "SOLID_COLOR", 0}, {"Equirectangular HDRI", "EQUIRECTANGULAR", 1}}, 0);
+        add_string(&Proxy::environment_map_path, "environment_map_path", "Preset",
+                   "Relative asset path or absolute HDRI path for the environment background",
+                   std::string(vis::kDefaultEnvironmentMapPath));
+        add_float(&Proxy::environment_exposure, "environment_exposure", "Exposure", "Environment exposure in EV", 0.0, -6.0, 6.0);
+        add_float(&Proxy::environment_rotation_degrees, "environment_rotation_degrees", "Rotation",
+                  "Environment yaw rotation in degrees", 0.0, -180.0, 180.0);
 
         // Coordinate Axes
         add_bool(&Proxy::show_coord_axes, "show_coord_axes", "Show Coordinate Axes",
@@ -208,9 +734,15 @@ namespace lfs::python {
                      {{"0", "0", 0}, {"1", "1", 1}, {"2", "2", 2}, {"3", "3", 3}}, 3);
         add_bool(&Proxy::equirectangular, "equirectangular", "Equirectangular", "Equirectangular projection mode",
                  false);
-        add_bool(&Proxy::gut, "gut", "GUT Mode", "Enable GUT rendering mode", false);
+        add_int_enum(&Proxy::raster_backend, "raster_backend", "Raster Backend", "Gaussian rasterization backend",
+                     {{"3DGS", "3dgs", 2},
+                      {"3DGUT", "3dgut", 3}},
+                     2);
         add_bool(&Proxy::mip_filter, "mip_filter", "Mip Filter", "Enable mip-map filtering", false);
         add_float(&Proxy::render_scale, "render_scale", "Render Scale", "Render resolution scale", 1.0, 0.25, 1.0);
+        add_int_enum(&Proxy::camera_metrics_mode, "camera_metrics_mode", "Camera Metrics",
+                     "Compute metrics when jumping to a source camera",
+                     {{"Off", "OFF", 0}, {"PSNR", "PSNR", 1}, {"PSNR + SSIM", "PSNR_SSIM", 2}}, 0);
 
         add_bool(&Proxy::apply_appearance_correction, "apply_appearance_correction", "Appearance Correction",
                  "Enable PPISP appearance correction", false);
@@ -301,7 +833,15 @@ namespace lfs::python {
 
     void PyRenderSettings::set(const std::string& name, nb::object value) {
         prop_.setattr(name, value);
+        if (name == "raster_backend") {
+            const auto backend = static_cast<rendering::GaussianRasterBackend>(settings_.raster_backend);
+            settings_.raster_backend =
+                static_cast<int>(rendering::normalizeViewerRasterBackend(backend, settings_.gut));
+            settings_.gut = rendering::isGutBackend(
+                static_cast<rendering::GaussianRasterBackend>(settings_.raster_backend));
+        }
         vis::update_render_settings(settings_);
+        request_redraw();
     }
 
     void PyRenderSettings::prop_setattr(const std::string& name, nb::object value) {
@@ -404,8 +944,26 @@ namespace lfs::python {
         return result;
     }
 
-    std::optional<PyCameraState> get_camera() {
-        const auto info = vis::get_current_view_info();
+    namespace {
+        [[nodiscard]] std::optional<vis::SplitViewPanelId> parsePanelArg(const std::string& panel) {
+            if (panel.empty() || panel == "main")
+                return std::nullopt;
+            if (panel == "left")
+                return vis::SplitViewPanelId::Left;
+            if (panel == "right")
+                return vis::SplitViewPanelId::Right;
+            throw std::invalid_argument("panel must be 'main', 'left', or 'right'");
+        }
+
+        [[nodiscard]] std::optional<vis::ViewInfo> viewInfoForPanelArg(const std::string& panel) {
+            const auto panel_id = parsePanelArg(panel);
+            return panel_id ? vis::get_view_info_for_panel(*panel_id)
+                            : vis::get_current_view_info();
+        }
+    } // namespace
+
+    std::optional<PyCameraState> get_camera(const std::string& panel) {
+        const auto info = viewInfoForPanelArg(panel);
         if (!info)
             return std::nullopt;
 
@@ -425,13 +983,17 @@ namespace lfs::python {
 
     void set_camera(const std::tuple<float, float, float>& eye,
                     const std::tuple<float, float, float>& target,
-                    const std::tuple<float, float, float>& up) {
+                    const std::tuple<float, float, float>& up,
+                    const std::string& panel) {
         const vis::SetViewParams params{
             .eye = {std::get<0>(eye), std::get<1>(eye), std::get<2>(eye)},
             .target = {std::get<0>(target), std::get<1>(target), std::get<2>(target)},
             .up = {std::get<0>(up), std::get<1>(up), std::get<2>(up)},
         };
-        vis::apply_set_view(params);
+        if (const auto panel_id = parsePanelArg(panel))
+            vis::apply_set_view_for_panel(*panel_id, params);
+        else
+            vis::apply_set_view(params);
     }
 
     void set_camera_fov(float fov_degrees) {
@@ -450,69 +1012,47 @@ namespace lfs::python {
 namespace {
 
     constexpr float DEFAULT_FOV = 60.0f;
-    constexpr float DEFAULT_SCALE_THRESHOLD = 0.01f;
-
-    float fov_to_focal(float fov_degrees, int pixels) {
-        return static_cast<float>(pixels) / (2.0f * std::tan(fov_degrees * std::numbers::pi_v<float> / 360.0f));
+    lfs::core::Tensor tensor_from_mat3_row_major(const glm::mat3& matrix) {
+        auto tensor = lfs::core::Tensor::empty({3, 3}, lfs::core::Device::CPU, lfs::core::DataType::Float32);
+        auto* ptr = static_cast<float*>(tensor.data_ptr());
+        for (int row = 0; row < 3; ++row) {
+            for (int col = 0; col < 3; ++col) {
+                ptr[row * 3 + col] = matrix[col][row];
+            }
+        }
+        return tensor;
     }
 
-    std::unique_ptr<lfs::core::Camera> create_camera(const lfs::core::Tensor& R, const lfs::core::Tensor& T, int width,
-                                                     int height, float fov_degrees) {
-        const float focal = fov_to_focal(fov_degrees, height);
-        const float cx = static_cast<float>(width) / 2.0f;
-        const float cy = static_cast<float>(height) / 2.0f;
-
-        auto radial = lfs::core::Tensor::zeros({6}, lfs::core::Device::CUDA, lfs::core::DataType::Float32);
-        auto tangential = lfs::core::Tensor::zeros({2}, lfs::core::Device::CUDA, lfs::core::DataType::Float32);
-
-        auto camera =
-            std::make_unique<lfs::core::Camera>(R.clone(), T.clone(), focal, focal, cx, cy, std::move(radial),
-                                                std::move(tangential), lfs::core::CameraModelType::PINHOLE,
-                                                "virtual_camera", "", "", width, height, -1);
-        camera->set_image_dimensions(width, height);
-        return camera;
+    lfs::core::Tensor tensor_from_vec3(const glm::vec3& value) {
+        return lfs::core::Tensor::from_vector({value.x, value.y, value.z}, {3}, lfs::core::Device::CPU);
     }
 
-    lfs::core::SplatData* get_model(lfs::core::Scene* scene) {
-        return scene ? const_cast<lfs::core::SplatData*>(scene->getCombinedModel()) : nullptr;
+    float vertical_fov_to_horizontal_fov(float vertical_fov_degrees, int width, int height) {
+        if (width <= 0 || height <= 0) {
+            return vertical_fov_degrees;
+        }
+
+        const float aspect = static_cast<float>(width) / static_cast<float>(height);
+        const float half_vertical_fov_radians = vertical_fov_degrees * std::numbers::pi_v<float> / 360.0f;
+        return std::atan(std::tan(half_vertical_fov_radians) * aspect) * 360.0f / std::numbers::pi_v<float>;
     }
 
-    std::pair<lfs::core::Tensor, lfs::core::Tensor> compute_w2c(
+    std::pair<lfs::core::Tensor, lfs::core::Tensor> compute_visualizer_pose(
         const std::tuple<float, float, float>& eye,
         const std::tuple<float, float, float>& target,
         const std::tuple<float, float, float>& up) {
         auto [ex, ey, ez] = eye;
         auto [tx, ty, tz] = target;
         auto [ux, uy, uz] = up;
-
-        glm::vec3 e{ex, ey, ez}, t{tx, ty, tz}, u{ux, uy, uz};
-        assert(glm::length(t - e) > 1e-6f);
-
-        glm::vec3 forward = glm::normalize(t - e);
-        glm::vec3 right_unnorm = glm::cross(u, forward);
-        assert(glm::length(right_unnorm) > 1e-6f);
-
-        glm::vec3 right = glm::normalize(right_unnorm);
-        glm::vec3 cam_up = glm::cross(forward, right);
-
-        glm::mat3 c2w(right, cam_up, forward);
-        glm::mat3 w2c_r = glm::transpose(c2w);
-        glm::vec3 w2c_t = -w2c_r * e;
-
-        auto R = lfs::core::Tensor::empty({3, 3}, lfs::core::Device::CPU, lfs::core::DataType::Float32);
-        auto T = lfs::core::Tensor::empty({3}, lfs::core::Device::CPU, lfs::core::DataType::Float32);
-        auto* r_ptr = static_cast<float*>(R.data_ptr());
-        auto* t_ptr = static_cast<float*>(T.data_ptr());
-
-        for (int i = 0; i < 3; ++i)
-            for (int j = 0; j < 3; ++j)
-                r_ptr[i * 3 + j] = w2c_r[j][i];
-
-        t_ptr[0] = w2c_t.x;
-        t_ptr[1] = w2c_t.y;
-        t_ptr[2] = w2c_t.z;
-
-        return {R.cuda(), T.cuda()};
+        const glm::vec3 eye_vec{ex, ey, ez};
+        return {
+            tensor_from_mat3_row_major(
+                lfs::rendering::makeVisualizerLookAtRotation(
+                    eye_vec,
+                    glm::vec3{tx, ty, tz},
+                    glm::vec3{ux, uy, uz}))
+                .cuda(),
+            tensor_from_vec3(eye_vec).cuda()};
     }
 
 } // namespace
@@ -521,39 +1061,74 @@ namespace lfs::python {
 
     std::optional<PyTensor> render_view(const PyTensor& rotation, const PyTensor& translation, int width, int height,
                                         float fov_degrees, const PyTensor* bg_color) {
-        auto* scene = get_render_scene();
-        auto* model = get_model(scene);
-        if (!model)
+        (void)bg_color;
+
+        const auto rotation_matrix = tensorToVisualizerRotation(rotation);
+        const auto translation_vector = tensorToVisualizerTranslation(translation);
+        if (!rotation_matrix || !translation_vector) {
             return std::nullopt;
+        }
 
-        auto camera = create_camera(rotation.tensor(), translation.tensor(), width, height, fov_degrees);
+        auto image = renderViewThreadSafe(*rotation_matrix, *translation_vector, width, height, fov_degrees, false);
+        if (!image || !image->is_valid() || image->ndim() != 3) {
+            return std::nullopt;
+        }
+        if (image->size(0) <= 0 || image->size(1) <= 0 || image->size(2) != 3) {
+            return std::nullopt;
+        }
 
-        const auto bg = bg_color ? bg_color->tensor().clone()
-                                 : core::Tensor::zeros({3}, core::Device::CUDA, core::DataType::Float32);
+        auto output = *image;
+        if (output.device() != core::Device::CPU) {
+            output = output.cpu();
+        }
+        if (output.dtype() != core::DataType::Float32) {
+            output = output.to(core::DataType::Float32);
+        }
+        output = output.contiguous();
+        return PyTensor(std::move(output), true);
+    }
 
-        auto [image, alpha] = rendering::rasterize_tensor(*camera, *model, bg);
-        return PyTensor(image.permute({1, 2, 0}), true);
+    std::optional<PyTensor> render_view_u8(const PyTensor& rotation, const PyTensor& translation, int width, int height,
+                                           float fov_degrees, const PyTensor* bg_color) {
+        (void)bg_color;
+
+        const auto rotation_matrix = tensorToVisualizerRotation(rotation);
+        const auto translation_vector = tensorToVisualizerTranslation(translation);
+        if (!rotation_matrix || !translation_vector) {
+            return std::nullopt;
+        }
+
+        auto image = renderViewThreadSafe(*rotation_matrix, *translation_vector, width, height, fov_degrees, true);
+        if (!image || !image->is_valid() || image->ndim() != 3) {
+            return std::nullopt;
+        }
+        if (image->size(0) <= 0 || image->size(1) <= 0 || image->size(2) != 3) {
+            return std::nullopt;
+        }
+
+        auto output = *image;
+        if (output.device() != core::Device::CPU) {
+            output = output.cpu();
+        }
+        if (output.dtype() != core::DataType::UInt8) {
+            output = output.to(core::DataType::UInt8);
+        }
+        output = output.contiguous();
+        return PyTensor(std::move(output), true);
     }
 
     std::optional<PyTensor> compute_screen_positions(const PyTensor& rotation, const PyTensor& translation, int width,
                                                      int height, float fov_degrees) {
-        auto* scene = get_render_scene();
-        auto* model = get_model(scene);
-        if (!model)
-            return std::nullopt;
-
-        auto camera = create_camera(rotation.tensor(), translation.tensor(), width, height, fov_degrees);
-        const auto bg = core::Tensor::zeros({3}, core::Device::CUDA, core::DataType::Float32);
-
-        core::Tensor screen_positions;
-        rendering::rasterize_tensor(*camera, *model, bg, -1, false, DEFAULT_SCALE_THRESHOLD, nullptr, nullptr, nullptr,
-                                    &screen_positions);
-
-        return PyTensor(std::move(screen_positions), true);
+        (void)rotation;
+        (void)translation;
+        (void)width;
+        (void)height;
+        (void)fov_degrees;
+        return std::nullopt;
     }
 
-    std::optional<PyViewInfo> get_current_view() {
-        const auto view_info = vis::get_current_view_info();
+    std::optional<PyViewInfo> get_current_view(const std::string& panel) {
+        const auto view_info = viewInfoForPanelArg(panel);
         if (!view_info)
             return std::nullopt;
 
@@ -568,8 +1143,10 @@ namespace lfs::python {
             .translation = PyTensor(T.cuda(), true),
             .width = view_info->width,
             .height = view_info->height,
-            .fov_x = view_info->fov,
+            .fov_x = vertical_fov_to_horizontal_fov(view_info->fov, view_info->width, view_info->height),
             .fov_y = view_info->fov,
+            .orthographic = view_info->orthographic,
+            .ortho_scale = view_info->ortho_scale,
         };
     }
 
@@ -578,13 +1155,13 @@ namespace lfs::python {
     }
 
     std::optional<PyViewportRender> capture_viewport() {
-        return toPyViewportRender(vis::capture_viewport_render(), true);
+        return toPyViewportRender(captureViewportRenderThreadSafe(), true);
     }
 
     std::tuple<PyTensor, PyTensor> look_at(const std::tuple<float, float, float>& eye,
                                            const std::tuple<float, float, float>& target,
                                            const std::tuple<float, float, float>& up) {
-        auto [R, T] = compute_w2c(eye, target, up);
+        auto [R, T] = compute_visualizer_pose(eye, target, up);
         return {PyTensor(std::move(R), true), PyTensor(std::move(T), true)};
     }
 
@@ -592,19 +1169,46 @@ namespace lfs::python {
                                       const std::tuple<float, float, float>& target, int width, int height,
                                       float fov_degrees, const std::tuple<float, float, float>& up,
                                       const PyTensor* bg_color) {
-        auto* scene = get_render_scene();
-        auto* model = get_model(scene);
-        if (!model)
+        auto [R, T] = compute_visualizer_pose(eye, target, up);
+        PyTensor rotation(std::move(R), true);
+        PyTensor translation(std::move(T), true);
+        return render_view(rotation, translation, width, height, fov_degrees, bg_color);
+    }
+
+    std::optional<PyTensor> render_asset_preview(
+        const std::string& path,
+        const int width,
+        const int height,
+        const float focal_length_mm) {
+        auto image = renderAssetPreviewThreadSafe(path, width, height, focal_length_mm);
+        if (!image) {
             return std::nullopt;
+        }
+        return PyTensor(std::move(*image), true);
+    }
 
-        auto [R, T] = compute_w2c(eye, target, up);
-        auto camera = create_camera(R, T, width, height, fov_degrees);
-
-        const auto bg = bg_color ? bg_color->tensor().clone()
-                                 : core::Tensor::zeros({3}, core::Device::CUDA, core::DataType::Float32);
-
-        auto [image, alpha] = rendering::rasterize_tensor(*camera, *model, bg);
-        return PyTensor(image.permute({1, 2, 0}), true);
+    std::optional<PyTensor> render_asset_preview_from_camera(
+        const std::string& path,
+        const std::tuple<float, float, float>& eye,
+        const std::tuple<float, float, float>& target,
+        const int width,
+        const int height,
+        const float focal_length_mm,
+        const std::tuple<float, float, float>& up) {
+        const glm::vec3 eye_vec{
+            std::get<0>(eye), std::get<1>(eye), std::get<2>(eye)};
+        const glm::vec3 target_vec{
+            std::get<0>(target), std::get<1>(target), std::get<2>(target)};
+        const glm::vec3 up_vec{
+            std::get<0>(up), std::get<1>(up), std::get<2>(up)};
+        const glm::mat3 rotation = lfs::rendering::makeVisualizerLookAtRotation(
+            eye_vec, target_vec, up_vec);
+        auto image = renderAssetPreviewThreadSafe(
+            path, width, height, focal_length_mm, &rotation, &eye_vec);
+        if (!image) {
+            return std::nullopt;
+        }
+        return PyTensor(std::move(*image), true);
     }
 
     void register_rendering(nb::module_& m) {
@@ -615,13 +1219,19 @@ namespace lfs::python {
             .def_ro("height", &PyViewInfo::height)
             .def_ro("fov_x", &PyViewInfo::fov_x)
             .def_ro("fov_y", &PyViewInfo::fov_y)
+            .def_ro("orthographic", &PyViewInfo::orthographic)
+            .def_ro("ortho_scale", &PyViewInfo::ortho_scale)
             .def_prop_ro(
-                "position", [](const PyViewInfo& self) -> std::tuple<float, float, float> {
+                "ortho_view_extent_world", [](const PyViewInfo& self) -> float {
+                    if (!self.orthographic || self.ortho_scale <= 0.0f)
+                        return 0.0f;
+                    return static_cast<float>(self.height) / self.ortho_scale;
+                },
+                "Vertical view extent in world units (Blender-compatible orthographic scale). Larger when zoomed out, smaller when zoomed in.")
+            .def_prop_ro("position", [](const PyViewInfo& self) -> std::tuple<float, float, float> {
                     auto t = self.translation.tensor().cpu();
                     auto acc = t.accessor<float, 1>();
-                    return {acc(0), acc(1), acc(2)};
-                },
-                "Camera position as (x, y, z) tuple");
+                    return {acc(0), acc(1), acc(2)}; }, "Camera position as (x, y, z) tuple");
 
         nb::class_<PyViewportRender>(m, "ViewportRender")
             .def_ro("image", &PyViewportRender::image)
@@ -639,15 +1249,32 @@ namespace lfs::python {
 Render scene from arbitrary camera parameters.
 
 Args:
-    rotation: [3, 3] camera rotation matrix
-    translation: [3] camera position
+    rotation: [3, 3] camera-to-world rotation in visualizer coordinates
+    translation: [3] camera position in visualizer world coordinates
     width: Render width in pixels
     height: Render height in pixels
-    fov: Field of view in degrees (default: 60)
-    bg_color: Optional [3] RGB background color
+    fov: Vertical field of view in degrees (default: 60)
+    bg_color: Accepted for compatibility; the Vulkan preview path uses current render settings
 
 Returns:
-    Tensor [H, W, 3] RGB image on CUDA, or None if scene not available
+    CPU Tensor [H, W, 3] RGB image, or None if no active visualizer scene is available
+)doc");
+
+        m.def("render_view_u8", &render_view_u8, nb::arg("rotation"), nb::arg("translation"), nb::arg("width"), nb::arg("height"),
+              nb::arg("fov") = DEFAULT_FOV, nb::arg("bg_color") = nb::none(),
+              R"doc(
+Render scene from arbitrary camera parameters as an 8-bit RGB image.
+
+Args:
+    rotation: [3, 3] camera-to-world rotation in visualizer coordinates
+    translation: [3] camera position in visualizer world coordinates
+    width: Render width in pixels
+    height: Render height in pixels
+    fov: Vertical field of view in degrees (default: 60)
+    bg_color: Accepted for compatibility; the Vulkan preview path uses current render settings
+
+Returns:
+    CPU uint8 Tensor [H, W, 3] RGB image, or None if no active visualizer scene is available
 )doc");
 
         m.def("compute_screen_positions", &compute_screen_positions, nb::arg("rotation"), nb::arg("translation"),
@@ -656,17 +1283,25 @@ Returns:
 Compute screen positions of all Gaussians for a given camera view.
 
 Args:
-    rotation: [3, 3] camera rotation matrix
-    translation: [3] camera position
+    rotation: [3, 3] camera-to-world rotation in visualizer coordinates
+    translation: [3] camera position in visualizer world coordinates
     width: Viewport width in pixels
     height: Viewport height in pixels
-    fov: Field of view in degrees (default: 60)
+    fov: Vertical field of view in degrees (default: 60)
 
 Returns:
     Tensor [N, 2] with (x, y) pixel coordinates for each Gaussian
 )doc");
 
-        m.def("get_current_view", &get_current_view, "Get current viewport camera info (None if not available)");
+        m.def("get_current_view", &get_current_view, nb::arg("panel") = std::string{"main"},
+              R"doc(
+Get current viewport camera pose (None if not available).
+
+Args:
+    panel: 'main' (default) returns the focused viewport, 'left'/'right' returns the
+        per-panel camera. In independent split-view mode, the right panel has its own
+        camera; otherwise both panels share the main camera.
+)doc");
 
         nb::class_<PyCameraState>(m, "CameraState")
             .def_ro("eye", &PyCameraState::eye)
@@ -674,13 +1309,29 @@ Returns:
             .def_ro("up", &PyCameraState::up)
             .def_ro("fov", &PyCameraState::fov);
 
-        m.def("get_camera", &get_camera,
-              "Get current viewport camera state (eye, target, up, fov) or None if unavailable");
+        m.def("get_camera", &get_camera, nb::arg("panel") = std::string{"main"},
+              R"doc(
+Get current viewport camera state (eye, target, up, fov) or None if unavailable.
+
+Args:
+    panel: 'main' (default), 'left', or 'right'. 'left'/'right' return the per-panel
+        camera in independent split-view mode; otherwise both panels share the main camera.
+)doc");
 
         m.def("set_camera", &set_camera,
               nb::arg("eye"), nb::arg("target"),
               nb::arg("up") = std::make_tuple(0.0f, 1.0f, 0.0f),
-              "Move the viewport camera to look from eye toward target");
+              nb::arg("panel") = std::string{"main"},
+              R"doc(
+Move the viewport camera to look from eye toward target.
+
+Args:
+    eye: camera position (x, y, z).
+    target: look-at target (x, y, z).
+    up: world up vector (default (0, 1, 0)).
+    panel: 'main' (default), 'left', or 'right'. In independent split-view mode the right
+        panel can be moved independently; otherwise this falls back to the main camera.
+)doc");
 
         m.def("set_camera_fov", &set_camera_fov,
               nb::arg("fov"),
@@ -688,12 +1339,24 @@ Returns:
 
         m.def("look_at", &look_at, nb::arg("eye"), nb::arg("target"),
               nb::arg("up") = std::make_tuple(0.0f, 1.0f, 0.0f),
-              "Compute (rotation, translation) camera matrices for render_view from eye/target position.");
+              "Compute a visualizer camera pose tuple (rotation, translation) for render_view from eye/target.");
 
         m.def("render_at", &render_at, nb::arg("eye"), nb::arg("target"), nb::arg("width"), nb::arg("height"),
               nb::arg("fov") = DEFAULT_FOV, nb::arg("up") = std::make_tuple(0.0f, 1.0f, 0.0f),
               nb::arg("bg_color") = nb::none(),
               "Render scene from eye looking at target. Returns [H,W,3] RGB tensor or None.");
+
+        m.def("render_asset_preview", &render_asset_preview,
+              nb::arg("path"), nb::arg("width") = 512, nb::arg("height") = 224,
+              nb::arg("focal_length_mm") = lfs::rendering::DEFAULT_FOCAL_LENGTH_MM,
+              "Render an asset from the framed home camera into an offscreen thumbnail without mutating the live scene.");
+
+        m.def("render_asset_preview_from_camera", &render_asset_preview_from_camera,
+              nb::arg("path"), nb::arg("eye"), nb::arg("target"),
+              nb::arg("width") = 512, nb::arg("height") = 224,
+              nb::arg("focal_length_mm") = lfs::rendering::DEFAULT_FOCAL_LENGTH_MM,
+              nb::arg("up") = std::make_tuple(0.0f, 1.0f, 0.0f),
+              "Render an asset from a custom camera pose into an offscreen thumbnail without mutating the live scene.");
 
         m.def(
             "get_render_scene", []() -> std::optional<PyScene> {

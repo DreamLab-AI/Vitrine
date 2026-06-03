@@ -4,7 +4,9 @@
 
 #pragma once
 
+#include "core/logger.hpp"
 #include "gui/panel_registry.hpp"
+#include "gui/rmlui/rml_input_utils.hpp"
 #include "gui/rmlui/rml_panel_host.hpp"
 
 #include <RmlUi/Core/EventListener.h>
@@ -14,6 +16,7 @@
 namespace Rml {
     class Element;
     class ElementDocument;
+    class ElementFormControlSelect;
 } // namespace Rml
 
 namespace lfs::vis::gui {
@@ -32,12 +35,15 @@ namespace lfs::vis::gui {
                            const PanelInputState* input) override;
         bool supportsDirectDraw() const override { return true; }
         void drawDirect(float x, float y, float w, float h, const PanelDrawContext& ctx) override;
+        bool drawDirectCached(float x, float y, float w, float h,
+                              const PanelDrawContext& ctx) override;
         float getDirectDrawHeight() const override { return host_.getContentHeight(); }
         void setInputClipY(float y_min, float y_max) override { host_.setInputClipY(y_min, y_max); }
         void setInput(const PanelInputState* input) override { host_.setInput(input); }
         void setForcedHeight(float h) override { host_.setForcedHeight(h); }
         bool wantsKeyboard() const override { return host_.wantsKeyboard(); }
         bool needsAnimationFrame() const override { return host_.needsAnimationFrame(); }
+        void reloadRmlResources() override;
 
     private:
         struct EventListener : Rml::EventListener {
@@ -48,28 +54,65 @@ namespace lfs::vis::gui {
         enum class Tab : uint8_t {
             Scene,
             History,
+            Logging,
+        };
+
+        enum class FeedbackTone : uint8_t {
+            Info,
+            Success,
+            Error,
+        };
+
+        struct SyncStamp {
+            Tab active_tab = Tab::Scene;
+            uint64_t scene_generation = 0;
+            uint64_t selection_generation = 0;
+            int64_t num_gaussians = 0;
+            bool training_running = false;
+            std::string training_state;
+            int eval_psnr_milli = 0;
+            int eval_ssim_milli = 0;
+            uint64_t history_generation = 0;
+            uint64_t log_generation = 0;
+            lfs::core::LogLevel log_level = lfs::core::LogLevel::Off;
+            uint64_t language_generation = 0;
+            int dp_ratio_milli = 1000;
+            bool invert_masks = false;
+
+            bool operator==(const SyncStamp&) const = default;
         };
 
         bool ensureInitialized();
+        void clearElementCache();
         void cacheElements();
         void syncPanel(const PanelDrawContext& ctx);
+        bool shouldSyncPanel(const PanelInputState* input) const;
+        SyncStamp makeSyncStamp() const;
         bool syncSceneState(const PanelDrawContext& ctx);
         bool syncHistoryState();
+        bool syncLoggingState();
         bool syncLocale();
         bool syncTabState();
         bool syncSummaryChips();
         bool syncSceneVisibility();
         bool handleEvent(Rml::Event& event);
+        void applyFilterInputValue();
+        void applyLogLevelSelection();
+        void copyBufferedLogsToClipboard();
+        void exportBufferedLogsToTextFile();
+        void setLoggingFeedback(std::string message, FeedbackTone tone);
         void setTab(Tab tab);
 
         RmlUIManager* manager_ = nullptr;
         RmlPanelHost host_;
         EventListener listener_;
+        rml_input::TextInputEscapeRevertController filter_input_revert_;
 
         Rml::ElementDocument* document_ = nullptr;
         SceneGraphElement* tree_el_ = nullptr;
         Rml::Element* scene_tab_el_ = nullptr;
         Rml::Element* history_tab_el_ = nullptr;
+        Rml::Element* logging_tab_el_ = nullptr;
         Rml::Element* chip_row_el_ = nullptr;
         Rml::Element* summary_model_chip_el_ = nullptr;
         Rml::Element* summary_node_chip_el_ = nullptr;
@@ -96,11 +139,30 @@ namespace lfs::vis::gui {
         Rml::Element* history_redo_list_el_ = nullptr;
         Rml::Element* history_empty_undo_el_ = nullptr;
         Rml::Element* history_empty_redo_el_ = nullptr;
+        Rml::Element* logging_container_el_ = nullptr;
+        Rml::Element* logging_summary_label_el_ = nullptr;
+        Rml::Element* logging_summary_value_el_ = nullptr;
+        Rml::Element* logging_level_label_el_ = nullptr;
+        Rml::ElementFormControlSelect* logging_level_select_el_ = nullptr;
+        Rml::Element* logging_export_btn_el_ = nullptr;
+        Rml::Element* logging_copy_btn_el_ = nullptr;
+        Rml::Element* logging_feedback_el_ = nullptr;
+        Rml::Element* logging_note_el_ = nullptr;
+        Rml::Element* logging_scroll_el_ = nullptr;
+        Rml::Element* logging_list_el_ = nullptr;
+        Rml::Element* logging_empty_el_ = nullptr;
 
         Tab active_tab_ = Tab::Scene;
         std::string last_language_;
         uint64_t last_history_generation_ = 0;
+        uint64_t last_log_generation_ = 0;
+        lfs::core::LogLevel last_log_level_ = lfs::core::LogLevel::Off;
         uint64_t last_prepare_frame_ = 0;
+        SyncStamp last_sync_stamp_{};
+        bool has_last_sync_stamp_ = false;
+        std::string logging_feedback_text_;
+        FeedbackTone logging_feedback_tone_ = FeedbackTone::Info;
+        bool logging_feedback_dirty_ = false;
     };
 
 } // namespace lfs::vis::gui

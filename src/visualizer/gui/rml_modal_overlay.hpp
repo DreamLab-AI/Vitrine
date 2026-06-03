@@ -5,9 +5,11 @@
 #pragma once
 
 #include "core/modal_request.hpp"
-#include "gui/rmlui/rml_fbo.hpp"
+#include "gui/rmlui/rml_input_utils.hpp"
+#include "gui/rmlui/rmlui_manager.hpp"
 
 #include <RmlUi/Core/EventListener.h>
+#include <core/export.hpp>
 #include <cstddef>
 #include <deque>
 #include <mutex>
@@ -41,19 +43,24 @@ namespace lfs::vis::gui {
         void render(int screen_w, int screen_h,
                     float screen_x, float screen_y,
                     float vp_x, float vp_y, float vp_w, float vp_h);
-        void destroyGLResources();
+        void releaseRendererResources();
+        void reloadResources();
+        void preload();
 
         [[nodiscard]] bool isOpen() const;
+        [[nodiscard]] bool hasPendingRequest() const;
+        [[nodiscard]] bool hasPendingRenderWork() const;
+        [[nodiscard]] bool needsAnimationFrame() const;
 
     private:
         void initContext();
-        void syncTheme();
-        std::string generateThemeRCSS(const lfs::vis::Theme& t) const;
+        bool syncTheme();
         void cacheElements();
 
         void showNext();
         void dismiss(const std::string& button_label);
         bool dismissFirstEnabledButton();
+        void bindTextInputRevert();
         void cancel();
         lfs::core::ModalResult collectFormValues() const;
 
@@ -64,10 +71,10 @@ namespace lfs::vis::gui {
 
         RmlUIManager* rml_manager_;
         OverlayEventListener listener_;
+        rml_input::TextInputEscapeRevertController text_input_revert_;
 
         Rml::Context* rml_context_ = nullptr;
         Rml::ElementDocument* document_ = nullptr;
-        RmlFBO fbo_;
 
         Rml::Element* el_backdrop_ = nullptr;
         Rml::Element* el_dialog_ = nullptr;
@@ -89,6 +96,14 @@ namespace lfs::vis::gui {
         bool has_theme_signature_ = false;
         int width_ = 0;
         int height_ = 0;
+        CachedVulkanContextRender direct_cache_;
+        bool render_needed_ = true;
+        bool dialog_position_valid_ = false;
+        float last_dialog_left_ = 0.0f;
+        float last_dialog_top_ = 0.0f;
+        bool last_mouse_valid_ = false;
+        int last_mouse_x_ = 0;
+        int last_mouse_y_ = 0;
     };
 
 } // namespace lfs::vis::gui

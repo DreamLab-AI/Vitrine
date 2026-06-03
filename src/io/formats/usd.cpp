@@ -7,6 +7,7 @@
 #include "core/path_utils.hpp"
 #include "core/splat_data_transform.hpp"
 #include "core/tensor.hpp"
+#include "io/atomic_output.hpp"
 #include "io/exporter.hpp"
 #include <algorithm>
 #include <cmath>
@@ -24,6 +25,18 @@
 #include <pxr/base/gf/quath.h>
 #include <pxr/base/gf/vec3f.h>
 #include <pxr/base/gf/vec3h.h>
+// pxr/base/tf/hashset.h pulls in the deprecated <ext/hash_set> on GCC.
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcpp"
+#endif
+#include <pxr/base/plug/registry.h>
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+#include <pxr/base/tf/diagnostic.h>
+#include <pxr/base/tf/diagnosticMgr.h>
+#include <pxr/base/tf/errorMark.h>
 #include <pxr/base/vt/array.h>
 #include <pxr/base/vt/value.h>
 #include <pxr/usd/sdf/layer.h>
@@ -336,8 +349,9 @@ namespace lfs::io {
 
             Tensor shN;
             const float* shN_ptr = nullptr;
-            if (rest_coeffs > 0 && splat_data.shN().is_valid()) {
-                shN = splat_data.shN().contiguous().to(Device::CPU);
+            if (rest_coeffs > 0 && splat_data.shN().is_valid() && splat_data.shN().numel() > 0) {
+                // shN is stored swizzled; unpack on CPU to avoid a canonical CUDA copy.
+                shN = splat_data.shN_canonical_cpu().contiguous();
                 shN_ptr = static_cast<const float*>(shN.data_ptr());
             }
 
@@ -725,6 +739,10 @@ namespace lfs::io {
     }
 
     Result<void> save_usd(const SplatData& splat_data, const UsdSaveOptions& options) {
+        if (!report_export_progress(options.progress_callback, 0.0f, "Preparing USD")) {
+            return make_error(ErrorCode::CANCELLED, "USD export cancelled", options.output_path);
+        }
+
         if (splat_data.size() == 0) {
             return make_error(ErrorCode::EMPTY_DATASET, "No splats to write", options.output_path);
         }
@@ -741,6 +759,20 @@ namespace lfs::io {
         }
 
         LOG_INFO("Saving USD file: {}", lfs::core::path_to_utf8(options.output_path));
+
+        // Pre-flight check: ArResolver requires USD plugins to be registered.
+        // If none are registered, the USD plugin path may not be configured.
+        const auto plugin_count = pxr::PlugRegistry::GetInstance().GetAllPlugins().size();
+        if (plugin_count == 0) {
+            LOG_ERROR("[USD] No USD plugins registered — UsdStage::CreateNew will crash fatally");
+            return make_error(ErrorCode::WRITE_FAILURE,
+                              "USD plugins not registered — ensure the USD plugin path is configured before calling save_usd",
+                              options.output_path);
+        }
+
+        if (!report_export_progress(options.progress_callback, 0.15f, "Preparing USD attributes")) {
+            return make_error(ErrorCode::CANCELLED, "USD export cancelled", options.output_path);
+        }
 
         const auto means = splat_data.means().contiguous().to(Device::CPU);
         const auto scaling = splat_data.scaling_raw().contiguous().to(Device::CPU);
@@ -766,7 +798,30 @@ namespace lfs::io {
 
         const auto sh_coefficients = flatten_sh_coefficients(splat_data);
 
-        auto stage = pxr::UsdStage::CreateNew(lfs::core::path_to_utf8(options.output_path));
+        if (!report_export_progress(options.progress_callback, 0.55f, "Authoring USD stage")) {
+            return make_error(ErrorCode::CANCELLED, "USD export cancelled", options.output_path);
+        }
+
+        ScopedAtomicOutputFile atomic_output(options.output_path, AtomicOutputTempName::PreserveExtension);
+
+        // TfErrorMark captures OpenUSD diagnostic errors that don't throw.
+        pxr::TfErrorMark error_mark;
+
+        pxr::UsdStageRefPtr stage;
+        try {
+            stage = pxr::UsdStage::CreateNew(lfs::core::path_to_utf8(atomic_output.temp_path()));
+        } catch (const std::exception& e) {
+            return make_error(ErrorCode::WRITE_FAILURE,
+                              std::format("UsdStage::CreateNew threw: {}", e.what()),
+                              options.output_path);
+        }
+        if (!error_mark.IsClean()) {
+            for (const auto& err : error_mark) {
+                LOG_ERROR("OpenUSD error during stage creation: {} ({}:{})",
+                          err.GetCommentary(), err.GetSourceFileName(), err.GetSourceLineNumber());
+            }
+            error_mark.Clear();
+        }
         if (!stage) {
             return make_error(ErrorCode::WRITE_FAILURE,
                               "Failed to create USD stage",
@@ -774,38 +829,79 @@ namespace lfs::io {
         }
 
         const pxr::SdfPath prim_path("/GaussianSplats");
-        auto splat_prim = pxr::UsdVolParticleField3DGaussianSplat::Define(stage, prim_path);
+        pxr::UsdVolParticleField3DGaussianSplat splat_prim;
+        try {
+            splat_prim = pxr::UsdVolParticleField3DGaussianSplat::Define(stage, prim_path);
+        } catch (const std::exception& e) {
+            return make_error(ErrorCode::WRITE_FAILURE,
+                              std::format("ParticleField3DGaussianSplat::Define threw: {}", e.what()),
+                              options.output_path);
+        }
         if (!splat_prim) {
             return make_error(ErrorCode::WRITE_FAILURE,
                               "Failed to define USD gaussian prim",
                               options.output_path);
         }
 
-        stage->SetDefaultPrim(splat_prim.GetPrim());
-        pxr::UsdGeomSetStageUpAxis(stage, pxr::UsdGeomTokens->y);
-        pxr::UsdGeomSetStageMetersPerUnit(stage, 1.0);
-
-        pxr::UsdGeomBoundable boundable(splat_prim.GetPrim());
-
-        if (!splat_prim.CreatePositionsAttr().Set(make_vec3_array(means_ptr, num_gaussians)) ||
-            !splat_prim.CreateOrientationsAttr().Set(make_quat_array(rotation_ptr, num_gaussians)) ||
-            !splat_prim.CreateScalesAttr().Set(make_vec3_array(scales_linear.data(), num_gaussians)) ||
-            !splat_prim.CreateOpacitiesAttr().Set(make_scalar_array(opacity_linear.data(), num_gaussians)) ||
-            !splat_prim.CreateRadianceSphericalHarmonicsDegreeAttr().Set(splat_data.get_max_sh_degree()) ||
-            !splat_prim.CreateRadianceSphericalHarmonicsCoefficientsAttr().Set(
-                make_vec3_array(sh_coefficients.data(),
-                                num_gaussians * static_cast<size_t>((splat_data.get_max_sh_degree() + 1) *
-                                                                    (splat_data.get_max_sh_degree() + 1)))) ||
-            !boundable.CreateExtentAttr().Set(make_extent_array(means_ptr, num_gaussians))) {
+        try {
+            stage->SetDefaultPrim(splat_prim.GetPrim());
+            pxr::UsdGeomSetStageUpAxis(stage, pxr::UsdGeomTokens->y);
+            pxr::UsdGeomSetStageMetersPerUnit(stage, 1.0);
+        } catch (const std::exception& e) {
             return make_error(ErrorCode::WRITE_FAILURE,
-                              "Failed to author USD gaussian attributes",
+                              std::format("Stage metadata threw: {}", e.what()),
                               options.output_path);
         }
 
-        if (const auto root_layer = stage->GetRootLayer(); !root_layer || !root_layer->Save()) {
+        pxr::UsdGeomBoundable boundable(splat_prim.GetPrim());
+
+        try {
+            if (!splat_prim.CreatePositionsAttr().Set(make_vec3_array(means_ptr, num_gaussians)) ||
+                !splat_prim.CreateOrientationsAttr().Set(make_quat_array(rotation_ptr, num_gaussians)) ||
+                !splat_prim.CreateScalesAttr().Set(make_vec3_array(scales_linear.data(), num_gaussians)) ||
+                !splat_prim.CreateOpacitiesAttr().Set(make_scalar_array(opacity_linear.data(), num_gaussians)) ||
+                !splat_prim.CreateRadianceSphericalHarmonicsDegreeAttr().Set(splat_data.get_max_sh_degree()) ||
+                !splat_prim.CreateRadianceSphericalHarmonicsCoefficientsAttr().Set(
+                    make_vec3_array(sh_coefficients.data(),
+                                    num_gaussians * static_cast<size_t>((splat_data.get_max_sh_degree() + 1) *
+                                                                        (splat_data.get_max_sh_degree() + 1)))) ||
+                !boundable.CreateExtentAttr().Set(make_extent_array(means_ptr, num_gaussians))) {
+                return make_error(ErrorCode::WRITE_FAILURE,
+                                  "Failed to author USD gaussian attributes",
+                                  options.output_path);
+            }
+        } catch (const std::exception& e) {
             return make_error(ErrorCode::WRITE_FAILURE,
-                              "Failed to save USD stage",
+                              std::format("Authoring attributes threw: {}", e.what()),
                               options.output_path);
+        }
+
+        if (!report_export_progress(options.progress_callback, 0.9f, "Saving USD")) {
+            return make_error(ErrorCode::CANCELLED, "USD export cancelled", options.output_path);
+        }
+
+        try {
+            if (const auto root_layer = stage->GetRootLayer(); !root_layer || !root_layer->Save()) {
+                return make_error(ErrorCode::WRITE_FAILURE,
+                                  "Failed to save USD stage",
+                                  options.output_path);
+            }
+        } catch (const std::exception& e) {
+            return make_error(ErrorCode::WRITE_FAILURE,
+                              std::format("Layer save threw: {}", e.what()),
+                              options.output_path);
+        }
+
+        boundable = pxr::UsdGeomBoundable();
+        splat_prim = pxr::UsdVolParticleField3DGaussianSplat();
+        stage = pxr::UsdStageRefPtr();
+
+        if (!report_export_progress(options.progress_callback, 1.0f, "USD export complete")) {
+            return make_error(ErrorCode::CANCELLED, "USD export cancelled", options.output_path);
+        }
+
+        if (auto commit_result = atomic_output.commit(); !commit_result) {
+            return std::unexpected(commit_result.error());
         }
 
         return {};

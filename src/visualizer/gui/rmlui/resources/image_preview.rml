@@ -102,6 +102,22 @@
     <span class="status-item" id="st-h"></span>
     <span class="status-item" id="st-ch"></span>
     <span class="status-item" id="st-zoom"></span>
+    <div id="view-controls">
+      <button type="button" class="view-btn" id="btn-rotate-left">&#x21BA;</button>
+      <button type="button" class="view-btn" id="btn-rotate-right">&#x21BB;</button>
+      <button type="button" class="view-btn view-btn--icon" id="btn-go-to-camera">
+        <img src="../icon/scene/camera.png" />
+      </button>
+      <button type="button" class="view-btn view-btn--icon" id="btn-gt-compare">
+        <img src="../icon/layout-columns.png" />
+      </button>
+      <button type="button" class="view-btn view-btn--icon" id="btn-toggle-training">
+        <img id="btn-toggle-training-icon" src="../icon/scene/visible.png" />
+      </button>
+      <button type="button" class="view-btn view-btn--icon" id="btn-show-in-folder">
+        <img src="../icon/scene/dataset.png" />
+      </button>
+    </div>
     <span class="status-keys">
       <span class="hk"><span class="hk-key">&#x2190;&#x2192;</span><span class="hk-label" id="hk-navigate"></span></span>
       <span class="hk"><span class="hk-key">F</span><span class="hk-label" id="hk-fit"></span></span>
@@ -110,6 +126,7 @@
       <span class="hk"><span class="hk-key">I</span><span class="hk-label" id="hk-info"></span></span>
       <span class="hk"><span class="hk-key">T</span><span class="hk-label" id="hk-thumbnails"></span></span>
       <span class="hk"><span class="hk-key">M</span><span class="hk-label" id="hk-mask"></span></span>
+      <span class="hk"><span class="hk-key">C</span><span class="hk-label" id="hk-color-picker"></span></span>
       <span class="hk"><span class="hk-key">R</span><span class="hk-label" id="hk-reset"></span></span>
       <span class="hk"><span class="hk-key">Esc</span><span class="hk-label" id="hk-close"></span></span>
     </span>

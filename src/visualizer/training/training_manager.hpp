@@ -7,12 +7,15 @@
 #include "core/camera.hpp"
 #include "core/export.hpp"
 #include "core/parameters.hpp"
+#include "core/splat_exportable_storage.hpp"
 #include "training/trainer.hpp"
 #include "training_state.hpp"
 #include <atomic>
+#include <cstddef>
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stop_token>
 #include <thread>
 
@@ -102,9 +105,31 @@ namespace lfs::vis {
         std::deque<float> getLossBuffer() const;
         void updateLoss(float loss);
 
+        // PSNR buffer management
+        struct EvaluationMetricsSnapshot {
+            int iteration = 0;
+            float psnr = 0.0f;
+            float ssim = 0.0f;
+        };
+
+        std::deque<float> getPSNRBuffer() const;
+        void updatePSNR(float psnr);
+        void setLastPSNR(float psnr) { last_psnr_.store(psnr); }
+        float getLastPSNR() const { return last_psnr_.load(); }
+        void updateEvaluationMetrics(int iteration, float psnr, float ssim);
+        std::optional<EvaluationMetricsSnapshot> getLastEvaluationMetrics() const;
+        void clearEvaluationMetrics();
+
         // Access to trainer (for rendering, etc.)
         lfs::training::Trainer* getTrainer() { return trainer_.get(); }
         const lfs::training::Trainer* getTrainer() const { return trainer_.get(); }
+
+        // Splat exportable storage — populated when training starts with a viewer
+        // active. The viewer's vksplat renderer imports the same physical block
+        // for zero-copy interop. nullptr if running headless or fallback.
+        const lfs::core::SplatExportableStorage* splatExportableStorage() const {
+            return splat_storage_.has_value() ? &*splat_storage_ : nullptr;
+        }
 
         // Wait for training to complete (blocking)
         void waitForCompletion();
@@ -116,6 +141,10 @@ namespace lfs::vis {
         std::shared_ptr<const lfs::core::Camera> getCamById(int camId) const;
         std::vector<std::shared_ptr<lfs::core::Camera>> getCamList() const;
         std::vector<std::shared_ptr<lfs::core::Camera>> getAllCamList() const;
+        std::expected<lfs::training::Trainer::CameraMetricsSnapshot, std::string> computeCameraMetricsForCameraId(
+            int camera_id,
+            bool include_ssim,
+            const lfs::training::Trainer::CameraMetricsAppearanceConfig& appearance) const;
 
         // Pending parameters (editable in Ready state, applied on start)
         lfs::core::param::OptimizationParameters& getEditableOptParams() { return pending_opt_params_; }
@@ -136,17 +165,22 @@ namespace lfs::vis {
         // Resource cleanup (called by state machine)
         void cleanupTrainingResources(const TrainingResources& resources);
         void updateResourceTracking();
+        [[nodiscard]] lfs::core::SplatTensorAllocator createTrainingSplatTensorAllocator(
+            const lfs::core::param::TrainingParameters& params,
+            std::size_t min_capacity = 0);
 
         // Member variables
         std::unique_ptr<lfs::training::Trainer> trainer_;
         std::unique_ptr<std::jthread> training_thread_;
         VisualizerImpl* viewer_ = nullptr;
         core::Scene* scene_ = nullptr;
+        std::optional<lfs::core::SplatExportableStorage> splat_storage_;
 
         // State machine (single source of truth for state)
         TrainingStateMachine state_machine_;
         std::string last_error_;
         mutable std::mutex state_mutex_;
+        mutable std::mutex trainer_lifetime_mutex_;
 
         // Synchronization
         std::condition_variable completion_cv_;
@@ -157,6 +191,12 @@ namespace lfs::vis {
         static constexpr int MAX_LOSS_POINTS = 200;
         std::deque<float> loss_buffer_;
         mutable std::mutex loss_buffer_mutex_;
+        static constexpr int MAX_PSNR_POINTS = 200;
+        std::deque<float> psnr_buffer_;
+        mutable std::mutex psnr_buffer_mutex_;
+        std::atomic<float> last_psnr_{0.0f};
+        std::optional<EvaluationMetricsSnapshot> last_eval_metrics_;
+        mutable std::mutex eval_metrics_mutex_;
 
         // Training time tracking
         std::chrono::steady_clock::time_point training_start_time_;

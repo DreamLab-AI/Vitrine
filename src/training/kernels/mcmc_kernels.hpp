@@ -52,6 +52,8 @@ namespace lfs::training::mcmc {
      * @param raw_quats [N, 4] - Raw quaternion rotation values
      * @param noise [N, 3] - Random noise from N(0,1)
      * @param means [N, 3] - Mean positions (modified in-place)
+     * @param frozen_mask [N] - Optional mask of rows that must not be modified
+     * @param frozen_mask_size - Number of entries in frozen_mask
      * @param current_lr - Current learning rate for noise scaling
      * @param N - Number of Gaussians
      * @param stream - CUDA stream for async execution
@@ -62,6 +64,8 @@ namespace lfs::training::mcmc {
         const float* raw_quats,
         const float* noise,
         float* means,
+        const bool* frozen_mask,
+        size_t frozen_mask_size,
         float current_lr,
         size_t N,
         void* stream = nullptr);
@@ -354,33 +358,6 @@ namespace lfs::training::mcmc {
         const float* rotations,
         float* mag_sq,
         size_t N,
-        void* stream = nullptr);
-
-    /**
-     * Fused dead mask computation (ZERO intermediate allocations)
-     *
-     * Directly computes boolean dead mask from opacities and rotations in a single pass.
-     * Replaces the two-step process of:
-     *   1. Computing rot_mag_sq = (rotation * rotation).sum(-1)  [creates [N] intermediate]
-     *   2. Computing dead_mask = (opacity <= min_opacity).logical_or(rot_mag_sq < 1e-8f)
-     *
-     * Dead Gaussians are those with:
-     *   - opacity <= min_opacity OR
-     *   - ||rotation||^2 < 1e-8 (near-zero rotation magnitude)
-     *
-     * @param opacities [N] - Opacity values
-     * @param rotations [N, 4] - Quaternion rotations
-     * @param dead_mask [N] - Output: boolean mask (uint8_t)
-     * @param N - Number of Gaussians
-     * @param min_opacity - Minimum valid opacity threshold
-     * @param stream - CUDA stream
-     */
-    void launch_compute_dead_mask(
-        const float* opacities,
-        const float* rotations,
-        uint8_t* dead_mask,
-        size_t N,
-        float min_opacity,
         void* stream = nullptr);
 
     /**

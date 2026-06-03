@@ -4,14 +4,18 @@
 #include "app/include/app/mcp_sequencer_tools.hpp"
 
 #include "app/include/app/mcp_app_utils.hpp"
+#include "app/include/app/view_info_json.hpp"
 #include "mcp/mcp_tools.hpp"
 #include "python/python_runtime.hpp"
+#include "rendering/coordinate_conventions.hpp"
 #include "sequencer/keyframe.hpp"
 #include "visualizer/ipc/view_context.hpp"
 #include "visualizer/sequencer/sequencer_controller.hpp"
 #include "visualizer/visualizer.hpp"
 
+#include <algorithm>
 #include <cassert>
+#include <cstdint>
 #include <optional>
 #include <string>
 
@@ -26,29 +30,6 @@ namespace lfs::app {
 
         json vec3_to_json(const glm::vec3& value) {
             return json::array({value.x, value.y, value.z});
-        }
-
-        json view_info_json(const vis::ViewInfo& info) {
-            const json rotation = json::array({
-                json::array({info.rotation[0], info.rotation[1], info.rotation[2]}),
-                json::array({info.rotation[3], info.rotation[4], info.rotation[5]}),
-                json::array({info.rotation[6], info.rotation[7], info.rotation[8]}),
-            });
-
-            return json{
-                {"success", true},
-                {"camera", {
-                               {"eye", json::array({info.translation[0], info.translation[1], info.translation[2]})},
-                               {"target", json::array({info.pivot[0], info.pivot[1], info.pivot[2]})},
-                               {"pivot", json::array({info.pivot[0], info.pivot[1], info.pivot[2]})},
-                               {"up", json::array({info.rotation[1], info.rotation[4], info.rotation[7]})},
-                               {"forward", json::array({info.rotation[2], info.rotation[5], info.rotation[8]})},
-                               {"rotation_matrix", rotation},
-                               {"width", info.width},
-                               {"height", info.height},
-                               {"fov_degrees", info.fov},
-                           }},
-            };
         }
 
         std::expected<std::optional<glm::vec3>, std::string> optional_vec3_arg(const json& args, const char* key) {
@@ -136,8 +117,9 @@ namespace lfs::app {
 
         json sequencer_state_json(const SequencerToolBackend& backend, const vis::SequencerController& controller) {
             const auto& timeline = controller.timeline();
+            const bool has_ply_sequence = controller.hasPlySequence();
             const bool has_any_timeline_state =
-                timeline.realKeyframeCount() > 0 || timeline.hasAnimationClip();
+                timeline.realKeyframeCount() > 0 || timeline.hasAnimationClip() || has_ply_sequence;
             json keyframe_list = json::array();
             int64_t visible_index = 0;
             for (const auto& keyframe : timeline.keyframes()) {
@@ -153,6 +135,10 @@ namespace lfs::app {
                 {"visible", backend.is_visible ? backend.is_visible() : false},
                 {"has_keyframes", has_any_timeline_state},
                 {"playback_speed", controller.playbackSpeed()},
+                {"has_ply_sequence", has_ply_sequence},
+                {"ply_sequence_node", has_ply_sequence ? controller.plySequence()->node_name : ""},
+                {"ply_sequence_fps", controller.plySequenceFps()},
+                {"ply_sequence_frame_count", has_ply_sequence ? controller.plySequence()->frames.size() : 0},
                 {"show_camera_path", ui_state ? ui_state->show_camera_path : true},
                 {"follow_playback", ui_state ? ui_state->follow_playback : false},
                 {"keyframe_count", keyframe_list.size()},
@@ -161,6 +147,16 @@ namespace lfs::app {
             result["selected_keyframe_id"] = controller.selectedKeyframeId()
                                                  ? json(*controller.selectedKeyframeId())
                                                  : json(nullptr);
+            result["ply_sequence_current_frame"] = controller.currentPlySequenceFrameIndex()
+                                                       ? json(*controller.currentPlySequenceFrameIndex())
+                                                       : json(nullptr);
+            if (backend.ply_sequence_status) {
+                const std::string status = backend.ply_sequence_status();
+                if (!status.empty()) {
+                    if (auto parsed = json::parse(status, nullptr, false); !parsed.is_discarded())
+                        result["ply_player"] = std::move(parsed);
+                }
+            }
             return result;
         }
 
@@ -548,6 +544,76 @@ namespace lfs::app {
                     if (backend.set_playback_speed)
                         backend.set_playback_speed(speed);
                     return sequencer_state_json(backend, **controller);
+                });
+            });
+
+        registry.register_tool(
+            McpTool{
+                .name = "sequencer.load_ply_sequence",
+                .description = "Load an ordered PLY frame sequence from a directory for streaming playback",
+                .input_schema = {
+                    .type = "object",
+                    .properties = json{
+                        {"directory", json{{"type", "string"}, {"description", "Directory containing ordered .ply frames"}}},
+                        {"fps", json{{"type", "number"}, {"description", "Playback frame rate (1-240, default 24)"}}},
+                        {"show_sequencer", json{{"type", "boolean"}, {"description", "Show the sequencer panel (default: true)"}}}},
+                    .required = {"directory"}}},
+            [viewer, backend](const json& args) -> json {
+                const std::string directory = args["directory"].get<std::string>();
+                const float fps = args.value("fps", 24.0f);
+                const bool show_sequencer = args.value("show_sequencer", true);
+
+                return post_and_wait(viewer, [backend, directory, fps, show_sequencer]() -> json {
+                    auto controller = ensure_ready_controller(backend);
+                    if (!controller)
+                        return json{{"error", controller.error()}};
+
+                    if (show_sequencer && backend.set_visible)
+                        backend.set_visible(true);
+                    if (!backend.load_ply_sequence)
+                        return json{{"error", "load_ply_sequence backend unavailable"}};
+                    backend.load_ply_sequence(directory, fps);
+
+                    json result = sequencer_state_json(backend, **controller);
+                    result["directory"] = directory;
+                    return result;
+                });
+            });
+
+        registry.register_tool(
+            McpTool{
+                .name = "sequencer.scrub",
+                .description = "Move the sequencer playhead to a time (seconds) or PLY-sequence frame index",
+                .input_schema = {
+                    .type = "object",
+                    .properties = json{
+                        {"time", json{{"type", "number"}, {"description", "Playhead time in seconds"}}},
+                        {"frame", json{{"type", "integer"}, {"description", "PLY-sequence frame index (overrides time)"}}}},
+                    .required = {}}},
+            [viewer, backend](const json& args) -> json {
+                const bool has_time = args.contains("time") && !args["time"].is_null();
+                const bool has_frame = args.contains("frame") && !args["frame"].is_null();
+                const std::optional<float> time = has_time ? std::optional<float>(args["time"].get<float>()) : std::nullopt;
+                const std::optional<int64_t> frame = has_frame ? std::optional<int64_t>(args["frame"].get<int64_t>()) : std::nullopt;
+
+                return post_and_wait(viewer, [backend, time, frame]() -> json {
+                    auto controller = ensure_ready_controller(backend);
+                    if (!controller)
+                        return json{{"error", controller.error()}};
+
+                    float target_time = time.value_or((*controller)->playhead());
+                    if (frame.has_value()) {
+                        const float fps = (*controller)->plySequenceFps();
+                        target_time = static_cast<float>(std::max<int64_t>(*frame, 0)) / (fps > 0.0f ? fps : 24.0f);
+                    }
+                    if (backend.scrub_to_time)
+                        backend.scrub_to_time(target_time);
+                    else
+                        (*controller)->seek(target_time);
+
+                    json result = sequencer_state_json(backend, **controller);
+                    result["scrubbed_to_time"] = target_time;
+                    return result;
                 });
             });
     }

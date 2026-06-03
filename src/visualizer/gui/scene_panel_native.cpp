@@ -6,23 +6,37 @@
 
 #include "core/event_bridge/localization_manager.hpp"
 #include "core/logger.hpp"
+#include "core/parameter_manager.hpp"
+#include "core/path_utils.hpp"
 #include "gui/gui_manager.hpp"
 #include "gui/rmlui/elements/scene_graph_element.hpp"
+#include "gui/rmlui/rml_theme.hpp"
+#include "gui/string_keys.hpp"
+#include "gui/utils/native_file_dialog.hpp"
+#include "internal/resource_paths.hpp"
 #include "operation/undo_history.hpp"
+#include "visualizer/app_store.hpp"
 #include "visualizer/core/services.hpp"
 
 #include <RmlUi/Core.h>
 #include <RmlUi/Core/Element.h>
+#include <RmlUi/Core/Elements/ElementFormControlSelect.h>
+#include <SDL3/SDL_clipboard.h>
 
 #include <algorithm>
 #include <array>
+#include <cmath>
+#include <ctime>
 #include <format>
+#include <fstream>
 #include <limits>
+#include <optional>
 #include <string_view>
 
 namespace lfs::vis::gui {
 
     namespace {
+        constexpr size_t MAX_RENDERED_LOG_ENTRIES = 250;
 
         [[nodiscard]] std::string tr(const char* key) {
             const std::string value = LOC(key);
@@ -60,6 +74,33 @@ namespace lfs::vis::gui {
         [[nodiscard]] std::string cacheAttrName(std::string_view kind, std::string_view name) {
             return std::format("data-lfs-{}-{}", kind, name);
         }
+
+        [[nodiscard]] std::string resolveRmlImageSource(const std::string_view asset_path) {
+            try {
+                return rml_theme::pathToRmlImageSource(
+                    lfs::vis::getAssetPath(std::string(asset_path)));
+            } catch (const std::exception& e) {
+                LOG_WARN("NativeScenePanel: failed to resolve icon '{}': {}", asset_path, e.what());
+                return {};
+            }
+        }
+
+        struct LogLevelChoice {
+            core::LogLevel level;
+            std::string_view label;
+            std::string_view css_suffix;
+        };
+
+        constexpr std::array LOG_LEVEL_CHOICES{
+            LogLevelChoice{core::LogLevel::Trace, "Trace", "trace"},
+            LogLevelChoice{core::LogLevel::Debug, "Debug", "debug"},
+            LogLevelChoice{core::LogLevel::Info, "Info", "info"},
+            LogLevelChoice{core::LogLevel::Performance, "Performance", "perf"},
+            LogLevelChoice{core::LogLevel::Warn, "Warn", "warn"},
+            LogLevelChoice{core::LogLevel::Error, "Error", "error"},
+            LogLevelChoice{core::LogLevel::Critical, "Critical", "critical"},
+            LogLevelChoice{core::LogLevel::Off, "Off", "off"},
+        };
 
         [[nodiscard]] bool setCachedInnerRml(Rml::Element* el, const std::string& value) {
             if (!el)
@@ -205,7 +246,7 @@ namespace lfs::vis::gui {
                     is_next ? " is-next" : "");
 
                 html += std::format(
-                    R"(<button type="button" class="{}" style="display:block; width:100%;" data-kind="{}" data-steps="{}"><span class="history-row__line history-row__line--primary text-default">&#9679; {}</span><br /><span class="history-row__line history-row__line--stack text-muted">{}</span><br /><span class="history-row__line history-row__line--secondary text-muted">{}</span></button>)",
+                    R"(<button type="button" class="{}" data-kind="{}" data-steps="{}"><span class="history-row__line history-row__line--primary text-default">&#9679; {}</span><br /><span class="history-row__line history-row__line--stack text-muted">{}</span><br /><span class="history-row__line history-row__line--secondary text-muted">{}</span></button>)",
                     row_classes,
                     kind,
                     index + 1,
@@ -227,6 +268,118 @@ namespace lfs::vis::gui {
             return nullptr;
         }
 
+        [[nodiscard]] int logLevelSelectionIndex(const core::LogLevel level) {
+            for (size_t index = 0; index < LOG_LEVEL_CHOICES.size(); ++index) {
+                if (LOG_LEVEL_CHOICES[index].level == level)
+                    return static_cast<int>(index);
+            }
+            return 2;
+        }
+
+        [[nodiscard]] core::LogLevel logLevelFromSelection(const int selection) {
+            if (selection >= 0 && selection < static_cast<int>(LOG_LEVEL_CHOICES.size()))
+                return LOG_LEVEL_CHOICES[static_cast<size_t>(selection)].level;
+            return core::LogLevel::Info;
+        }
+
+        [[nodiscard]] std::string_view logLevelLabel(const core::LogLevel level) {
+            return LOG_LEVEL_CHOICES[static_cast<size_t>(logLevelSelectionIndex(level))].label;
+        }
+
+        [[nodiscard]] std::string_view logLevelCssSuffix(const core::LogLevel level) {
+            return LOG_LEVEL_CHOICES[static_cast<size_t>(logLevelSelectionIndex(level))].css_suffix;
+        }
+
+        [[nodiscard]] std::string formatLogTimestamp(const std::chrono::system_clock::time_point& timestamp) {
+            const auto time_t_val = std::chrono::system_clock::to_time_t(timestamp);
+            std::tm tm{};
+#ifdef WIN32
+            localtime_s(&tm, &time_t_val);
+#else
+            localtime_r(&time_t_val, &tm);
+#endif
+            const auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    timestamp.time_since_epoch())
+                                    .count() %
+                                1000;
+            return std::format("{:02}:{:02}:{:02}.{:03}",
+                               tm.tm_hour,
+                               tm.tm_min,
+                               tm.tm_sec,
+                               static_cast<int>(millis));
+        }
+
+        [[nodiscard]] std::string formatLoggingSummary(const size_t entry_count,
+                                                       const size_t displayed_entry_count,
+                                                       const core::LogLevel level) {
+            const std::string level_label(logLevelLabel(level));
+            if (entry_count == 0)
+                return std::format("No buffered CLI logs · Level {}", level_label);
+            if (displayed_entry_count < entry_count) {
+                return std::format("{} buffered log {} · showing latest {} · Level {}",
+                                   entry_count,
+                                   entry_count == 1 ? "entry" : "entries",
+                                   displayed_entry_count,
+                                   level_label);
+            }
+            return std::format("{} buffered log {} · Level {}",
+                               entry_count,
+                               entry_count == 1 ? "entry" : "entries",
+                               level_label);
+        }
+
+        [[nodiscard]] int optionalMetricMilli(const std::optional<float>& value) {
+            if (!value || !std::isfinite(*value))
+                return std::numeric_limits<int>::min();
+            return static_cast<int>(std::lround(*value * 1000.0f));
+        }
+
+        [[nodiscard]] bool hasDiscreteInputActivity(const PanelInputState* input) {
+            if (!input)
+                return false;
+
+            for (int i = 0; i < 3; ++i) {
+                if (input->mouse_clicked[i] || input->mouse_released[i] || input->mouse_down[i])
+                    return true;
+            }
+            return input->mouse_wheel != 0.0f ||
+                   !input->keys_pressed.empty() ||
+                   !input->keys_repeated.empty() ||
+                   !input->keys_released.empty() ||
+                   !input->text_codepoints.empty() ||
+                   !input->text_inputs.empty() ||
+                   input->has_text_editing;
+        }
+
+        [[nodiscard]] std::string loggingRowsHtml(const std::vector<core::LogEntrySnapshot>& entries) {
+            const size_t rendered_entry_count = std::min(entries.size(), MAX_RENDERED_LOG_ENTRIES);
+            std::string html;
+            html.reserve(rendered_entry_count * 256);
+
+            size_t rendered = 0;
+            for (auto it = entries.rbegin(); it != entries.rend() && rendered < rendered_entry_count;
+                 ++it, ++rendered) {
+                const auto& entry = *it;
+                const std::string timestamp = formatLogTimestamp(entry.timestamp);
+                const std::string source = entry.line > 0
+                                               ? std::format("{}:{}",
+                                                             entry.file.empty() ? std::string("runtime")
+                                                                                : entry.file,
+                                                             entry.line)
+                                               : (entry.file.empty() ? std::string("runtime")
+                                                                     : entry.file);
+                html += std::format(
+                    R"(<div class="log-entry log-entry--{}"><div class="log-entry__header"><span class="log-entry__level">{}</span><span class="log-entry__meta text-muted">{} · {}</span></div><div class="log-entry__message text-default">{}</div></div>)",
+                    logLevelCssSuffix(entry.level),
+                    Rml::StringUtilities::EncodeRml(std::string(logLevelLabel(entry.level))),
+                    Rml::StringUtilities::EncodeRml(timestamp),
+                    Rml::StringUtilities::EncodeRml(source),
+                    Rml::StringUtilities::EncodeRml(entry.message));
+            }
+
+            return html;
+        }
+
     } // namespace
 
     NativeScenePanel::NativeScenePanel(RmlUIManager* manager)
@@ -234,11 +387,70 @@ namespace lfs::vis::gui {
           host_(manager, "scene_panel_native", "rmlui/scene_tree.rml") {
         listener_.owner = this;
         last_history_generation_ = std::numeric_limits<uint64_t>::max();
+        last_log_generation_ = std::numeric_limits<uint64_t>::max();
     }
 
     void NativeScenePanel::EventListener::ProcessEvent(Rml::Event& event) {
         if (owner)
             owner->handleEvent(event);
+    }
+
+    void NativeScenePanel::clearElementCache() {
+        tree_el_ = nullptr;
+        scene_tab_el_ = nullptr;
+        history_tab_el_ = nullptr;
+        logging_tab_el_ = nullptr;
+        chip_row_el_ = nullptr;
+        summary_model_chip_el_ = nullptr;
+        summary_node_chip_el_ = nullptr;
+        summary_selection_chip_el_ = nullptr;
+        summary_filter_chip_el_ = nullptr;
+        scene_view_el_ = nullptr;
+        search_container_el_ = nullptr;
+        filter_input_el_ = nullptr;
+        filter_clear_el_ = nullptr;
+        empty_state_el_ = nullptr;
+        empty_primary_el_ = nullptr;
+        empty_secondary_el_ = nullptr;
+        history_container_el_ = nullptr;
+        history_summary_label_el_ = nullptr;
+        history_summary_value_el_ = nullptr;
+        history_transaction_el_ = nullptr;
+        history_undo_btn_el_ = nullptr;
+        history_redo_btn_el_ = nullptr;
+        history_clear_btn_el_ = nullptr;
+        history_note_el_ = nullptr;
+        history_undo_title_el_ = nullptr;
+        history_redo_title_el_ = nullptr;
+        history_undo_list_el_ = nullptr;
+        history_redo_list_el_ = nullptr;
+        history_empty_undo_el_ = nullptr;
+        history_empty_redo_el_ = nullptr;
+        logging_container_el_ = nullptr;
+        logging_summary_label_el_ = nullptr;
+        logging_summary_value_el_ = nullptr;
+        logging_level_label_el_ = nullptr;
+        logging_level_select_el_ = nullptr;
+        logging_export_btn_el_ = nullptr;
+        logging_copy_btn_el_ = nullptr;
+        logging_feedback_el_ = nullptr;
+        logging_note_el_ = nullptr;
+        logging_scroll_el_ = nullptr;
+        logging_list_el_ = nullptr;
+        logging_empty_el_ = nullptr;
+    }
+
+    void NativeScenePanel::reloadRmlResources() {
+        filter_input_revert_.clear();
+        host_.reloadDocument();
+        document_ = nullptr;
+        clearElementCache();
+        last_language_.clear();
+        last_history_generation_ = std::numeric_limits<uint64_t>::max();
+        last_log_generation_ = std::numeric_limits<uint64_t>::max();
+        last_prepare_frame_ = 0;
+        has_last_sync_stamp_ = false;
+        logging_feedback_dirty_ = true;
     }
 
     void NativeScenePanel::preload(const PanelDrawContext& ctx) {
@@ -257,7 +469,8 @@ namespace lfs::vis::gui {
         if (!ensureInitialized())
             return;
 
-        syncPanel(ctx);
+        if (shouldSyncPanel(input))
+            syncPanel(ctx);
         last_prepare_frame_ = ctx.frame_serial;
         host_.prepareDirect(w, h);
     }
@@ -285,6 +498,35 @@ namespace lfs::vis::gui {
         host_.drawDirect(x, y, w, h);
     }
 
+    bool NativeScenePanel::drawDirectCached(const float x, const float y,
+                                            const float w, const float h,
+                                            const PanelDrawContext& ctx) {
+        (void)ctx;
+        if (!ensureInitialized())
+            return false;
+
+        if (tree_el_)
+            tree_el_->setPanelScreenOffset(x, y);
+
+        // A context-menu result is normally consumed in syncPanel(), which only
+        // runs on the live draw paths. Under render-on-demand an idle panel uses
+        // this cached path, so poll the result here too — otherwise a menu action
+        // (e.g. "Go to camera view") sits unconsumed until the panel next goes
+        // live, i.e. until the next mouse move (a multi-second perceived lag).
+        if (auto* gui = services().guiOrNull()) {
+            const std::string action = gui->globalContextMenu().pollResult();
+            if (!action.empty() && tree_el_ && tree_el_->executeContextMenuAction(action)) {
+                host_.markContentDirty();
+                return false; // fall back to a live draw so the panel reflects the change
+            }
+        }
+
+        if (shouldSyncPanel(nullptr))
+            return false;
+
+        return host_.drawDirectCached(x, y, w, h);
+    }
+
     bool NativeScenePanel::ensureInitialized() {
         if (!host_.ensureDocumentLoaded())
             return false;
@@ -303,9 +545,12 @@ namespace lfs::vis::gui {
     }
 
     void NativeScenePanel::cacheElements() {
+        filter_input_revert_.clear();
+        clearElementCache();
         tree_el_ = dynamic_cast<SceneGraphElement*>(document_->GetElementById("tree-container"));
         scene_tab_el_ = document_->GetElementById("scene-tab");
         history_tab_el_ = document_->GetElementById("history-tab");
+        logging_tab_el_ = document_->GetElementById("logging-tab");
         chip_row_el_ = document_->GetElementById("scene-chip-row");
         summary_model_chip_el_ = document_->GetElementById("summary-model-chip");
         summary_node_chip_el_ = document_->GetElementById("summary-node-chip");
@@ -332,8 +577,33 @@ namespace lfs::vis::gui {
         history_redo_list_el_ = document_->GetElementById("history-redo-list");
         history_empty_undo_el_ = document_->GetElementById("history-empty-undo");
         history_empty_redo_el_ = document_->GetElementById("history-empty-redo");
+        logging_container_el_ = document_->GetElementById("logging-container");
+        logging_summary_label_el_ = document_->GetElementById("logging-summary-label");
+        logging_summary_value_el_ = document_->GetElementById("logging-summary-value");
+        logging_level_label_el_ = document_->GetElementById("logging-level-label");
+        logging_level_select_el_ =
+            dynamic_cast<Rml::ElementFormControlSelect*>(document_->GetElementById("logging-level-select"));
+        logging_export_btn_el_ = document_->GetElementById("logging-export-btn");
+        logging_copy_btn_el_ = document_->GetElementById("logging-copy-btn");
+        logging_feedback_el_ = document_->GetElementById("logging-feedback");
+        logging_note_el_ = document_->GetElementById("logging-note");
+        logging_scroll_el_ = document_->GetElementById("logging-scroll");
+        logging_list_el_ = document_->GetElementById("logging-list");
+        logging_empty_el_ = document_->GetElementById("logging-empty");
 
-        if (!tree_el_ || !scene_tab_el_ || !history_tab_el_ || !chip_row_el_ ||
+        if (auto* search_icon = document_->GetElementById("search-icon")) {
+            const std::string search_icon_source = resolveRmlImageSource("icon/scene/search.png");
+            if (!search_icon_source.empty())
+                search_icon->SetAttribute("src", search_icon_source);
+        }
+
+        if (auto* clear_icon = filter_clear_el_ ? filter_clear_el_->GetChild(0) : nullptr) {
+            const std::string clear_icon_source = resolveRmlImageSource("icon/scene/x.png");
+            if (!clear_icon_source.empty())
+                clear_icon->SetAttribute("src", clear_icon_source);
+        }
+
+        if (!tree_el_ || !scene_tab_el_ || !history_tab_el_ || !logging_tab_el_ || !chip_row_el_ ||
             !summary_model_chip_el_ || !summary_node_chip_el_ || !summary_selection_chip_el_ ||
             !summary_filter_chip_el_ || !scene_view_el_ || !search_container_el_ ||
             !filter_input_el_ || !filter_clear_el_ || !empty_state_el_ || !empty_primary_el_ ||
@@ -341,19 +611,30 @@ namespace lfs::vis::gui {
             !history_summary_value_el_ || !history_transaction_el_ || !history_undo_btn_el_ ||
             !history_redo_btn_el_ || !history_clear_btn_el_ || !history_note_el_ ||
             !history_undo_title_el_ || !history_redo_title_el_ || !history_undo_list_el_ ||
-            !history_redo_list_el_ || !history_empty_undo_el_ || !history_empty_redo_el_) {
+            !history_redo_list_el_ || !history_empty_undo_el_ || !history_empty_redo_el_ ||
+            !logging_container_el_ || !logging_summary_label_el_ || !logging_summary_value_el_ ||
+            !logging_level_label_el_ || !logging_level_select_el_ || !logging_export_btn_el_ ||
+            !logging_copy_btn_el_ || !logging_feedback_el_ || !logging_note_el_ ||
+            !logging_scroll_el_ || !logging_list_el_ || !logging_empty_el_) {
             LOG_ERROR("NativeScenePanel: missing required DOM elements");
             return;
         }
 
         scene_tab_el_->AddEventListener(Rml::EventId::Click, &listener_);
         history_tab_el_->AddEventListener(Rml::EventId::Click, &listener_);
+        logging_tab_el_->AddEventListener(Rml::EventId::Click, &listener_);
         filter_clear_el_->AddEventListener(Rml::EventId::Click, &listener_);
         history_undo_btn_el_->AddEventListener(Rml::EventId::Click, &listener_);
         history_redo_btn_el_->AddEventListener(Rml::EventId::Click, &listener_);
         history_clear_btn_el_->AddEventListener(Rml::EventId::Click, &listener_);
         history_undo_list_el_->AddEventListener(Rml::EventId::Click, &listener_);
         history_redo_list_el_->AddEventListener(Rml::EventId::Click, &listener_);
+        logging_level_select_el_->AddEventListener(Rml::EventId::Change, &listener_);
+        logging_export_btn_el_->AddEventListener(Rml::EventId::Click, &listener_);
+        logging_copy_btn_el_->AddEventListener(Rml::EventId::Click, &listener_);
+        filter_input_revert_.bind(filter_input_el_, [this](Rml::Element&) {
+            applyFilterInputValue();
+        });
     }
 
     void NativeScenePanel::syncPanel(const PanelDrawContext& ctx) {
@@ -371,12 +652,57 @@ namespace lfs::vis::gui {
         changed |= syncLocale();
         changed |= syncSceneState(ctx);
         changed |= syncHistoryState();
+        changed |= syncLoggingState();
         changed |= syncTabState();
         changed |= syncSummaryChips();
         changed |= syncSceneVisibility();
 
         if (changed)
             host_.markContentDirty();
+
+        last_sync_stamp_ = makeSyncStamp();
+        has_last_sync_stamp_ = true;
+    }
+
+    bool NativeScenePanel::shouldSyncPanel(const PanelInputState* input) const {
+        if (!tree_el_ || !has_last_sync_stamp_)
+            return true;
+        if (logging_feedback_dirty_)
+            return true;
+        if (hasDiscreteInputActivity(input))
+            return true;
+        return makeSyncStamp() != last_sync_stamp_;
+    }
+
+    NativeScenePanel::SyncStamp NativeScenePanel::makeSyncStamp() const {
+        SyncStamp stamp;
+        stamp.active_tab = active_tab_;
+        auto& store = app_store();
+        stamp.language_generation = store.language_generation.get();
+        stamp.dp_ratio_milli = manager_
+                                   ? static_cast<int>(std::lround(manager_->getDpRatio() * 1000.0f))
+                                   : 1000;
+
+        if (active_tab_ == Tab::Scene) {
+            stamp.scene_generation = store.scene_generation.get();
+            stamp.selection_generation = store.selection_generation.get();
+            if (auto* params = services().paramsOrNull())
+                stamp.invert_masks = params->getActiveParams().invert_masks;
+
+            stamp.num_gaussians = store.num_gaussians.get();
+            stamp.training_running = store.training_running.get();
+            stamp.training_state = store.training_state.get();
+            stamp.eval_psnr_milli = optionalMetricMilli(store.eval_psnr.get());
+            stamp.eval_ssim_milli = optionalMetricMilli(store.eval_ssim.get());
+        } else if (active_tab_ == Tab::History) {
+            stamp.history_generation = op::undoHistory().generation();
+        } else if (active_tab_ == Tab::Logging) {
+            auto& logger = core::Logger::get();
+            stamp.log_generation = logger.buffered_log_generation();
+            stamp.log_level = logger.level();
+        }
+
+        return stamp;
     }
 
     bool NativeScenePanel::syncSceneState(const PanelDrawContext& ctx) {
@@ -430,6 +756,53 @@ namespace lfs::vis::gui {
         return changed;
     }
 
+    bool NativeScenePanel::syncLoggingState() {
+        if (active_tab_ != Tab::Logging && !logging_feedback_dirty_)
+            return false;
+
+        auto& logger = core::Logger::get();
+        const uint64_t generation = logger.buffered_log_generation();
+        const core::LogLevel level = logger.level();
+        if (generation == last_log_generation_ &&
+            level == last_log_level_ &&
+            !logging_feedback_dirty_) {
+            return false;
+        }
+
+        last_log_generation_ = generation;
+        last_log_level_ = level;
+        logging_feedback_dirty_ = false;
+
+        const auto entries = logger.buffered_logs();
+        const bool has_entries = !entries.empty();
+        const size_t displayed_entry_count = std::min(entries.size(), MAX_RENDERED_LOG_ENTRIES);
+        const int desired_selection = logLevelSelectionIndex(level);
+
+        bool changed = false;
+        changed |= setCachedText(logging_summary_value_el_,
+                                 formatLoggingSummary(entries.size(), displayed_entry_count, level));
+        changed |= setCachedInnerRml(logging_list_el_, loggingRowsHtml(entries));
+        changed |= setCachedProperty(logging_empty_el_, "display", has_entries ? "none" : "block");
+        changed |= setCachedProperty(logging_list_el_, "display", has_entries ? "flex" : "none");
+        changed |= setCachedText(logging_feedback_el_, logging_feedback_text_);
+        changed |= setCachedProperty(logging_feedback_el_, "display",
+                                     logging_feedback_text_.empty() ? "none" : "block");
+        changed |= setCachedClass(logging_feedback_el_, "status-info",
+                                  logging_feedback_tone_ == FeedbackTone::Info);
+        changed |= setCachedClass(logging_feedback_el_, "status-success",
+                                  logging_feedback_tone_ == FeedbackTone::Success);
+        changed |= setCachedClass(logging_feedback_el_, "status-error",
+                                  logging_feedback_tone_ == FeedbackTone::Error);
+
+        if (logging_level_select_el_ &&
+            logging_level_select_el_->GetSelection() != desired_selection) {
+            logging_level_select_el_->SetSelection(desired_selection);
+            changed = true;
+        }
+
+        return changed;
+    }
+
     bool NativeScenePanel::syncLocale() {
         const std::string language = lfs::event::LocalizationManager::getInstance().getCurrentLanguage();
         if (language == last_language_)
@@ -440,6 +813,7 @@ namespace lfs::vis::gui {
         bool changed = false;
         changed |= setCachedText(scene_tab_el_, tr("window.scene"));
         changed |= setCachedText(history_tab_el_, "History");
+        changed |= setCachedText(logging_tab_el_, "Logging");
         changed |= setCachedAttribute(filter_input_el_, "placeholder", tr("scene.search"));
         changed |= setCachedText(empty_primary_el_, tr("scene.no_data_loaded"));
         changed |= setCachedText(empty_secondary_el_, tr("scene.use_file_menu"));
@@ -448,8 +822,17 @@ namespace lfs::vis::gui {
                                  "Newest block is at the top. Click a block to jump there. New projects start clean.");
         changed |= setCachedText(history_undo_title_el_, "Undo Stack");
         changed |= setCachedText(history_redo_title_el_, "Redo Stack");
-        changed |= setCachedText(history_clear_btn_el_, tr("clear_history"));
+        changed |= setCachedText(history_clear_btn_el_, tr(lichtfeld::Strings::DebugInfo::CLEAR_HISTORY));
+        changed |= setCachedText(logging_summary_label_el_, "CLI Log Mirror");
+        changed |= setCachedText(logging_level_label_el_, "Log Level");
+        changed |= setCachedText(logging_export_btn_el_, "Export .txt");
+        changed |= setCachedText(logging_copy_btn_el_, "Copy");
+        changed |= setCachedText(logging_note_el_,
+                                 std::format("Mirrors console output. The panel shows the latest {} entries to stay responsive; copy and export use the full buffered log history.",
+                                             MAX_RENDERED_LOG_ENTRIES));
+        changed |= setCachedText(logging_empty_el_, "No logs captured yet");
         last_history_generation_ = std::numeric_limits<uint64_t>::max();
+        last_log_generation_ = std::numeric_limits<uint64_t>::max();
         return changed;
     }
 
@@ -457,10 +840,13 @@ namespace lfs::vis::gui {
         bool changed = false;
         changed |= setCachedClass(scene_tab_el_, "active", active_tab_ == Tab::Scene);
         changed |= setCachedClass(history_tab_el_, "active", active_tab_ == Tab::History);
+        changed |= setCachedClass(logging_tab_el_, "active", active_tab_ == Tab::Logging);
         changed |= setCachedProperty(scene_view_el_, "display",
                                      active_tab_ == Tab::Scene ? "flex" : "none");
         changed |= setCachedProperty(history_container_el_, "display",
                                      active_tab_ == Tab::History ? "flex" : "none");
+        changed |= setCachedProperty(logging_container_el_, "display",
+                                     active_tab_ == Tab::Logging ? "flex" : "none");
         return changed;
     }
 
@@ -511,11 +897,22 @@ namespace lfs::vis::gui {
 
     bool NativeScenePanel::handleEvent(Rml::Event& event) {
         const auto type = event.GetType();
-        if (type != "click")
+        auto* current = event.GetCurrentElement();
+        auto* target = event.GetTargetElement();
+        if (!current && !target)
             return false;
 
-        auto* target = event.GetTargetElement();
-        if (!target)
+        if (type == "change") {
+            const Rml::String current_id = current ? current->GetId() : "";
+            if (current_id == "logging-level-select") {
+                applyLogLevelSelection();
+                event.StopPropagation();
+                return true;
+            }
+            return false;
+        }
+
+        if (type != "click" || !target)
             return false;
 
         const Rml::String id = target->GetId();
@@ -529,14 +926,15 @@ namespace lfs::vis::gui {
             event.StopPropagation();
             return true;
         }
+        if (id == "logging-tab") {
+            setTab(Tab::Logging);
+            event.StopPropagation();
+            return true;
+        }
         if (id == "filter-clear") {
             if (filter_input_el_)
                 filter_input_el_->SetAttribute("value", "");
-            if (tree_el_)
-                tree_el_->setFilterText({});
-            syncSummaryChips();
-            syncSceneVisibility();
-            host_.markContentDirty();
+            applyFilterInputValue();
             event.StopPropagation();
             return true;
         }
@@ -560,6 +958,16 @@ namespace lfs::vis::gui {
             event.StopPropagation();
             return true;
         }
+        if (id == "logging-export-btn") {
+            exportBufferedLogsToTextFile();
+            event.StopPropagation();
+            return true;
+        }
+        if (id == "logging-copy-btn") {
+            copyBufferedLogsToClipboard();
+            event.StopPropagation();
+            return true;
+        }
 
         if (auto* action_target = findHistoryActionTarget(target)) {
             const std::string kind = action_target->GetAttribute<Rml::String>("data-kind", "");
@@ -576,6 +984,83 @@ namespace lfs::vis::gui {
         }
 
         return false;
+    }
+
+    void NativeScenePanel::applyFilterInputValue() {
+        if (tree_el_)
+            tree_el_->setFilterText(filter_input_el_ ? filter_input_el_->GetAttribute<Rml::String>("value", "") : "");
+        syncSummaryChips();
+        syncSceneVisibility();
+        host_.markContentDirty();
+    }
+
+    void NativeScenePanel::applyLogLevelSelection() {
+        if (!logging_level_select_el_)
+            return;
+
+        const core::LogLevel selected_level =
+            logLevelFromSelection(logging_level_select_el_->GetSelection());
+        core::Logger::get().set_level(selected_level);
+        setLoggingFeedback(std::format("Log level set to {}", logLevelLabel(selected_level)),
+                           FeedbackTone::Success);
+    }
+
+    void NativeScenePanel::copyBufferedLogsToClipboard() {
+        auto& logger = core::Logger::get();
+        const size_t entry_count = logger.buffered_log_count();
+        if (entry_count == 0) {
+            setLoggingFeedback("No buffered logs to copy.", FeedbackTone::Info);
+            return;
+        }
+
+        const std::string log_text = logger.buffered_logs_as_text();
+        SDL_SetClipboardText(log_text.c_str());
+        setLoggingFeedback(std::format("Copied {} log {} to the clipboard.",
+                                       entry_count,
+                                       entry_count == 1 ? "entry" : "entries"),
+                           FeedbackTone::Success);
+    }
+
+    void NativeScenePanel::exportBufferedLogsToTextFile() {
+        auto& logger = core::Logger::get();
+        const size_t entry_count = logger.buffered_log_count();
+        if (entry_count == 0) {
+            setLoggingFeedback("No buffered logs to export.", FeedbackTone::Info);
+            return;
+        }
+
+        const auto path = SaveTextFileDialog("lichtfeld_logs");
+        if (path.empty())
+            return;
+
+        const std::string log_text = logger.buffered_logs_as_text();
+        std::ofstream file;
+        if (!core::open_file_for_write(path, file)) {
+            setLoggingFeedback("Failed to open the selected log file for writing.",
+                               FeedbackTone::Error);
+            return;
+        }
+
+        file << log_text;
+        if (!file.good()) {
+            setLoggingFeedback("Failed to write the log export.", FeedbackTone::Error);
+            return;
+        }
+
+        const std::string exported_count =
+            entry_count == 1 ? std::string("1 log entry")
+                             : std::format("{} log entries", entry_count);
+        setLoggingFeedback(std::format("Exported {} to {}.",
+                                       exported_count,
+                                       path.filename().string()),
+                           FeedbackTone::Success);
+    }
+
+    void NativeScenePanel::setLoggingFeedback(std::string message, const FeedbackTone tone) {
+        logging_feedback_text_ = std::move(message);
+        logging_feedback_tone_ = tone;
+        logging_feedback_dirty_ = true;
+        host_.markContentDirty();
     }
 
     void NativeScenePanel::setTab(const Tab tab) {

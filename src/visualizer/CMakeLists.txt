@@ -4,6 +4,7 @@
 
 # Fetch libvterm for terminal emulation
 include(${CMAKE_SOURCE_DIR}/cmake/FetchLibvterm.cmake)
+include(${CMAKE_SOURCE_DIR}/cmake/CompileShaders.cmake)
 
 # SHARED on Windows to avoid singleton duplication across .exe/.pyd boundary
 if(WIN32)
@@ -12,10 +13,15 @@ else()
     set(LFS_VIS_LIB_TYPE STATIC)
 endif()
 
+option(LFS_DEV_IMPORT_SOURCE_RESOURCES
+        "Load RmlUI resources and locales from source in non-portable builds"
+        ON)
+
 add_library(lfs_visualizer ${LFS_VIS_LIB_TYPE}
         # Core
         visualizer.cpp
         visualizer_impl.cpp
+        app_store.cpp
         core/main_loop.cpp
         core/data_loading_service.cpp
         core/editor_context.cpp
@@ -24,37 +30,37 @@ add_library(lfs_visualizer ${LFS_VIS_LIB_TYPE}
 
         # Window management
         window/window_manager.cpp
+        window/vulkan_context.cpp
+        window/vulkan_image_barrier_tracker.cpp
+        window/vulkan_loader_probe.cpp
 
         # Rendering
         rendering/camera_interaction_service.cpp
-        rendering/gt_texture_cache.cpp
-        rendering/image_texture_loader.cpp
-        rendering/render_frame_coordinator.cpp
-        rendering/render_pass_graph.cpp
         rendering/rendering_manager.cpp
         rendering/rendering_manager_events.cpp
         rendering/rendering_manager_frame.cpp
+        rendering/rendering_manager_vulkan.cpp
         rendering/rendering_manager_viewport.cpp
         rendering/split_view_composition.cpp
         rendering/split_view_service.cpp
         rendering/viewport_artifact_service.cpp
         rendering/viewport_frame_lifecycle_service.cpp
-        rendering/render_pass.cpp
         rendering/viewport_appearance_correction.cpp
         rendering/viewport_request_builder.cpp
+        rendering/passes/vulkan_scene_image_uploader.cpp
+        rendering/passes/vulkan_viewport_pass.cpp
+        rendering/passes/vulkan_mesh_pass.cpp
+        rendering/passes/vulkan_environment_pass.cpp
+        rendering/passes/vulkan_depth_blit_pass.cpp
+        rendering/passes/vulkan_split_view_pass.cpp
         rendering/framerate_controller.cpp
-        rendering/passes/overlay_pass.cpp
-        rendering/passes/splat_raster_pass.cpp
-        rendering/passes/mesh_pass.cpp
-        rendering/passes/present_pass.cpp
-        rendering/passes/point_cloud_pass.cpp
-        rendering/passes/split_view_pass.cpp
 
         # Theme system
         theme/theme.cpp
 
         # GUI system
         gui/gui_manager.cpp
+        gui/vulkan_ui_texture.cpp
         gui/global_context_menu.cpp
         gui/gizmo_manager.cpp
         gui/pie_menu.cpp
@@ -63,15 +69,20 @@ add_library(lfs_visualizer ${LFS_VIS_LIB_TYPE}
         gui/native_panels.cpp
         gui/layout_state.cpp
         gui/async_task_manager.cpp
+        gui/bounds_gizmo.cpp
+        gui/rotation_gizmo.cpp
+        gui/scale_gizmo.cpp
+        gui/translation_gizmo.cpp
         gui/video_export_utils.cpp
         gui/startup_overlay.cpp
         gui/rml_menu_bar.cpp
         gui/rml_right_panel.cpp
         gui/rml_shell_frame.cpp
         gui/rml_viewport_overlay.cpp
+        gui/vram_hud_overlay.cpp
         gui/rml_status_bar.cpp
         gui/gpu_memory_query.cpp
-        gui/gl_line_renderer.cpp
+        gui/line_renderer.cpp
         gui/rml_overlay_context.cpp
         gui/film_strip_renderer.cpp
         gui/sequencer_ui_manager.cpp
@@ -89,6 +100,7 @@ add_library(lfs_visualizer ${LFS_VIS_LIB_TYPE}
         gui/panels/python_scripts_panel.cpp
         gui/editor/python_lsp_client.cpp
         gui/editor/python_editor.cpp
+        gui/editor/zep_rml_display.cpp
         gui/editor/stdio_process.cpp
 
         # Terminal emulator
@@ -127,6 +139,8 @@ add_library(lfs_visualizer ${LFS_VIS_LIB_TYPE}
         # Sequencer (camera animation)
         sequencer/sequencer_controller.cpp
         sequencer/rml_sequencer_panel.cpp
+        sequencer/rml_sequencer_panel_timeline.cpp
+        sequencer/rml_sequencer_panel_timeline_input.cpp
 
         # Operator system (Blender-style)
         operator/operator_context.cpp
@@ -164,23 +178,30 @@ add_library(lfs_visualizer ${LFS_VIS_LIB_TYPE}
         # RmlUI integration
         gui/rmlui/rmlui_system_interface.cpp
         gui/rmlui/rml_text_input_handler.cpp
-        gui/rmlui/rmlui_render_interface.cpp
-        gui/rmlui/rmlui_gl3_backend.cpp
         gui/rmlui/rmlui_manager.cpp
-        gui/rmlui/rml_fbo.cpp
+        gui/rmlui/rml_document_utils.cpp
         gui/rmlui/rml_panel_host.cpp
         gui/rmlui/rml_theme.cpp
+        gui/rmlui/rml_tooltip.cpp
         gui/rmlui/elements/chromaticity_element.cpp
         gui/rmlui/elements/color_picker_element.cpp
         gui/rmlui/elements/crf_curve_element.cpp
         gui/rmlui/elements/loss_graph_element.cpp
+        gui/rmlui/elements/python_editor_element.cpp
         gui/rmlui/elements/scene_graph_element.cpp
+        gui/rmlui/elements/terminal_element.cpp
 )
 
-set_source_files_properties(
-        ${CMAKE_CURRENT_SOURCE_DIR}/gui/rmlui/rmlui_gl3_backend.cpp
-        PROPERTIES COMPILE_DEFINITIONS "RMLUI_GL3_CUSTOM_LOADER=<glad/glad.h>"
-)
+# MSVC 14.44 ICEs (C1001 in msc1.cpp:1589) on the sequencer panel TUs under
+# /std:c++latest in both Debug (/Od /RTC1) and Release (/O2 /Ob2). Pin them to
+# /std:c++23 (not "latest") and add /bigobj for the heavy tensor + RmlUI + fmt instantiations.
+if(MSVC)
+    set_source_files_properties(
+            ${CMAKE_CURRENT_SOURCE_DIR}/sequencer/rml_sequencer_panel.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/sequencer/rml_sequencer_panel_timeline.cpp
+            PROPERTIES COMPILE_OPTIONS "/std:c++23;/bigobj"
+    )
+endif()
 
 # Set include directories
 target_include_directories(lfs_visualizer
@@ -191,25 +212,23 @@ target_include_directories(lfs_visualizer
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_SOURCE_DIR}/src
         ${CMAKE_SOURCE_DIR}/external/httplib
-        ${OPENGL_INCLUDE_DIRS}
 )
 
 target_link_libraries(lfs_visualizer
         PRIVATE
         lfs_core
+        lfs_diagnostics
         lfs_video
         lfs_geometry
         lfs_io
-        lfs_rendering
+        lfs_rendering_tensor
         lfs_training
         lfs_python_runtime
         lfs_python_utils
         lfs_sequencer
-        glad::glad
         SDL3::SDL3
         imgui::imgui
         implot::implot
-        imguizmo::imguizmo
         Zep::Zep
         glm::glm
         TBB::tbb
@@ -219,9 +238,75 @@ target_link_libraries(lfs_visualizer
         OpenSSL::Crypto
         CUDA::cudart
         nfd::nfd
-        ${OPENGL_LIBRARIES}
         vterm
 )
+
+# Linux folder pickers bypass NFD and call GTK directly so they can return
+# the currently-open folder rather than the highlighted child. Set up by
+# cmake/SetupNativeFileDialog.cmake.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET PkgConfig::LFS_GTK3)
+    target_link_libraries(lfs_visualizer PRIVATE PkgConfig::LFS_GTK3)
+endif()
+
+target_sources(lfs_visualizer
+        PRIVATE
+        gui/rmlui/rmlui_vk_backend.cpp
+        rendering/vksplat_input_packer.cpp
+        rendering/vksplat_input_packer_cuda.cu
+        rendering/vksplat_viewport_renderer.cpp
+        rendering/vulkan_external_tensor.cpp
+        rendering/point_cloud_vulkan_renderer.cpp)
+set(glslang_DIR "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/share/glslang"
+    CACHE PATH "Path to vcpkg-installed glslang config" FORCE)
+find_package(glslang CONFIG REQUIRED)
+
+add_executable(lfs_shader_compiler EXCLUDE_FROM_ALL
+        tools/shader_compiler.cpp)
+target_compile_features(lfs_shader_compiler PRIVATE cxx_std_23)
+target_link_libraries(lfs_shader_compiler
+        PRIVATE
+        glslang::glslang
+        glslang::SPIRV
+        glslang::glslang-default-resource-limits)
+
+set(LFS_VIEWPORT_SHADER_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/rendering/resources/viewport")
+set(LFS_VIEWPORT_SHADER_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/shaders/viewport")
+target_include_directories(lfs_visualizer PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/shaders")
+compile_shader(lfs_visualizer "${LFS_VIEWPORT_SHADER_SOURCE_DIR}/screen_quad.vert" "${LFS_VIEWPORT_SHADER_BINARY_DIR}/screen_quad.vert.spv.h" kScreenQuadVertSpv)
+compile_shader(lfs_visualizer "${LFS_VIEWPORT_SHADER_SOURCE_DIR}/scene.frag" "${LFS_VIEWPORT_SHADER_BINARY_DIR}/scene.frag.spv.h" kSceneFragSpv)
+compile_shader(lfs_visualizer "${LFS_VIEWPORT_SHADER_SOURCE_DIR}/vignette.frag" "${LFS_VIEWPORT_SHADER_BINARY_DIR}/vignette.frag.spv.h" kVignetteFragSpv)
+compile_shader(lfs_visualizer "${LFS_VIEWPORT_SHADER_SOURCE_DIR}/grid.vert" "${LFS_VIEWPORT_SHADER_BINARY_DIR}/grid.vert.spv.h" kGridVertSpv)
+compile_shader(lfs_visualizer "${LFS_VIEWPORT_SHADER_SOURCE_DIR}/grid.frag" "${LFS_VIEWPORT_SHADER_BINARY_DIR}/grid.frag.spv.h" kGridFragSpv)
+compile_shader(lfs_visualizer "${LFS_VIEWPORT_SHADER_SOURCE_DIR}/overlay.vert" "${LFS_VIEWPORT_SHADER_BINARY_DIR}/overlay.vert.spv.h" kOverlayVertSpv)
+compile_shader(lfs_visualizer "${LFS_VIEWPORT_SHADER_SOURCE_DIR}/overlay.frag" "${LFS_VIEWPORT_SHADER_BINARY_DIR}/overlay.frag.spv.h" kOverlayFragSpv)
+compile_shader(lfs_visualizer "${LFS_VIEWPORT_SHADER_SOURCE_DIR}/shape_overlay.vert" "${LFS_VIEWPORT_SHADER_BINARY_DIR}/shape_overlay.vert.spv.h" kShapeOverlayVertSpv)
+compile_shader(lfs_visualizer "${LFS_VIEWPORT_SHADER_SOURCE_DIR}/shape_overlay.frag" "${LFS_VIEWPORT_SHADER_BINARY_DIR}/shape_overlay.frag.spv.h" kShapeOverlayFragSpv)
+compile_shader(lfs_visualizer "${LFS_VIEWPORT_SHADER_SOURCE_DIR}/textured_overlay.vert" "${LFS_VIEWPORT_SHADER_BINARY_DIR}/textured_overlay.vert.spv.h" kTexturedOverlayVertSpv)
+compile_shader(lfs_visualizer "${LFS_VIEWPORT_SHADER_SOURCE_DIR}/textured_overlay.frag" "${LFS_VIEWPORT_SHADER_BINARY_DIR}/textured_overlay.frag.spv.h" kTexturedOverlayFragSpv)
+compile_shader(lfs_visualizer "${LFS_VIEWPORT_SHADER_SOURCE_DIR}/pivot.vert" "${LFS_VIEWPORT_SHADER_BINARY_DIR}/pivot.vert.spv.h" kPivotVertSpv)
+compile_shader(lfs_visualizer "${LFS_VIEWPORT_SHADER_SOURCE_DIR}/pivot.frag" "${LFS_VIEWPORT_SHADER_BINARY_DIR}/pivot.frag.spv.h" kPivotFragSpv)
+compile_shader(lfs_visualizer "${LFS_VIEWPORT_SHADER_SOURCE_DIR}/mesh.vert" "${LFS_VIEWPORT_SHADER_BINARY_DIR}/mesh.vert.spv.h" kMeshVertSpv)
+compile_shader(lfs_visualizer "${LFS_VIEWPORT_SHADER_SOURCE_DIR}/mesh.frag" "${LFS_VIEWPORT_SHADER_BINARY_DIR}/mesh.frag.spv.h" kMeshFragSpv)
+compile_shader(lfs_visualizer "${LFS_VIEWPORT_SHADER_SOURCE_DIR}/mesh_shadow.vert" "${LFS_VIEWPORT_SHADER_BINARY_DIR}/mesh_shadow.vert.spv.h" kMeshShadowVertSpv)
+compile_shader(lfs_visualizer "${LFS_VIEWPORT_SHADER_SOURCE_DIR}/mesh_shadow.frag" "${LFS_VIEWPORT_SHADER_BINARY_DIR}/mesh_shadow.frag.spv.h" kMeshShadowFragSpv)
+compile_shader(lfs_visualizer "${LFS_VIEWPORT_SHADER_SOURCE_DIR}/mesh_wireframe.vert" "${LFS_VIEWPORT_SHADER_BINARY_DIR}/mesh_wireframe.vert.spv.h" kMeshWireframeVertSpv)
+compile_shader(lfs_visualizer "${LFS_VIEWPORT_SHADER_SOURCE_DIR}/mesh_wireframe.frag" "${LFS_VIEWPORT_SHADER_BINARY_DIR}/mesh_wireframe.frag.spv.h" kMeshWireframeFragSpv)
+compile_shader(lfs_visualizer "${LFS_VIEWPORT_SHADER_SOURCE_DIR}/environment.frag" "${LFS_VIEWPORT_SHADER_BINARY_DIR}/environment.frag.spv.h" kEnvironmentFragSpv)
+compile_shader(lfs_visualizer "${LFS_VIEWPORT_SHADER_SOURCE_DIR}/depth_blit.frag" "${LFS_VIEWPORT_SHADER_BINARY_DIR}/depth_blit.frag.spv.h" kDepthBlitFragSpv)
+compile_shader(lfs_visualizer "${LFS_VIEWPORT_SHADER_SOURCE_DIR}/split_view.frag" "${LFS_VIEWPORT_SHADER_BINARY_DIR}/split_view.frag.spv.h" kSplitViewFragSpv)
+compile_shader(lfs_visualizer "${LFS_VIEWPORT_SHADER_SOURCE_DIR}/vksplat_compose.comp" "${LFS_VIEWPORT_SHADER_BINARY_DIR}/vksplat_compose.comp.spv.h" kVkSplatComposeCompSpv)
+compile_shader(lfs_visualizer "${LFS_VIEWPORT_SHADER_SOURCE_DIR}/point_cloud.vert" "${LFS_VIEWPORT_SHADER_BINARY_DIR}/point_cloud.vert.spv.h" kPointCloudVertSpv)
+compile_shader(lfs_visualizer "${LFS_VIEWPORT_SHADER_SOURCE_DIR}/point_cloud.frag" "${LFS_VIEWPORT_SHADER_BINARY_DIR}/point_cloud.frag.spv.h" kPointCloudFragSpv)
+
+target_link_libraries(lfs_visualizer
+        PRIVATE
+        Vulkan::Vulkan
+        GPUOpen::VulkanMemoryAllocator
+        volk::volk_headers)
+target_link_libraries(lfs_visualizer PRIVATE lfs_vulkan_rasterizer)
+if(WIN32)
+    target_compile_definitions(lfs_visualizer PRIVATE VK_USE_PLATFORM_WIN32_KHR)
+endif()
 
 # RmlUI: on Linux, lfs_visualizer is STATIC and gets linked into both the
 # exe and the Python .so, which would duplicate librmlui.a globals and cause
@@ -269,42 +354,47 @@ endif()
 # Set C++ standard
 target_compile_features(lfs_visualizer PUBLIC cxx_std_23)
 
+set_target_properties(lfs_visualizer PROPERTIES
+    CUDA_STANDARD 20
+    CUDA_STANDARD_REQUIRED ON
+    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
 if(WIN32)
     set_target_properties(lfs_visualizer PROPERTIES
         POSITION_INDEPENDENT_CODE ON
         CXX_VISIBILITY_PRESET hidden
         VISIBILITY_INLINES_HIDDEN ON
-        LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
-        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
-        RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_BINARY_DIR}
-        RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}
-        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO ${CMAKE_BINARY_DIR}
-        RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL ${CMAKE_BINARY_DIR}
+    )
+endif()
+get_property(_IS_MULTI_CONFIG GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if(WIN32 AND _IS_MULTI_CONFIG)
+    set_target_properties(lfs_visualizer PROPERTIES
+        LIBRARY_OUTPUT_DIRECTORY              ${CMAKE_BINARY_DIR}/$<CONFIG>
+        RUNTIME_OUTPUT_DIRECTORY              ${CMAKE_BINARY_DIR}/$<CONFIG>
+        RUNTIME_OUTPUT_DIRECTORY_DEBUG        ${CMAKE_BINARY_DIR}/Debug
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE      ${CMAKE_BINARY_DIR}/Release
+        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO ${CMAKE_BINARY_DIR}/RelWithDebInfo
+        RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL   ${CMAKE_BINARY_DIR}/MinSizeRel
     )
 endif()
 
 # Compiler options
 target_compile_options(lfs_visualizer PRIVATE
-        $<$<CXX_COMPILER_FRONTEND_VARIANT:GNU>:-Wall -Wextra -Wpedantic>
-        $<$<CXX_COMPILER_FRONTEND_VARIANT:MSVC>:/W4>
-        $<$<AND:$<CONFIG:Debug>,$<CXX_COMPILER_ID:GNU,Clang>>:-O0 -g>
-        $<$<AND:$<CONFIG:Release>,$<CXX_COMPILER_ID:GNU,Clang>>:-O3>
+        $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_FRONTEND_VARIANT:GNU>>:-Wall -Wextra -Wpedantic>
+        $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_FRONTEND_VARIANT:MSVC>>:/W4>
+        $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Debug>,$<CXX_COMPILER_ID:GNU,Clang>>:-O0 -g>
+        $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Release>,$<CXX_COMPILER_ID:GNU,Clang>>:-O3>
 )
 
 # Handle resources (shaders and assets)
 set(VISUALIZER_BUILD_RESOURCE_DIR "${CMAKE_CURRENT_BINARY_DIR}/resources")
 set(VISUALIZER_SOURCE_RESOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/resources")
+set(RENDERING_SOURCE_RESOURCE_DIR "${PROJECT_SOURCE_DIR}/src/rendering/resources")
 
 # Create resource directories in build folder
-file(MAKE_DIRECTORY "${VISUALIZER_BUILD_RESOURCE_DIR}/shaders")
 file(MAKE_DIRECTORY "${VISUALIZER_BUILD_RESOURCE_DIR}/assets")
-
-# Copy shaders to build directory
-file(GLOB SHADER_FILES CONFIGURE_DEPENDS "${VISUALIZER_SOURCE_RESOURCE_DIR}/shaders/*")
-foreach (SHADER_FILE ${SHADER_FILES})
-    get_filename_component(SHADER_NAME ${SHADER_FILE} NAME)
-    configure_file(${SHADER_FILE} "${VISUALIZER_BUILD_RESOURCE_DIR}/shaders/${SHADER_NAME}" COPYONLY)
-endforeach ()
+file(MAKE_DIRECTORY "${VISUALIZER_BUILD_RESOURCE_DIR}/assets/fonts")
 
 # Copy assets from resources/assets if they exist
 file(GLOB ASSET_FILES CONFIGURE_DEPENDS "${VISUALIZER_SOURCE_RESOURCE_DIR}/assets/*")
@@ -322,6 +412,17 @@ foreach (GUI_ASSET_FILE ${GUI_ASSET_FILES})
     if (EXISTS ${GUI_ASSET_FILE} AND NOT IS_DIRECTORY ${GUI_ASSET_FILE})
         get_filename_component(ASSET_NAME ${GUI_ASSET_FILE} NAME)
         configure_file(${GUI_ASSET_FILE} "${VISUALIZER_BUILD_RESOURCE_DIR}/assets/${ASSET_NAME}" COPYONLY)
+    endif ()
+endforeach ()
+
+set(RENDERING_FONT_FILES
+        "${RENDERING_SOURCE_RESOURCE_DIR}/assets/JetBrainsMono-Regular.ttf"
+)
+
+foreach (RENDERING_FONT_FILE ${RENDERING_FONT_FILES})
+    if (EXISTS ${RENDERING_FONT_FILE} AND NOT IS_DIRECTORY ${RENDERING_FONT_FILE})
+        get_filename_component(FONT_NAME ${RENDERING_FONT_FILE} NAME)
+        configure_file(${RENDERING_FONT_FILE} "${VISUALIZER_BUILD_RESOURCE_DIR}/assets/fonts/${FONT_NAME}" COPYONLY)
     endif ()
 endforeach ()
 
@@ -349,6 +450,16 @@ foreach (ICON_FILE ${SEQUENCER_ICON_FILES})
     configure_file(${ICON_FILE} "${VISUALIZER_BUILD_RESOURCE_DIR}/assets/icon/sequencer/${ICON_NAME}" COPYONLY)
 endforeach ()
 
+# Copy bundled environment maps
+file(MAKE_DIRECTORY "${VISUALIZER_BUILD_RESOURCE_DIR}/assets/environments")
+file(GLOB ENVIRONMENT_ASSET_FILES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/gui/assets/environments/*")
+foreach (ENVIRONMENT_ASSET_FILE ${ENVIRONMENT_ASSET_FILES})
+    if (EXISTS ${ENVIRONMENT_ASSET_FILE} AND NOT IS_DIRECTORY ${ENVIRONMENT_ASSET_FILE})
+        get_filename_component(ENVIRONMENT_ASSET_NAME ${ENVIRONMENT_ASSET_FILE} NAME)
+        configure_file(${ENVIRONMENT_ASSET_FILE} "${VISUALIZER_BUILD_RESOURCE_DIR}/assets/environments/${ENVIRONMENT_ASSET_NAME}" COPYONLY)
+    endif ()
+endforeach ()
+
 # Copy RmlUI resources (re-copy on every build so edits are picked up)
 file(MAKE_DIRECTORY "${VISUALIZER_BUILD_RESOURCE_DIR}/assets/rmlui")
 file(GLOB RMLUI_RESOURCE_FILES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/gui/rmlui/resources/*")
@@ -357,6 +468,8 @@ foreach (RMLUI_FILE ${RMLUI_RESOURCE_FILES})
     configure_file(${RMLUI_FILE} "${VISUALIZER_BUILD_RESOURCE_DIR}/assets/rmlui/${RMLUI_NAME}" COPYONLY)
 endforeach ()
 add_custom_target(copy_rmlui_resources ALL
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${VISUALIZER_BUILD_RESOURCE_DIR}/assets/rmlui"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${VISUALIZER_BUILD_RESOURCE_DIR}/assets/rmlui"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         ${RMLUI_RESOURCE_FILES}
         "${VISUALIZER_BUILD_RESOURCE_DIR}/assets/rmlui/"
@@ -372,16 +485,24 @@ foreach (LOCALE_FILE ${LOCALE_FILES})
     configure_file(${LOCALE_FILE} "${VISUALIZER_BUILD_RESOURCE_DIR}/locales/${LOCALE_NAME}" COPYONLY)
 endforeach ()
 
+set(LFS_VISUALIZER_DEV_RESOURCE_DEFINITIONS)
+if(LFS_DEV_IMPORT_SOURCE_RESOURCES AND NOT BUILD_PORTABLE)
+    list(APPEND LFS_VISUALIZER_DEV_RESOURCE_DEFINITIONS
+            LFS_DEV_RMLUI_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/gui/rmlui/resources"
+            LFS_DEV_LOCALE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/gui/resources/locales"
+    )
+    message(STATUS "Resource dev mode: RmlUI imports from ${CMAKE_CURRENT_SOURCE_DIR}/gui/rmlui/resources")
+    message(STATUS "Resource dev mode: locales import from ${CMAKE_CURRENT_SOURCE_DIR}/gui/resources/locales")
+endif()
+
 # Compile definitions
 target_compile_definitions(lfs_visualizer PRIVATE
         LFS_VIS_EXPORTS
-        $<$<BOOL:${CUDA_GL_INTEROP_ENABLED}>:CUDA_GL_INTEROP_ENABLED>
         PROJECT_ROOT_PATH="${PROJECT_SOURCE_DIR}"
-        VISUALIZER_SHADER_PATH="${VISUALIZER_BUILD_RESOURCE_DIR}/shaders"
         VISUALIZER_ASSET_PATH="${VISUALIZER_BUILD_RESOURCE_DIR}/assets"
         VISUALIZER_LOCALE_PATH="${VISUALIZER_BUILD_RESOURCE_DIR}/locales"
-        VISUALIZER_SOURCE_SHADER_PATH="${VISUALIZER_SOURCE_RESOURCE_DIR}/shaders"
         VISUALIZER_SOURCE_ASSET_PATH="${VISUALIZER_SOURCE_RESOURCE_DIR}/assets"
+        ${LFS_VISUALIZER_DEV_RESOURCE_DEFINITIONS}
         $<$<CONFIG:Debug>:DEBUG_BUILD>
         $<$<CONFIG:Release>:RELEASE_BUILD>
 )
@@ -397,10 +518,8 @@ if (WIN32)
             Shell32     # SHChangeNotify (file association)
             dxgi        # DXGI per-process VRAM query
     )
-elseif (UNIX AND NOT APPLE)
+elseif (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_libraries(lfs_visualizer PRIVATE
-            GL
-            GLU
             X11
             util  # PTY support (forkpty)
     )
@@ -412,11 +531,12 @@ if(NOT BUILD_PORTABLE)
 endif()
 
 # Optionally install resources
+install(FILES ${RENDERING_SOURCE_RESOURCE_DIR}/assets/JetBrainsMono-Regular.ttf
+        DESTINATION share/LichtFeld-Studio/visualizer/resources/assets/fonts)
+
 install(DIRECTORY ${VISUALIZER_SOURCE_RESOURCE_DIR}/
         DESTINATION share/LichtFeld-Studio/visualizer/resources
         FILES_MATCHING
-        PATTERN "*.vert"
-        PATTERN "*.frag"
         PATTERN "*.ttf"
 )
 
@@ -429,8 +549,6 @@ install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/gui/resources/locales/
 
 # Add custom target for resource files (makes them show up in IDEs)
 file(GLOB_RECURSE VISUALIZER_RESOURCE_FILES
-        "${VISUALIZER_SOURCE_RESOURCE_DIR}/shaders/*.vert"
-        "${VISUALIZER_SOURCE_RESOURCE_DIR}/shaders/*.frag"
         "${VISUALIZER_SOURCE_RESOURCE_DIR}/assets/*.ttf"
 )
 if (VISUALIZER_RESOURCE_FILES)

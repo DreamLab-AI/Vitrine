@@ -129,9 +129,9 @@ namespace lfs::python {
         PySubLayout grid_flow(int columns = 0, bool even_columns = true, bool even_rows = true);
 
         void label(const std::string& text);
-        bool button(const std::string& label, std::tuple<float, float> size = {0, 0});
+        bool button(const std::string& label, std::tuple<float, float> size = {0.0f, 0.0f});
         bool button_styled(const std::string& label, const std::string& style,
-                           std::tuple<float, float> size = {0, 0});
+                           std::tuple<float, float> size = {0.0f, 0.0f});
         std::tuple<bool, nb::object> prop(nb::object data, const std::string& prop_id,
                                           std::optional<std::string> text = std::nullopt);
         std::tuple<bool, bool> checkbox(const std::string& label, bool value);
@@ -338,9 +338,9 @@ namespace lfs::python {
         void bullet_text(const std::string& text);
 
         // Buttons
-        bool button(const std::string& label, std::tuple<float, float> size = {0, 0});
+        bool button(const std::string& label, std::tuple<float, float> size = {0.0f, 0.0f});
         bool button_callback(const std::string& label, nb::object callback,
-                             std::tuple<float, float> size = {0, 0});
+                             std::tuple<float, float> size = {0.0f, 0.0f});
         bool small_button(const std::string& label);
         std::tuple<bool, bool> checkbox(const std::string& label, bool value);
         std::tuple<bool, int> radio_button(const std::string& label, int current, int value);
@@ -383,7 +383,7 @@ namespace lfs::python {
         std::tuple<bool, std::tuple<float, float, float>> color_picker3(const std::string& label,
                                                                         std::tuple<float, float, float> color);
         bool color_button(const std::string& label, nb::object color,
-                          std::tuple<float, float> size = {0, 0});
+                          std::tuple<float, float> size = {0.0f, 0.0f});
 
         // Selection
         std::tuple<bool, int> combo(const std::string& label, int current_idx,
@@ -421,7 +421,7 @@ namespace lfs::python {
 
         // Styled buttons
         bool button_styled(const std::string& label, const std::string& style,
-                           std::tuple<float, float> size = {0, 0});
+                           std::tuple<float, float> size = {0.0f, 0.0f});
 
         // Item width stack
         void push_item_width(float width);
@@ -430,7 +430,7 @@ namespace lfs::python {
         // Plots
         void plot_lines(const std::string& label, const std::vector<float>& values,
                         float scale_min = FLT_MAX, float scale_max = FLT_MAX,
-                        std::tuple<float, float> size = {0, 0});
+                        std::tuple<float, float> size = {0.0f, 0.0f});
 
         // Selectable
         bool selectable(const std::string& label, bool selected = false, float height = 0.0f);
@@ -477,7 +477,7 @@ namespace lfs::python {
         void begin_disabled(bool disabled = true);
         void end_disabled();
 
-        // Images (texture_id is OpenGL texture handle as uint64)
+        // Images (texture_id is an opaque ImGui backend texture handle as uint64)
         void image(uint64_t texture_id, std::tuple<float, float> size,
                    nb::object tint = nb::none());
         void image_uv(uint64_t texture_id, std::tuple<float, float> size,
@@ -733,11 +733,19 @@ namespace lfs::python {
         float toolbar_spacing;
     };
 
+    struct PyThemeVignette {
+        bool enabled;
+        float intensity;
+        float radius;
+        float softness;
+    };
+
     // Theme wrapper (read-only)
     struct PyTheme {
         std::string name;
         PyThemePalette palette;
         PyThemeSizes sizes;
+        PyThemeVignette vignette;
     };
 
     // Get current theme
@@ -775,13 +783,14 @@ namespace lfs::python {
         void invoke(const std::string& panel,
                     const std::string& section,
                     PyHookPosition position);
-        void invoke_document(const std::string& panel,
+        bool invoke_document(const std::string& panel,
                              const std::string& section,
                              Rml::ElementDocument* document,
                              PyHookPosition position);
 
         // Check if hooks exist
         bool has_hooks(const std::string& panel, const std::string& section) const;
+        bool has_hooks(const std::string& panel, const std::string& section, PyHookPosition position) const;
 
         // Get all registered hook points
         std::vector<std::string> get_hook_points() const;
@@ -795,6 +804,7 @@ namespace lfs::python {
         struct HookEntry {
             nb::object callback;
             PyHookPosition position;
+            std::string name;
         };
 
         mutable std::mutex mutex_;

@@ -4,6 +4,7 @@
 #pragma once
 
 #include "core/export.hpp"
+#include "cuda_stream_context.hpp"
 
 #include <cstddef> // for size_t
 #include <cstdint>
@@ -59,6 +60,7 @@ namespace lfs::core {
         const TensorShape& shape() const { return derived().shape_impl(); }
         Device device() const { return derived().device_impl(); }
         DataType dtype() const { return derived().dtype_impl(); }
+        cudaStream_t stream_hint() const { return derived().stream_hint_impl(); }
     };
 
     // ============================================================================
@@ -78,6 +80,7 @@ namespace lfs::core {
         const TensorShape& shape_impl() const;
         Device device_impl() const;
         DataType dtype_impl() const;
+        cudaStream_t stream_hint_impl() const;
 
         // Enable chaining of operations (template methods must be defined in header)
         // Definition is after UnaryExpr is fully defined (see below line 240)
@@ -128,6 +131,7 @@ namespace lfs::core {
         const TensorShape& shape_impl() const { return shape_; }
         Device device_impl() const { return device_; }
         DataType dtype_impl() const { return dtype_; }
+        cudaStream_t stream_hint_impl() const { return input_.stream_hint(); }
     };
 
     // ============================================================================
@@ -168,6 +172,7 @@ namespace lfs::core {
         const TensorShape& shape_impl() const { return shape_; }
         Device device_impl() const { return device_; }
         DataType dtype_impl() const { return dtype_; }
+        cudaStream_t stream_hint_impl() const { return inner_expr_.stream_hint(); }
     };
 
     // ============================================================================
@@ -208,6 +213,15 @@ namespace lfs::core {
         const TensorShape& shape_impl() const { return shape_; }
         Device device_impl() const { return device_; }
         DataType dtype_impl() const { return dtype_; }
+        cudaStream_t stream_hint_impl() const {
+            if (cudaStream_t current = getCurrentCUDAStream()) {
+                return current;
+            }
+            if (cudaStream_t left = left_.stream_hint()) {
+                return left;
+            }
+            return right_.stream_hint();
+        }
     };
 
     // ============================================================================
@@ -245,6 +259,7 @@ namespace lfs::core {
         const TensorShape& shape_impl() const { return shape_; }
         Device device_impl() const { return device_; }
         DataType dtype_impl() const { return dtype_; }
+        cudaStream_t stream_hint_impl() const { return input_.stream_hint(); }
     };
 
     // ============================================================================
@@ -286,6 +301,15 @@ namespace lfs::core {
         const TensorShape& shape_impl() const { return shape_; }
         Device device_impl() const { return device_; }
         DataType dtype_impl() const { return dtype_; }
+        cudaStream_t stream_hint_impl() const {
+            if (cudaStream_t current = getCurrentCUDAStream()) {
+                return current;
+            }
+            if (cudaStream_t input = input_.stream_hint()) {
+                return input;
+            }
+            return indices_.stream_hint();
+        }
     };
 
     // ============================================================================
@@ -317,6 +341,7 @@ namespace lfs::core {
         const TensorShape& shape_impl() const { return shape_; }
         Device device_impl() const { return device_; }
         DataType dtype_impl() const { return dtype_; }
+        cudaStream_t stream_hint_impl() const { return perm_expr_.stream_hint(); }
     };
 
     // ============================================================================

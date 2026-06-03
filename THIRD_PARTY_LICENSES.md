@@ -7,6 +7,8 @@ This project builds upon and is inspired by the following:
 |---------|-------------|---------|
 | [3D Gaussian Splatting](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/) | Original work by Kerbl et al. | Custom |
 | [gsplat](https://github.com/nerfstudio-project/gsplat) | Optimized CUDA rasterization backend | Apache-2.0 |
+| [VkSplat](https://github.com/vksplat/vksplat) | High-performance 3DGS training in Vulkan compute | Apache-2.0 |
+| [PPISP](https://github.com/nv-tlabs/ppisp) | Physically-Plausible Image Signal Processing for radiance field reconstruction | Apache-2.0 |
 
 ## Gaussian Splatting Tools & Inspiration
 | Project | Description | License |
@@ -46,7 +48,6 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 | Project | Description | License |
 |---------|-------------|---------|
 | [Dear ImGui](https://github.com/ocornut/imgui) | Immediate mode GUI library | MIT |
-| [ImGuizmo](https://github.com/CedricGuillemet/ImGuizmo) | Gizmo manipulation for ImGui | MIT |
 | [SDL3](https://www.libsdl.org/) | Window/input/context management | zlib |
 | [GLM](https://github.com/g-truc/glm) | OpenGL Mathematics library | MIT |
 | [glad](https://github.com/Dav1dde/glad) | OpenGL loader | MIT |
@@ -91,3 +92,10 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 |---------|-------------|---------|
 | [Tabler Icons](https://github.com/tabler/tabler-icons) | UI icons | MIT |
 | [Lucide Icons](https://github.com/lucide-icons/lucide) | UI icons (fork of Feather) | ISC |
+
+## Fonts
+| Project | Description | License |
+|---------|-------------|---------|
+| [JetBrains Mono](https://github.com/jetbrains/jetbrainsmono) | A typeface made for developers | OFL-1.1 |
+| [Inter](https://github.com/rsms/inter) | A typeface carefully crafted & designed for computer screens | OFL-1.1 |
+| [Noto](https://fonts.google.com/noto) | A typeface for the world | OFL-1.1 |
