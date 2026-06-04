@@ -173,7 +173,7 @@ RUN pip3 install --break-system-packages --ignore-installed \
         pillow piexif av yt-dlp huggingface_hub requests aiohttp flask sqlalchemy \
         filelock tqdm pyyaml blake3 kornia spandrel einops \
         plyfile numpy scipy opencv-python-headless \
-        segment-anything psutil gsplat \
+        segment-anything psutil gsplat pytest \
     && pip3 install --break-system-packages \
         "sam-2==1.1.0" || pip3 install --break-system-packages \
         "segment-anything-2" || echo "SAM2 pip install skipped — using ComfyUI SAM2 nodes instead" \
