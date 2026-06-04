@@ -67,8 +67,13 @@ profile — it does **not** redesign the selection policy (that is ADR-003's rem
 | O9 | Environment surface | Scenes with a real textured polygonal environment mesh prim under `/World/Environment` | 100% |
 | O10 | Resumability | Pipeline restart after kill resumes at the failed *video* / *stage*, no redo of completed work | 100% of restart cases |
 | O11 | Reproducibility | Same input + profile → byte-identical metadata schema, deterministic stage order | 100% |
+| O12 | SOTA mesh + matching | Default mesh = MILo; indoor SfM = ALIKED+LightGlue (not TSDF/SIFT) | 100% of default runs |
+| O13 | SOTA generative models | Hull = Hunyuan3D-2.1; inpaint = FLUX.1 Kontext (with declared fallbacks) | 100% where checkpoints present |
+| O14 | Build reproducibility | Pinned version/commit for every model + tool (no HEAD clones) | 100% of build inputs pinned |
+| O15 | Semantic artifact rejection | VLM-flagged artifact frames vetoed/repaired before pooling, vs analyst ground truth | ≥ 90% precision on test scene |
+| O16 | Metadata-aware scaffolding | Reconstruction candidates selected with VLM + capture metadata in the loop | 100% of candidates carry a fused score |
 
-Success is the conjunction O1–O11 on the curated test scene, verified by the §6 quality gates.
+Success is the conjunction O1–O16 on the curated test scene, verified by the §6 quality gates.
 
 ---
 
@@ -209,7 +214,43 @@ Each FR is tagged with the delta IDs it closes and the file it touches. Grouped 
 - **FR-19** — Provide a lineage-resolution query: given a USD object prim, return its source
   video and contributing frames via the `v2g:*` lineage attributes. *Closes D14.*
 
-**FR count: 19.**
+### Cross-cutting — SOTA tooling modernisation (`config.py`, Dockerfiles, `hunyuan3d_client.py`, `comfyui_inpainter.py`, new VLM stage) — ADR-012
+
+These FRs are infrastructure, applied across phases; they realise the **T-series** gaps (gap
+analysis §6) and are decided by **ADR-012**. `†` marks items requiring a model pull / HF token.
+
+- **FR-20\*** — Flip the default mesh backend from `tsdf` to **MILo** (`config.py:60`); keep TSDF as
+  the no-sidecar fallback in `_select_mesh_backend()` (`stages.py:895-941`). No change to the ADR-003
+  selection *policy*. *Closes T1.*
+- **FR-21** — Add **learned features + matching** to COLMAP: `feature ∈ {sift, aliked}` and
+  `matcher += lightglue` (`config.py:40`); route `_run_colmap_direct()` (`stages.py:624`) through
+  COLMAP 4.1 ALIKED+LightGlue, default for indoor presets, `sift+exhaustive` fallback. *Closes T2.*
+- **FR-22†** — Upgrade the image-to-3D hull backend to **Hunyuan3D-2.1** (`hunyuan3d_client.py:61,77`)
+  behind a capability probe that degrades to 2.0. *Closes T3.*
+- **FR-23†** — Upgrade the inpainter to **FLUX.1 Kontext** (`comfyui_inpainter.py:88`); ADR-010 FR-11
+  targets Kontext from the outset; degrade to FLUX.1-Fill if absent. *Closes T4.*
+- **FR-24†** — Add an optional **neural feed-forward SfM** branch `sfm ∈ {colmap, vggt, mast3r}`
+  feeding the same posed-image contract; COLMAP stays the accuracy default. *Closes T5.*
+- **FR-25\*** — **Pin every model and tool** to a tag/commit (COLMAP, gsplat, ComfyUI, SAM3, PyTorch,
+  usd-core) across all Dockerfiles; no unpinned HEAD clones. Build-layer realisation of NFR-5.
+  *Closes T6.*
+- **FR-26** — **Adopt native v0.5.x + plugin ecosystem** where it replaces custom code: install/pin
+  `splat_ready` (or remove the dead reference `stages.py:574`); enable PPISP / bilateral-grid /
+  3DGUT / ImprovedGS+ training flags per-preset (`stages.py:748-756`); evaluate native USD export
+  vs `scripts/assemble_usd_scene.py` for the `v2g:*` schema. *Closes T7.*
+- **FR-27\*†** — Add a **VLM artifact-analysis** stage the containerised agent calls on photometric
+  survivors: a pinned local VLM (Qwen2.5-VL / InternVL3) emits a typed `artifact_report` (motion
+  ghosting, rolling-shutter, specular blowout, flare, transient occluders, compression blocking;
+  label + confidence + bbox) written as a `vlm` block in the ADR-009 per-frame sidecar. *Closes T8.*
+- **FR-28\*** — **Metadata-aware candidate scaffolding.** Ingest per-capture/project metadata
+  (camera/lens, capture session, operator notes, EXIF/SRT GPS) as an additive `capture` sidecar
+  block, and fuse it with the FR-27 `artifact_report` and the FR-3 photometric tags to rank/scaffold
+  reconstruction candidates: Fibonacci coverage (ADR-007) as geometric prior, VLM artifact score as
+  semantic veto, occluder/blowout regions flagged for FLUX inpaint (FR-11). The agent **annotates,
+  never silently drops**; every veto/repair reason is recorded in the ledger and `v2g:*` lineage.
+  *Closes T8.*
+
+**FR count: 28** (19 workflow-shape + 9 tooling).
 
 ---
 
@@ -262,8 +303,14 @@ one threshold). The pipeline **fails closed** on any gate marked blocking.
 | G15 Profile reproducibility | D4 | Repeat run, same profile → identical schema + stage order | 100% | Re-run; diff metadata schema + stage log | No |
 | G16 Resume correctness | D5 | Killed run resumes at failed video/stage, no redo | 100% | Inject kill; assert no completed video re-processed | No |
 | G17 Secret handling | NFR-4 | Credentials absent from env/image; present as Docker secret | Pass | `docker inspect` + image-layer scan find no plaintext cred | Yes |
+| G-T1 Mesh default | T1 | Default `mesh_method` resolves to MILo (TSDF only on sidecar-down) | Pass | Assert config default == milo; fallback path covered | Yes |
+| G-T2 Learned matching | T2 | Indoor preset SfM uses ALIKED+LightGlue | Pass | Inspect COLMAP feature/matcher in run log | No |
+| G-T3 Model versions | T3, T4 | Hull == Hunyuan3D-2.1, inpaint == FLUX Kontext (or declared fallback logged) | Pass | Assert requested model IDs; fallback emits explicit log | Yes |
+| G-T4 Pins | T6 | Every model/tool pinned to tag/commit (no HEAD) | 100% | Scan Dockerfiles for unpinned clones / bare pip | Yes |
+| G-T5 VLM artifact precision | T8 | VLM-vetoed frames that are genuine artifacts vs analyst GT | ≥ 90% | Compare `artifact_report` vetoes vs ground truth on test scene | Yes |
+| G-T6 Fused scaffolding | T8 | Pooled candidates carry a fused (photometric + VLM + capture) score, no silent drops | 100% | Assert every pooled frame has a recorded score + every veto a reason | Yes |
 
-**Gate count: 17.**
+**Gate count: 23** (17 workflow-shape + 6 tooling).
 
 ---
 
@@ -280,6 +327,10 @@ one threshold). The pipeline **fails closed** on any gate marked blocking.
 | `v2g:*` schema churn breaks archival consumers | Low | Medium | NFR-5 byte-stable schema + schema version in scene metadata (FR-16); additive-only changes |
 | DAG layer destabilises the proven linear path | Low | Medium | FR-7 is optional and resume-only; default order unchanged; G16 is non-blocking |
 | Docker-secret migration breaks the unattended batch launch | Low | Medium | NFR-4 follows the v2-security-audit FINDING-006 remediation pattern; validate launch on test host before batch night |
+| MILo-as-default raises no-sidecar failure surface | Low | Medium | FR-20 keeps TSDF fallback in `_select_mesh_backend()`; G-T1 covers the fallback path |
+| Gated FLUX Kontext / Hunyuan3D-2.1 weights unavailable on the host | Medium | Medium | FR-22/23 capability probe degrades to 2.0 / FLUX-Fill; model-pull step requires a HF token with licences accepted; G-T3 logs which model actually ran |
+| VLM hallucinates artifacts or slows large batches | Medium | Medium | FR-27 runs VLM only on photometric survivors, dedups by `phash`, requires confidence threshold; annotates not drops (G-T6); A/B precision on test scene (G-T5) |
+| Native v0.5.x flags (PPISP/3DGUT) alter output character | Low | Medium | FR-26 enables per-preset, A/B against curated test scene before making preset-default |
 
 ---
 
@@ -311,7 +362,8 @@ by exact filename:
 | **ADR-009** (`adr-009-*.md`) | Per-video ingest unit + per-image metadata sidecar schema + delete-on-verified-extraction | FR-1..FR-5 — D1, D2, D3, D14(root) |
 | **ADR-010** (`adr-010-*.md`) | Key-item ranking + threshold; FLUX-inpainted hull recovery; per-object world-pose persistence; depth-aware projection; the "correctly placed" contract | FR-8..FR-13 — D6, D7, D8, D9, D10 |
 | **ADR-011** (`adr-011-*.md`) | USD `v2g:*` metadata schema enrichment + textured environment mesh prim + lineage into USD | FR-14..FR-19 — D11, D12, D13, D14 |
-| **DDD extension** (`research/ddd/v3-e2e-extensions.md`) | New aggregates/value objects: per-video work unit, per-image metadata, key-item ranking, object pose, `v2g:*` annotation — extending the existing DDD model (`research/ddd/{aggregates,bounded-contexts,ubiquitous-language,anti-corruption-layers}.md`) | All phases — vocabulary + aggregate boundaries for D1–D14 |
+| **ADR-012** (`adr-012-*.md`) | SOTA tooling modernisation: MILo default, ALIKED+LightGlue, Hunyuan3D-2.1, FLUX Kontext, neural-SfM branch, version pins, native v0.5.x + plugin adoption, VLM artifact analysis + metadata-aware scaffolding | FR-20..FR-28 — T1..T8 |
+| **DDD extension** (`research/ddd/v3-e2e-extensions.md`) | New aggregates/value objects: per-video work unit, per-image metadata, key-item ranking, object pose, `v2g:*` annotation — extending the existing DDD model (`research/ddd/{aggregates,bounded-contexts,ubiquitous-language,anti-corruption-layers}.md`). Tooling (ADR-012) adds **no** new aggregate — the VLM `artifact_report` and `capture` block are additive fields on the existing Frame / ImageMetadataTag | All phases — vocabulary + aggregate boundaries for D1–D14 |
 
 D4 (declarative profile) and D5 (resumable DAG) are realised directly in this PRD's FR/NFR
 (FR-6, FR-7, NFR-1) per the gap register's "closes via" column, and do not require a separate ADR.
@@ -336,6 +388,14 @@ D4 (declarative profile) and D5 (resumable DAG) are realised directly in this PR
 | D12 | Annotation | FR-15, FR-16, FR-18 | G13 | 011 |
 | D13 | Annotation | FR-14 | G12 | 011 |
 | D14 | Provenance | FR-5, FR-17, FR-19 | G14 | 011 |
+| T1 | Tooling | FR-20 | G-T1 | 012 |
+| T2 | Tooling | FR-21 | G-T2 | 012 |
+| T3 | Tooling | FR-22 | G-T3 | 012 |
+| T4 | Tooling | FR-23 | G-T3 | 012 |
+| T5 | Tooling | FR-24 | — (optional branch) | 012 |
+| T6 | Tooling | FR-25 | G-T4 | 012 |
+| T7 | Tooling | FR-26 | G-T2 | 012 |
+| T8 | Tooling | FR-27, FR-28 | G-T5, G-T6 | 012 |
 
-Every delta D1–D14 traces to at least one FR; every blocking gate traces to a delta. Coverage is
-complete.
+Every delta D1–D14 and tooling gap T1–T8 traces to at least one FR; every blocking gate traces to a
+delta or tooling gap. Coverage is complete.

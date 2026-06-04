@@ -128,7 +128,31 @@ metadata so the USD is self-describing.
 
 ---
 
-## 6 · What is already good (do not rebuild)
+## 6 · SOTA tooling gaps (T-series)
+
+Distinct from D1–D14 (which are *workflow-shape* gaps): the T-series are *tooling* gaps where the
+stack defaults to the weakest available option or has forked past native v0.5.x capability. Source:
+online + in-repo audit 2026-06-04 (upstream `MrNeRF/LichtFeld-Studio`, plugin registry
+`lichtfeld.io/plugins`). These are **infrastructure**, not domain — no new DDD aggregates. All
+closed by **ADR-012**.
+
+| # | Tooling gap | Evidence | Today | SOTA | Severity |
+|---|---|---|---|---|---|
+| T1 | Default mesh backend is the weakest baseline | `config.py:60` `mesh_method="tsdf"`; MILo/CoMe wired at `stages.py:701-718` | TSDF (gsplat-depth + marching cubes) | MILo (SIGGRAPH Asia 2025), CoMe | High |
+| T2 | COLMAP uses plain SIFT, not learned features/matching | `stages.py:639` `matcher ∈ {exhaustive,sequential,vocab_tree}` (all SIFT) | SIFT + brute/sequential | COLMAP 4.1 ALIKED + LightGlue (per 360/COLMAP plugins) | High |
+| T3 | Image-to-3D hull pinned at Hunyuan3D 2.0 | `hunyuan3d_client.py:61,77,93` request `dit-v2-0`/`-v2-mv` | Hunyuan3D 2.0 | Hunyuan3D 2.1 (texture fidelity, paint-only) | Medium |
+| T4 | Inpainting pinned at FLUX.1-Fill-dev | `comfyui_inpainter.py:88` `flux1-fill-dev.safetensors` | FLUX.1-Fill-dev | FLUX.1 Kontext (context-aware edit) | Medium |
+| T5 | No neural feed-forward SfM option | only COLMAP; untagged HEAD `Dockerfile.consolidated:104`; DUSt3R named but unbuilt `proposed-pipeline.md:200` | COLMAP only | VGGT / MASt3R-SfM / DUSt3R branch | Medium |
+| T6 | Zero version pins → non-reproducible builds | gsplat `Dockerfile.consolidated:176`, SAM3 `:199`, PyTorch `cu128` no ver, COLMAP/ComfyUI HEAD | unpinned HEAD/latest | pinned tag/commit per tool (NFR-5) | High |
+| T7 | Native v0.5.x capability re-implemented in Python | native USD export (v0.5.1) vs `scripts/assemble_usd_scene.py`; MCP+plugins (v0.5.0) vs subprocess `stages.py`; PPISP/bilateral/3DGUT/ImprovedGS+ unused; `splat_ready` referenced `stages.py:574` but uninstalled | bespoke Python | native engine + plugin ecosystem | High |
+| T8 | No VLM artifact analysis; metadata-blind candidate selection | photometric scalars only `frame_quality.py:79-92`; no semantic artifact detection; capture/project metadata not ingested | blur/exposure/sharpness | VLM (Qwen2.5-VL/InternVL3) artifact report + metadata-fused candidate scaffolding | High |
+
+**Closes via**: T1–T8 → **ADR-012** (D-012.1..D-012.5) → PRD-v3 **FR-20..FR-28**, gates
+**G-T1..G-T6**.
+
+---
+
+## 7 · What is already good (do not rebuild)
 
 - COLMAP→3DGS→`.ksplat` core, Fibonacci selection, indoor presets.
 - SAM3 concept segmentation + 2D→3D projection.

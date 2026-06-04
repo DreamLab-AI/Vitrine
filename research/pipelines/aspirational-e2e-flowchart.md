@@ -1,7 +1,7 @@
 # Aspirational End-to-End Workflow — Diagram as Code
 
 **Date**: 2026-06-04
-**Status**: Target architecture (drives PRD-v3, ADR-009/010/011, DDD v3 extensions)
+**Status**: Target architecture (drives PRD-v3, ADR-009/010/011/012, DDD v3 extensions)
 **Scope**: From a Google Drive folder of raw videos to a richly-annotated USD scene graph
 with a polygonal textured environment and correctly-placed, textured 3D hulls of the
 key items in the scene.
@@ -52,7 +52,7 @@ flowchart TD
         direction TB
         POOL["Pool tagged frames for the room/session"]:::done
         SEL["Frame selection · Fibonacci coverage (ADR-007)"]:::done
-        MATCH{"COLMAP matcher branch"}:::branch
+        MATCH{"SfM branch: COLMAP {SIFT | ALIKED+LightGlue*}<br/>· optional neural SfM {VGGT|MASt3R} (ADR-012)"}:::branch
         SFM["COLMAP SfM → sparse model"]:::done
         REG{"Registration ≥ 70%?"}:::part
         TRN_B{"Training branch:<br/>strategy {mrnf|mcmc} ×<br/>preset {default|indoor_reflective}"}:::branch
@@ -83,9 +83,9 @@ flowchart TD
         direction TB
         OBJ{{"For each KEY item"}}:::part
         MVR["Multiview orbit render"]:::done
-        FLUX["LOCAL FLUX inpaint unseen/occluded views (ComfyUI)"]:::miss
+        FLUX["LOCAL FLUX.1 Kontext inpaint unseen/occluded views (ComfyUI, ADR-012)"]:::miss
         HULL_B{"Hull backend branch"}:::branch
-        H3D["Hunyuan3D 2.0 (ComfyUI) → textured GLB"]:::done
+        H3D["Hunyuan3D 2.1 (ComfyUI) → textured GLB (ADR-012)"]:::done
         TSDF_O["gsplat depth → TSDF fallback"]:::done
         HULLTEX["Textured watertight hull + preserved world pose"]:::part
     end
@@ -98,7 +98,7 @@ flowchart TD
     %% ===================== PHASE 5: ENVIRONMENT MESH =====================
     subgraph P5["Phase 5 · Environment mesh (branching backend, ADR-003)"]
         direction TB
-        ENV_B{"mesh_method branch:<br/>auto|tsdf|milo|come|gaussianwrapping"}:::branch
+        ENV_B{"mesh_method branch:<br/>auto|tsdf|milo*|come|gaussianwrapping<br/>(*MILo default — ADR-012)"}:::branch
         ENVMESH["Polygonal textured ENVIRONMENT mesh"]:::miss
     end
 
@@ -163,10 +163,10 @@ flowchart LR
     classDef branch fill:#5b2a86,stroke:#34194d,color:#ffffff;
     A["Frames"]:::branch
     A --> M1{matcher}:::branch
-    M1 --> exhaustive & sequential & vocab_tree
-    exhaustive --> T{training}:::branch
-    sequential --> T
-    vocab_tree --> T
+    M1 --> sift_exhaustive & sift_sequential & aliked_lightglue
+    sift_exhaustive --> T{training}:::branch
+    sift_sequential --> T
+    aliked_lightglue --> T
     T --> mrnf & mcmc
     mrnf --> P{preset}:::branch
     mcmc --> P
@@ -174,11 +174,15 @@ flowchart LR
     default --> S["SAM3 concepts"]:::branch
     indoor_reflective --> S
     S --> HULL{hull backend}:::branch
-    HULL --> Hunyuan3D & gsplat_TSDF
-    Hunyuan3D --> EM{mesh_method}:::branch
+    HULL --> Hunyuan3D_2p1 & gsplat_TSDF
+    Hunyuan3D_2p1 --> EM{mesh_method}:::branch
     gsplat_TSDF --> EM
-    EM --> auto & tsdf & milo & come & gaussianwrapping
+    EM --> auto & tsdf & milo_default & come & gaussianwrapping
 ```
+
+> **SOTA defaults (ADR-012):** matcher → `aliked_lightglue` for indoor presets (SIFT fallback);
+> hull → `Hunyuan3D 2.1`; inpaint → `FLUX.1 Kontext`; `mesh_method` default → `milo` (TSDF only
+> on sidecar-down); optional neural SfM (`VGGT`/`MASt3R`) precedes COLMAP for low-overlap captures.
 
 ---
 
@@ -195,3 +199,40 @@ flowchart LR
 The four hardest-hitting 🟥 nodes — **per-video loop**, **per-image metadata tagging**,
 **key-item ranking + FLUX-inpainted hull recon**, and **rich USD node metadata** — are the
 spine of PRD-v3 and ADR-009/010/011.
+
+---
+
+## 5. VLM artifact analysis & metadata-aware candidate scaffolding (ADR-012, T8)
+
+A second, **semantic** quality pass the containerised agent runs on the photometric survivors of
+Phase 1, fusing a VLM `artifact_report` with the per-frame metadata to scaffold reconstruction
+candidates. The agent **annotates and ranks — it never silently drops**; every veto/repair reason
+is recorded in the ledger and carried as `v2g:*` lineage.
+
+```mermaid
+flowchart TD
+    classDef done   fill:#1f7a3d,stroke:#0d4023,color:#ffffff;
+    classDef part   fill:#b9770e,stroke:#6e4708,color:#ffffff;
+    classDef miss   fill:#a02020,stroke:#5e1212,color:#ffffff;
+    classDef io     fill:#143b5e,stroke:#0a1f33,color:#ffffff;
+    classDef branch fill:#5b2a86,stroke:#34194d,color:#ffffff;
+
+    PHOTO["Photometric survivors (blur/exposure/sharpness pass)"]:::part
+    DEDUP["Cluster near-duplicates by phash → representatives"]:::miss
+    VLM["VLM artifact analysis (Qwen2.5-VL / InternVL3)<br/>ghosting · rolling-shutter · specular blowout ·<br/>flare · transient occluder · compression blocking"]:::miss
+    CAP[("Capture / project metadata<br/>camera · lens · session · operator notes · EXIF/SRT GPS")]:::miss
+    FUSE{"Fuse: Fibonacci coverage (prior)<br/>× VLM artifact score (veto)<br/>× capture context"}:::branch
+    POOLOK["Scaffold → COLMAP pool candidate"]:::part
+    REPAIR["Flag region → FLUX Kontext inpaint (ADR-010 FR-11)"]:::miss
+    LEDGER[("Per-video ledger + v2g:* lineage:<br/>record score, veto/repair reason")]:::part
+
+    PHOTO --> DEDUP --> VLM
+    CAP --> FUSE
+    VLM --> FUSE
+    FUSE -->|clean| POOLOK --> LEDGER
+    FUSE -->|recoverable artifact| REPAIR --> POOLOK
+    FUSE -->|veto| LEDGER
+```
+
+The VLM stage requires a model pull (HF token + accepted licences); see ADR-012 §D-012.5 and
+PRD-v3 FR-27/FR-28. It is additive — the cheap photometric gate stays the first pass.
