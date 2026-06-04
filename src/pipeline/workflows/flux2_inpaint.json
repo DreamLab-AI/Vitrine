@@ -1,0 +1,134 @@
+{
+  "prompt": {
+    "1": {
+      "inputs": {
+        "unet_name": "flux2_dev_fp8mixed.safetensors",
+        "weight_dtype": "default"
+      },
+      "class_type": "UNETLoader",
+      "_meta": {"title": "Load FLUX.2 Diffusion Model"}
+    },
+    "2": {
+      "inputs": {
+        "clip_name": "mistral_3_small_flux2_fp8.safetensors",
+        "type": "flux2"
+      },
+      "class_type": "CLIPLoader",
+      "_meta": {"title": "Load Mistral-3 Text Encoder (FLUX.2)"}
+    },
+    "3": {
+      "inputs": {
+        "vae_name": "flux2-vae.safetensors"
+      },
+      "class_type": "VAELoader",
+      "_meta": {"title": "Load FLUX.2 VAE"}
+    },
+    "4": {
+      "inputs": {
+        "image": "INPUT_IMAGE_URL",
+        "upload": "image"
+      },
+      "class_type": "LoadImage",
+      "_meta": {"title": "Load Source Image"}
+    },
+    "5": {
+      "inputs": {
+        "image": "INPUT_MASK_URL",
+        "upload": "image"
+      },
+      "class_type": "LoadImage",
+      "_meta": {"title": "Load Mask Image"}
+    },
+    "6": {
+      "inputs": {
+        "image": ["5", 0],
+        "channel": "red"
+      },
+      "class_type": "ImageToMask",
+      "_meta": {"title": "Image To Mask"}
+    },
+    "7": {
+      "inputs": {
+        "text": "INPUT_PROMPT",
+        "clip": ["2", 0]
+      },
+      "class_type": "CLIPTextEncode",
+      "_meta": {"title": "Positive Prompt"}
+    },
+    "8": {
+      "inputs": {
+        "text": "",
+        "clip": ["2", 0]
+      },
+      "class_type": "CLIPTextEncode",
+      "_meta": {"title": "Negative Prompt"}
+    },
+    "9": {
+      "inputs": {
+        "conditioning": ["7", 0],
+        "guidance": 4.0
+      },
+      "class_type": "FluxGuidance",
+      "_meta": {"title": "FLUX Guidance (Positive)"}
+    },
+    "10": {
+      "inputs": {
+        "positive": ["9", 0],
+        "negative": ["8", 0],
+        "vae": ["3", 0],
+        "pixels": ["4", 0],
+        "mask": ["6", 0],
+        "noise_mask": true
+      },
+      "class_type": "InpaintModelConditioning",
+      "_meta": {"title": "Inpaint Model Conditioning (masked recovery)"}
+    },
+    "11": {
+      "inputs": {
+        "conditioning": ["10", 0],
+        "latent": ["10", 2]
+      },
+      "class_type": "ReferenceLatent",
+      "_meta": {"title": "Reference Latent (FLUX.2 kontext recovery)"}
+    },
+    "12": {
+      "inputs": {
+        "model": ["1", 0]
+      },
+      "class_type": "DifferentialDiffusion",
+      "_meta": {"title": "Differential Diffusion"}
+    },
+    "13": {
+      "inputs": {
+        "seed": 42,
+        "steps": 28,
+        "cfg": 1.0,
+        "sampler_name": "euler",
+        "scheduler": "simple",
+        "denoise": 0.75,
+        "model": ["12", 0],
+        "positive": ["11", 0],
+        "negative": ["10", 1],
+        "latent_image": ["10", 2]
+      },
+      "class_type": "KSampler",
+      "_meta": {"title": "KSampler"}
+    },
+    "14": {
+      "inputs": {
+        "samples": ["13", 0],
+        "vae": ["3", 0]
+      },
+      "class_type": "VAEDecode",
+      "_meta": {"title": "VAE Decode"}
+    },
+    "15": {
+      "inputs": {
+        "filename_prefix": "flux2_inpaint_result",
+        "images": ["14", 0]
+      },
+      "class_type": "SaveImage",
+      "_meta": {"title": "Save Result"}
+    }
+  }
+}

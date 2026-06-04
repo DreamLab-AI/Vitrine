@@ -117,6 +117,30 @@ FLUX_DEV_MODELS = {
     "vae": FLUX_FILL_MODELS["vae"],
 }
 
+# FLUX.2-dev fileset (item 1, SOTA modernisation). There is NO FLUX.2 "Fill"
+# checkpoint: masked recovery is achieved via InpaintModelConditioning +
+# ReferenceLatent on the base FLUX.2-dev diffusion model, paired with the
+# Mistral-3 text encoder and the FLUX.2 VAE. Filenames match the staged assets
+# (see work-order §0). URLs are best-effort for the auto-download path; when the
+# weights are already staged locally the probe finds them and no download runs.
+FLUX2_DEV_MODELS = {
+    "diffusion_model": {
+        "url": "https://huggingface.co/Comfy-Org/flux2-dev/resolve/main/split_files/diffusion_models/flux2_dev_fp8mixed.safetensors",
+        "model_type": "diffusion_models",
+        "filename": "flux2_dev_fp8mixed.safetensors",
+    },
+    "text_encoder": {
+        "url": "https://huggingface.co/Comfy-Org/flux2-dev/resolve/main/split_files/text_encoders/mistral_3_small_flux2_fp8.safetensors",
+        "model_type": "clip",
+        "filename": "mistral_3_small_flux2_fp8.safetensors",
+    },
+    "vae": {
+        "url": "https://huggingface.co/Comfy-Org/flux2-dev/resolve/main/split_files/vae/flux2-vae.safetensors",
+        "model_type": "vae",
+        "filename": "flux2-vae.safetensors",
+    },
+}
+
 
 # ---------------------------------------------------------------------------
 # Workflow templates
@@ -288,6 +312,11 @@ class ComfyUIInpainter:
         steps: int = 28,
         guidance: float = 30.0,
         seed: int = 42,
+        prefer_flux2: bool = True,
+        flux2_diffusion: str = "flux2_dev_fp8mixed.safetensors",
+        flux2_vae: str = "flux2-vae.safetensors",
+        flux2_text_encoder: str = "mistral_3_small_flux2_fp8.safetensors",
+        flux2_guidance: float = 4.0,
     ):
         self.api_url = api_url.rstrip("/")
         self.comfyui_url = comfyui_url.rstrip("/")
@@ -299,8 +328,48 @@ class ComfyUIInpainter:
         self.guidance = guidance
         self.seed = seed
 
+        # FLUX.2 capability config (item 1). Filenames default to the staged
+        # asset names; callers may override (e.g. from InpaintConfig).
+        self.prefer_flux2 = prefer_flux2
+        self.flux2_diffusion = flux2_diffusion
+        self.flux2_vae = flux2_vae
+        self.flux2_text_encoder = flux2_text_encoder
+        self.flux2_guidance = flux2_guidance
+
         self._model_info: ModelInfo | None = None
         self._image_server: ImageServer | None = None
+
+    @classmethod
+    def from_config(cls, cfg: Any) -> "ComfyUIInpainter":
+        """Construct from an InpaintConfig, reading fields defensively.
+
+        Tolerant of agent D's field rename: every FLUX.2 field is read via
+        ``getattr`` with a staged-asset default, so this works whether or not the
+        new config fields have landed. ``prefer_flux2`` is enabled by default
+        but disabled automatically if the legacy ``model`` field explicitly pins
+        a FLUX.1 variant (``"flux-fill"`` / ``"flux1-..."``).
+        """
+        legacy_model = str(getattr(cfg, "model", "") or "").lower()
+        prefer_flux2 = getattr(cfg, "prefer_flux2", None)
+        if prefer_flux2 is None:
+            # Honour an explicit FLUX.1 pin; otherwise default to FLUX.2.
+            prefer_flux2 = not legacy_model.startswith(("flux-fill", "flux1", "flux-1"))
+        return cls(
+            api_url=getattr(cfg, "comfyui_api_url", "http://192.168.2.48:3001"),
+            comfyui_url=getattr(cfg, "comfyui_direct_url", "http://192.168.2.48:8189"),
+            local_ip=getattr(cfg, "local_ip", "192.168.2.1"),
+            hf_token=getattr(cfg, "hf_token", "") or None,
+            denoise=getattr(cfg, "denoise", 0.75),
+            steps=getattr(cfg, "steps", 28),
+            guidance=getattr(cfg, "guidance", 30.0),
+            prefer_flux2=bool(prefer_flux2),
+            flux2_diffusion=getattr(cfg, "flux2_diffusion", "flux2_dev_fp8mixed.safetensors"),
+            flux2_vae=getattr(cfg, "flux2_vae", "flux2-vae.safetensors"),
+            flux2_text_encoder=getattr(
+                cfg, "flux2_text_encoder", "mistral_3_small_flux2_fp8.safetensors"
+            ),
+            flux2_guidance=getattr(cfg, "flux2_guidance", 4.0),
+        )
 
     # ----- HTTP helpers -----
 
@@ -491,6 +560,71 @@ class ComfyUIInpainter:
         self.probe_models()
         return True
 
+    def ensure_flux2_models(self) -> bool:
+        """Ensure the FLUX.2-dev fileset is available. Returns True if ready.
+
+        Generalises the FLUX.1 ``ensure_flux_*_models()`` helpers to the FLUX.2
+        stack: the fp8-mixed diffusion model, the FLUX.2 VAE, and the Mistral-3
+        text encoder. When the weights are already staged on the server the
+        probe finds them and no download is issued. If the SaladTechnologies
+        ``/download`` endpoint is unavailable, missing weights are reported and
+        the caller falls back to the FLUX.1 path.
+        """
+        info = self._ensure_models_probed()
+
+        needed = []
+        if self.flux2_diffusion not in info.diffusion_models:
+            spec = dict(FLUX2_DEV_MODELS["diffusion_model"])
+            spec["filename"] = self.flux2_diffusion
+            needed.append(spec)
+        if self.flux2_text_encoder not in info.clip_models:
+            spec = dict(FLUX2_DEV_MODELS["text_encoder"])
+            spec["filename"] = self.flux2_text_encoder
+            needed.append(spec)
+        if self.flux2_vae not in info.vae_models:
+            spec = dict(FLUX2_DEV_MODELS["vae"])
+            spec["filename"] = self.flux2_vae
+            needed.append(spec)
+
+        if not needed:
+            logger.info("All FLUX.2 models already available")
+            return True
+
+        logger.info("Need to download %d models for FLUX.2", len(needed))
+        for model_spec in needed:
+            try:
+                self.download_model(
+                    url=model_spec["url"],
+                    model_type=model_spec["model_type"],
+                    filename=model_spec["filename"],
+                    wait=True,
+                )
+            except ComfyUIError as e:
+                logger.warning(
+                    "FLUX.2 model download failed for %s: %s",
+                    model_spec["filename"], e,
+                )
+                return False
+
+        self.probe_models()
+        return self.has_flux2_models()
+
+    def has_flux2_models(self) -> bool:
+        """Capability probe: True if the full FLUX.2 fileset is present.
+
+        The FLUX.2 inpaint path additionally requires the ComfyUI
+        ``InpaintModelConditioning`` + ``ReferenceLatent`` nodes (the same nodes
+        the FLUX.1-Fill path relies on, plus ReferenceLatent). The server-side
+        node presence is validated implicitly at submit time; here we gate on
+        weight availability, which is the dominant differentiator.
+        """
+        info = self._ensure_models_probed()
+        return (
+            self.flux2_diffusion in info.diffusion_models
+            and self.flux2_text_encoder in info.clip_models
+            and self.flux2_vae in info.vae_models
+        )
+
     # ----- Image server management -----
 
     def _ensure_image_server(self) -> ImageServer:
@@ -500,6 +634,50 @@ class ComfyUIInpainter:
         return self._image_server
 
     # ----- Workflow construction -----
+
+    def _build_flux2_workflow(
+        self,
+        image_url: str,
+        mask_url: str,
+        prompt: str,
+        negative_prompt: str = "",
+        denoise: float | None = None,
+        steps: int | None = None,
+        seed: int | None = None,
+    ) -> dict[str, Any]:
+        """Build a FLUX.2 masked-recovery inpaint workflow from the template.
+
+        FLUX.2 has no dedicated 'Fill' checkpoint; masked recovery uses
+        InpaintModelConditioning (pixels + mask + VAE) feeding a ReferenceLatent
+        into the base FLUX.2-dev diffusion model, with the Mistral-3 text encoder
+        and FLUX.2 VAE. Model filenames are injected from the client config so a
+        rename in agent D's config (or a different staged variant) is honoured.
+        """
+        wf = _load_workflow("flux2_inpaint.json")
+        graph = wf["prompt"]
+
+        # Inject model filenames (config-driven, defensive against renames)
+        graph["1"]["inputs"]["unet_name"] = self.flux2_diffusion
+        graph["2"]["inputs"]["clip_name"] = self.flux2_text_encoder
+        graph["3"]["inputs"]["vae_name"] = self.flux2_vae
+
+        # Set image URLs
+        graph["4"]["inputs"]["image"] = image_url
+        graph["5"]["inputs"]["image"] = mask_url
+
+        # Set prompts
+        graph["7"]["inputs"]["text"] = prompt
+        graph["8"]["inputs"]["text"] = negative_prompt
+
+        # FLUX.2 guidance (distinct scale from FLUX.1-Fill's ~30)
+        graph["9"]["inputs"]["guidance"] = self.flux2_guidance
+
+        # Set sampler parameters
+        graph["13"]["inputs"]["denoise"] = denoise or self.denoise
+        graph["13"]["inputs"]["steps"] = steps or self.steps
+        graph["13"]["inputs"]["seed"] = seed if seed is not None else self.seed
+
+        return wf
 
     def _build_flux_fill_workflow(
         self,
@@ -577,6 +755,27 @@ class ComfyUIInpainter:
     ) -> tuple[dict[str, Any], str]:
         """Select the best available workflow and return (workflow, model_name)."""
         info = self._ensure_models_probed()
+
+        # Strategy 0: FLUX.2-dev masked recovery (item 1). Capability probe — if
+        # the FLUX.2 weights/nodes are present, prefer this SOTA path; otherwise
+        # fall through to the unchanged FLUX.1-Fill strategies below.
+        if self.prefer_flux2 and self.has_flux2_models():
+            logger.info(
+                "Inpaint path: FLUX.2-dev (masked recovery via "
+                "InpaintModelConditioning + ReferenceLatent; model=%s)",
+                self.flux2_diffusion,
+            )
+            wf = self._build_flux2_workflow(
+                image_url, mask_url, prompt, negative_prompt,
+                denoise, steps, seed,
+            )
+            return wf, self.flux2_diffusion
+        if self.prefer_flux2:
+            logger.info(
+                "Inpaint path: FLUX.2 weights absent (need %s/%s/%s) — "
+                "falling back to FLUX.1 path",
+                self.flux2_diffusion, self.flux2_text_encoder, self.flux2_vae,
+            )
 
         # Strategy 1: FLUX Fill (purpose-built inpainting model)
         has_fill = "flux1-fill-dev.safetensors" in info.diffusion_models
@@ -723,14 +922,21 @@ class ComfyUIInpainter:
         t0 = time.monotonic()
 
         if auto_download:
-            try:
-                self.ensure_flux_fill_models()
-            except Exception as e:
-                logger.warning("FLUX Fill download failed, trying FLUX Dev: %s", e)
+            ready = False
+            if self.prefer_flux2:
                 try:
-                    self.ensure_flux_dev_models()
-                except Exception as e2:
-                    logger.error("Model download failed: %s", e2)
+                    ready = self.ensure_flux2_models()
+                except Exception as e:
+                    logger.warning("FLUX.2 ensure failed: %s", e)
+            if not ready:
+                try:
+                    self.ensure_flux_fill_models()
+                except Exception as e:
+                    logger.warning("FLUX Fill download failed, trying FLUX Dev: %s", e)
+                    try:
+                        self.ensure_flux_dev_models()
+                    except Exception as e2:
+                        logger.error("Model download failed: %s", e2)
 
         # Ensure mask is RGB (white=inpaint)
         mask_rgb = _mask_to_rgb(mask)

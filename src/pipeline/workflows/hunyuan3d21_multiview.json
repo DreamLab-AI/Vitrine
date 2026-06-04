@@ -1,0 +1,173 @@
+{
+  "1": {
+    "class_type": "ImageOnlyCheckpointLoader",
+    "inputs": {
+      "ckpt_name": "hunyuan3d-dit-v2-1.safetensors"
+    },
+    "_meta": {
+      "title": "Load Hunyuan3D 2.1 DiT Checkpoint"
+    }
+  },
+  "2": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "FRONT_IMAGE_PLACEHOLDER"
+    },
+    "_meta": {
+      "title": "Load Front View"
+    }
+  },
+  "3": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "LEFT_IMAGE_PLACEHOLDER"
+    },
+    "_meta": {
+      "title": "Load Left View"
+    }
+  },
+  "4": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "BACK_IMAGE_PLACEHOLDER"
+    },
+    "_meta": {
+      "title": "Load Back View"
+    }
+  },
+  "5": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "RIGHT_IMAGE_PLACEHOLDER"
+    },
+    "_meta": {
+      "title": "Load Right View"
+    }
+  },
+  "6": {
+    "class_type": "CLIPVisionEncode",
+    "inputs": {
+      "clip_vision": ["1", 2],
+      "image": ["2", 0]
+    },
+    "_meta": {
+      "title": "CLIP Encode Front"
+    }
+  },
+  "7": {
+    "class_type": "CLIPVisionEncode",
+    "inputs": {
+      "clip_vision": ["1", 2],
+      "image": ["3", 0]
+    },
+    "_meta": {
+      "title": "CLIP Encode Left"
+    }
+  },
+  "8": {
+    "class_type": "CLIPVisionEncode",
+    "inputs": {
+      "clip_vision": ["1", 2],
+      "image": ["4", 0]
+    },
+    "_meta": {
+      "title": "CLIP Encode Back"
+    }
+  },
+  "9": {
+    "class_type": "CLIPVisionEncode",
+    "inputs": {
+      "clip_vision": ["1", 2],
+      "image": ["5", 0]
+    },
+    "_meta": {
+      "title": "CLIP Encode Right"
+    }
+  },
+  "10": {
+    "class_type": "Hunyuan3Dv2ConditioningMultiView",
+    "inputs": {
+      "front": ["6", 0],
+      "left": ["7", 0],
+      "back": ["8", 0],
+      "right": ["9", 0]
+    },
+    "_meta": {
+      "title": "Hunyuan3D Multi-View Conditioning"
+    }
+  },
+  "11": {
+    "class_type": "EmptyLatentHunyuan3Dv2",
+    "inputs": {
+      "resolution": 3072,
+      "batch_size": 1
+    },
+    "_meta": {
+      "title": "Empty Latent 3D"
+    }
+  },
+  "12": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": ["1", 0],
+      "positive": ["10", 0],
+      "negative": ["10", 1],
+      "latent_image": ["11", 0],
+      "seed": 42,
+      "steps": 50,
+      "cfg": 5.5,
+      "sampler_name": "euler",
+      "scheduler": "sgm_uniform",
+      "denoise": 1.0
+    },
+    "_meta": {
+      "title": "KSampler"
+    }
+  },
+  "13": {
+    "class_type": "VAEDecodeHunyuan3D",
+    "inputs": {
+      "samples": ["12", 0],
+      "vae": ["1", 1],
+      "num_chunks": 8000,
+      "octree_resolution": 256
+    },
+    "_meta": {
+      "title": "VAE Decode 3D"
+    }
+  },
+  "15": {
+    "class_type": "Hunyuan3Dv21PaintPBRModelLoader",
+    "inputs": {
+      "model_name": "hunyuan3d-paintpbr-v2-1.safetensors"
+    },
+    "_meta": {
+      "title": "Load Hunyuan3D 2.1 PBR Paint Model"
+    }
+  },
+  "16": {
+    "class_type": "Hunyuan3Dv21PaintPBR",
+    "inputs": {
+      "paint_pipeline": ["15", 0],
+      "trimesh": ["13", 0],
+      "image": ["2", 0],
+      "seed": 42,
+      "steps": 30,
+      "texture_size": 2048,
+      "render_size": 1024
+    },
+    "_meta": {
+      "title": "Hunyuan3D 2.1 PBR Texture Paint"
+    }
+  },
+  "14": {
+    "class_type": "SaveGLB",
+    "inputs": {
+      "voxel": ["16", 0],
+      "filename_prefix": "hunyuan3d21_textured"
+    },
+    "_meta": {
+      "title": "Save Textured GLB Mesh"
+    }
+  }
+}

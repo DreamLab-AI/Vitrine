@@ -50,6 +50,7 @@ logger = logging.getLogger(__name__)
 WORKFLOW_DIR = Path(__file__).parent / "workflows"
 HUNYUAN3D_MV_WORKFLOW = WORKFLOW_DIR / "hunyuan3d_multiview.json"
 HUNYUAN3D_SV_WORKFLOW = WORKFLOW_DIR / "hunyuan3d_singleview.json"
+HUNYUAN3D_21_MV_WORKFLOW = WORKFLOW_DIR / "hunyuan3d21_multiview.json"
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +98,29 @@ HUNYUAN3D_MODELS = {
         "size_gb": 2.5,
         "description": "3D VAE decoder (octree voxelization)",
     },
+    # ---- Hunyuan3D 2.1 (item 2): textured output via PBR paint stage ----
+    "dit-v2-1": {
+        "hf_repo": "tencent/Hunyuan3D-2.1",
+        "hf_path": "hunyuan3d-dit-v2-1/model.fp16.safetensors",
+        "comfyui_name": "hunyuan3d-dit-v2-1.safetensors",
+        "model_type": "checkpoints",
+        "size_gb": 6.6,
+        "description": "Hunyuan3D 2.1 shape generation (full-precision DiT)",
+    },
+    "paint-v2-1": {
+        "hf_repo": "tencent/Hunyuan3D-2.1",
+        "hf_path": "hunyuan3d-paintpbr-v2-1/model.fp16.safetensors",
+        "comfyui_name": "hunyuan3d-paintpbr-v2-1.safetensors",
+        "model_type": "checkpoints",
+        "size_gb": 4.0,
+        "description": "Hunyuan3D 2.1 PBR texture paint (albedo/metallic/roughness)",
+    },
 }
+
+# Hunyuan3D 2.1 default ComfyUI weight filenames (item 2). Read defensively from
+# config where available; these are the staged-asset names (work-order §0).
+HUNYUAN3D_21_DIT = "hunyuan3d-dit-v2-1.safetensors"
+HUNYUAN3D_21_PAINT = "hunyuan3d-paintpbr-v2-1.safetensors"
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +217,12 @@ class Hunyuan3DClient:
         timeout: int = 600,
         poll_interval: float = 2.0,
         quality: str = "standard",
+        prefer_v21: bool = True,
+        v21_dit: str = HUNYUAN3D_21_DIT,
+        v21_paint: str = HUNYUAN3D_21_PAINT,
+        fallback_sam3d: bool = True,
+        sam3d_comfyui_url: str | None = None,
+        sam3d_api_url: str | None = None,
     ):
         self.comfyui_url = comfyui_url.rstrip("/")
         self.api_url = api_url.rstrip("/") if api_url else None
@@ -202,7 +231,52 @@ class Hunyuan3DClient:
         self.quality = QUALITY_PRESETS.get(quality, QUALITY_PRESETS["standard"])
         self.session = requests.Session()
 
+        # Hunyuan3D 2.1 capability config (item 2). Probed at run time; degrades
+        # to the 2.0-mv path when 2.1 weights/nodes are absent.
+        self.prefer_v21 = prefer_v21
+        self.v21_dit = v21_dit
+        self.v21_paint = v21_paint
+
+        # SAM3D last-resort fallback wiring (item 3). Endpoints default to the
+        # Hunyuan endpoints so the orphaned client becomes reachable without a
+        # config change; callers may override.
+        self.fallback_sam3d = fallback_sam3d
+        self.sam3d_comfyui_url = sam3d_comfyui_url or self.comfyui_url
+        self.sam3d_api_url = sam3d_api_url if sam3d_api_url is not None else self.api_url
+
         self._renderer: MultiViewRenderer | None = None
+        self._v21_available: bool | None = None
+
+    @classmethod
+    def from_config(cls, cfg: Any) -> "Hunyuan3DClient":
+        """Construct from a Hunyuan3DConfig, reading every new field defensively.
+
+        Works whether or not agent D's 2.1 / SAM3D fields have landed: each is
+        read via ``getattr`` with a default that preserves current behaviour
+        (``fallback_sam3d`` defaults to the config's documented ``True``).
+        """
+        return cls(
+            comfyui_url=getattr(cfg, "comfyui_url", "http://192.168.2.48:8189"),
+            api_url=getattr(cfg, "api_url", "http://192.168.2.48:3001"),
+            timeout=getattr(cfg, "timeout", 600),
+            quality=getattr(cfg, "quality", "standard"),
+            prefer_v21=getattr(cfg, "prefer_v21", True),
+            v21_dit=getattr(cfg, "v21_dit", HUNYUAN3D_21_DIT),
+            v21_paint=getattr(cfg, "v21_paint", HUNYUAN3D_21_PAINT),
+            fallback_sam3d=getattr(cfg, "fallback_sam3d", True),
+            sam3d_comfyui_url=getattr(cfg, "sam3d_comfyui_url", None),
+            sam3d_api_url=getattr(cfg, "sam3d_api_url", None),
+        )
+
+    def has_v21_models(self) -> bool:
+        """Capability probe: True if the Hunyuan3D 2.1 DiT + PBR paint weights
+        are both present on the server. Cached after the first query."""
+        if self._v21_available is not None:
+            return self._v21_available
+        available = self.probe_available_models()
+        names = set(available.get("checkpoints", []) + available.get("vae", []))
+        self._v21_available = self.v21_dit in names and self.v21_paint in names
+        return self._v21_available
 
     # ---------------------------------------------------------------
     # ComfyUI interaction (native API)
@@ -438,6 +512,44 @@ class Hunyuan3DClient:
 
         return prompt
 
+    def _build_multiview_v21_prompt(
+        self,
+        front_filename: str,
+        left_filename: str,
+        back_filename: str,
+        right_filename: str,
+        seed: int = 42,
+    ) -> dict:
+        """Build the Hunyuan3D 2.1 multi-view workflow prompt (textured output).
+
+        Same shape stage as 2.0-mv (nodes 1-13) but using the 2.1 DiT checkpoint,
+        followed by a PBR paint stage (nodes 15-16) that bakes albedo / metallic /
+        roughness textures onto the decoded mesh before SaveGLB (node 14).
+        """
+        prompt = self._load_workflow(HUNYUAN3D_21_MV_WORKFLOW)
+
+        prompt["2"]["inputs"]["image"] = front_filename
+        prompt["3"]["inputs"]["image"] = left_filename
+        prompt["4"]["inputs"]["image"] = back_filename
+        prompt["5"]["inputs"]["image"] = right_filename
+
+        # Inject configured 2.1 weight names (defensive against renames)
+        prompt["1"]["inputs"]["ckpt_name"] = self.v21_dit
+        prompt["15"]["inputs"]["model_name"] = self.v21_paint
+
+        q = self.quality
+        prompt["11"]["inputs"]["resolution"] = q.resolution
+        prompt["12"]["inputs"]["seed"] = seed
+        prompt["12"]["inputs"]["steps"] = q.steps
+        prompt["12"]["inputs"]["cfg"] = q.cfg
+        prompt["12"]["inputs"]["sampler_name"] = q.sampler
+        prompt["12"]["inputs"]["scheduler"] = q.scheduler
+        prompt["13"]["inputs"]["num_chunks"] = q.num_chunks
+        prompt["13"]["inputs"]["octree_resolution"] = q.octree_resolution
+        prompt["16"]["inputs"]["seed"] = seed
+
+        return prompt
+
     def _build_singleview_prompt(
         self,
         image_filename: str,
@@ -524,6 +636,83 @@ class Hunyuan3DClient:
     # ---------------------------------------------------------------
     # Public reconstruction methods
     # ---------------------------------------------------------------
+
+    def reconstruct_multiview_v21(
+        self,
+        ply_path: str | Path,
+        seed: int = 42,
+        work_dir: str | Path | None = None,
+    ) -> Hunyuan3DResult:
+        """Reconstruct a TEXTURED mesh from a Gaussian PLY via Hunyuan3D 2.1.
+
+        Renders 4 canonical views, runs the 2.1 DiT shape stage followed by the
+        PBR paint stage, and returns a textured GLB. Used only when the 2.1
+        weights/nodes are present (see ``has_v21_models``); the caller degrades
+        to the 2.0-mv path otherwise.
+        """
+        ply_path = Path(ply_path)
+        if not ply_path.exists():
+            raise FileNotFoundError(f"PLY not found: {ply_path}")
+
+        logger.info("Hunyuan3D 2.1 multi-view reconstruction: %s", ply_path.name)
+        t0 = time.monotonic()
+
+        if work_dir is None:
+            work_dir = Path(tempfile.mkdtemp(prefix="hunyuan3d21_"))
+        else:
+            work_dir = Path(work_dir)
+            work_dir.mkdir(parents=True, exist_ok=True)
+
+        logger.info("Rendering multi-view images for 2.1...")
+        view_paths = self._render_and_save_views(ply_path, work_dir)
+
+        uploaded: dict[str, str] = {}
+        for view_name, view_path in view_paths.items():
+            uploaded[view_name] = self._upload_image(view_path)
+
+        prompt = self._build_multiview_v21_prompt(
+            front_filename=uploaded["front"],
+            left_filename=uploaded["left"],
+            back_filename=uploaded["back"],
+            right_filename=uploaded["right"],
+            seed=seed,
+        )
+
+        prompt_id = self._submit_prompt(prompt)
+        logger.info("Submitted Hunyuan3D 2.1 MV prompt %s", prompt_id)
+
+        history = self._poll_completion(prompt_id)
+        elapsed = time.monotonic() - t0
+        logger.info("Hunyuan3D 2.1 MV completed in %.1fs", elapsed)
+
+        output_paths = self._extract_output_paths(history)
+        result = Hunyuan3DResult(
+            backend="hunyuan3d-2.1-mv-pbr",
+            views_rendered=len(view_paths),
+            duration_seconds=elapsed,
+            prompt_id=prompt_id,
+            output_paths=output_paths,
+        )
+
+        for key, filepath in output_paths.items():
+            if filepath.lower().endswith(".glb"):
+                try:
+                    data = self._download_file(filepath)
+                    result.glb_data = data
+                    result.mesh = self._load_glb(data)
+                    if result.mesh is not None:
+                        logger.info(
+                            "Loaded textured 2.1 mesh: %d verts, %d faces",
+                            result.vertex_count, result.face_count,
+                        )
+                except (FileNotFoundError, requests.RequestException) as e:
+                    logger.warning("Could not download %s: %s", filepath, e)
+
+        if result.mesh is None:
+            result.error = "No mesh data in 2.1 outputs"
+            logger.warning("Hunyuan3D 2.1 MV: %s. Paths: %s", result.error, output_paths)
+
+        return result
 
     def reconstruct_multiview(
         self,
@@ -733,6 +922,29 @@ class Hunyuan3DClient:
         -------
         Hunyuan3DResult
         """
+        # Strategy 0: Hunyuan3D 2.1 (textured, PBR) when weights/nodes present.
+        if self.prefer_v21:
+            try:
+                if self.has_v21_models():
+                    logger.info("Hull path: Hunyuan3D 2.1 (textured PBR multi-view)")
+                    result = self.reconstruct_multiview_v21(
+                        ply_path, seed=seed, work_dir=work_dir,
+                    )
+                    if result.mesh is not None:
+                        return result
+                    logger.warning("Hunyuan3D 2.1 returned no mesh; degrading to 2.0")
+                else:
+                    logger.info(
+                        "Hull path: Hunyuan3D 2.1 weights absent (need %s + %s) — "
+                        "degrading to 2.0-mv",
+                        self.v21_dit, self.v21_paint,
+                    )
+            except Exception as e21:
+                logger.warning(
+                    "Hunyuan3D 2.1 failed (%s); degrading to 2.0-mv", e21,
+                )
+
+        # Strategy 1: Hunyuan3D 2.0 multi-view (existing path, unchanged).
         try:
             result = self.reconstruct_multiview(
                 ply_path, seed=seed, turbo=turbo, work_dir=work_dir,
@@ -742,12 +954,16 @@ class Hunyuan3DClient:
         except Exception as e:
             logger.error("Multi-view reconstruction failed: %s", e)
             if not fallback_singleview:
+                if self.fallback_sam3d:
+                    sam_result = self._try_sam3d_fallback(ply_path, seed, work_dir)
+                    if sam_result is not None and sam_result.mesh is not None:
+                        return sam_result
                 return Hunyuan3DResult(
                     backend="hunyuan3d-mv",
                     error=str(e),
                 )
 
-        # Fallback: render a front view and use single-view
+        # Strategy 2: render a front view and use single-view.
         logger.info("Falling back to single-view reconstruction")
         try:
             ply_path = Path(ply_path)
@@ -764,15 +980,96 @@ class Hunyuan3DClient:
             if not front_path.exists() and views:
                 front_path = work_dir / f"{views[0].camera.name}.png"
 
-            return self.reconstruct_singleview(
+            sv_result = self.reconstruct_singleview(
                 front_path, seed=seed, fast=turbo,
             )
+            if sv_result.mesh is not None:
+                return sv_result
+            logger.warning("Single-view returned no mesh")
         except Exception as e2:
             logger.error("Single-view fallback also failed: %s", e2)
-            return Hunyuan3DResult(
-                backend="hunyuan3d-sv",
-                error=str(e2),
+
+        # Strategy 3 (item 3): SAM3D last resort, when MV and SV both fail and
+        # the fallback is enabled (config.hunyuan3d.fallback_sam3d).
+        if self.fallback_sam3d:
+            sam_result = self._try_sam3d_fallback(ply_path, seed, work_dir)
+            if sam_result is not None:
+                return sam_result
+
+        return Hunyuan3DResult(
+            backend="hunyuan3d-sv",
+            error="All Hunyuan3D paths failed and SAM3D fallback unavailable",
+        )
+
+    def _try_sam3d_fallback(
+        self,
+        ply_path: str | Path,
+        seed: int,
+        work_dir: str | Path | None,
+    ) -> Optional[Hunyuan3DResult]:
+        """Last-resort hull reconstruction via the SAM3D client (item 3).
+
+        Renders a front view from the Gaussian PLY and feeds it to the
+        (previously orphaned) ``SAM3DClient.reconstruct`` entrypoint, which
+        itself falls back to Tripo internally. Returns a ``Hunyuan3DResult``
+        wrapping the SAM3D mesh, or ``None`` if SAM3D is unavailable/fails.
+        """
+        logger.info("Falling back to SAM3D reconstruction (last resort)")
+        try:
+            from .sam3d_client import SAM3DClient
+
+            ply_path = Path(ply_path)
+            if work_dir is None:
+                work_dir = Path(tempfile.mkdtemp(prefix="hunyuan3d_sam3d_"))
+            else:
+                work_dir = Path(work_dir)
+                work_dir.mkdir(parents=True, exist_ok=True)
+
+            # Render a front view to drive SAM3D (single-image reconstruction).
+            renderer = self._get_renderer()
+            views = renderer.render(ply_path, output_dir=work_dir)
+            front_path = work_dir / "front.png"
+            if not front_path.exists() and views:
+                front_path = work_dir / f"{views[0].camera.name}.png"
+            if not front_path.exists():
+                logger.warning("SAM3D fallback: no front view rendered")
+                return None
+
+            client = SAM3DClient(
+                api_url=self.sam3d_api_url or self.comfyui_url,
+                comfyui_url=self.sam3d_comfyui_url,
+                timeout=self.timeout,
+                poll_interval=self.poll_interval,
             )
+            t0 = time.monotonic()
+            recon = client.reconstruct(
+                front_path, backend="sam3d", fallback=True, seed=seed,
+            )
+            elapsed = time.monotonic() - t0
+
+            if recon.mesh is None:
+                logger.warning("SAM3D fallback produced no mesh: %s", recon.error)
+                return Hunyuan3DResult(
+                    backend=f"sam3d-fallback({recon.backend})",
+                    duration_seconds=elapsed,
+                    error=recon.error or "SAM3D returned no mesh",
+                )
+
+            logger.info(
+                "SAM3D fallback succeeded via %s: %d verts",
+                recon.backend, len(recon.mesh.vertices),
+            )
+            return Hunyuan3DResult(
+                mesh=recon.mesh,
+                glb_data=recon.glb_data,
+                views_rendered=1,
+                duration_seconds=elapsed,
+                backend=f"sam3d-fallback({recon.backend})",
+                output_paths=dict(recon.output_paths),
+            )
+        except Exception as e:
+            logger.error("SAM3D fallback failed: %s", e)
+            return None
 
     # ---------------------------------------------------------------
     # Model management
@@ -907,6 +1204,12 @@ class Hunyuan3DClient:
         status = self.check_model_availability()
 
         needed = []
+        # Prefer the 2.1 fileset when enabled and downloadable; the 2.0 weights
+        # below remain the guaranteed fallback so behaviour never regresses.
+        if self.prefer_v21:
+            for key in ("dit-v2-1", "paint-v2-1"):
+                if not status.get(key, False):
+                    needed.append(key)
         if multiview:
             key = "dit-v2-mv-turbo" if turbo else "dit-v2-mv"
             if not status.get(key, False):
