@@ -143,10 +143,10 @@ REGISTRY: dict[str, Element] = {
     "vlm": Element(
         "vlm", "Local artifact-analysis VLM",
         ModelSpec(
-            "vlm", "gemma-4-26B-A4B-it", "2026-04-02", Licence.APACHE2, 20.0, "llama.cpp",
+            "vlm", "gemma-4-26B-A4B-it", "2026-04-02", Licence.APACHE2, 28.0, "llama.cpp",
             repo="ggml-org/gemma-4-26b-a4b-it-GGUF",
-            checkpoints=["gemma-4-26b-a4b-it-Q5_K_M.gguf", "mmproj-gemma-4-26b-a4b-it-f16.gguf"],
-            caveats=["NOT staged — pull GGUF + mmproj (ungated, Apache)",
+            checkpoints=["gemma-4-26B-A4B-it-Q8_0.gguf", "mmproj-gemma-4-26B-A4B-it-bf16.gguf"],
+            caveats=["Q5_K_M not published — staged Q8_0 (~28GB) + mmproj-bf16 (fits 48GB serial)",
                      "no VLM code in src/ — build agent-vlm client + RecoveryController"],
         ),
         [ModelSpec("vlm", "Qwen3-VL-30B-A3B-Instruct-FP8", "2025-10-04", Licence.APACHE2, 31.0,
@@ -166,7 +166,7 @@ REGISTRY: dict[str, Element] = {
             ModelSpec("hull", "Hunyuan3D-2.1", "2025-06-13", Licence.TENCENT_COMMUNITY, 29.0,
                       "comfyui", repo="tencent/Hunyuan3D-2.1",
                       node_repo="visualbruno/ComfyUI-Hunyuan3d-2-1",
-                      checkpoints=["hunyuan3d-dit-v2-1.safetensors", "hunyuan3d-paintpbr-v2-1.safetensors"],
+                      checkpoints=["hunyuan3d-dit-v2-1", "hunyuan3d-paintpbr-v2-1"],
                       caveats=["multiview (2mv) variant matches our orbit renderer",
                                "only 2.0-mv WEIGHTS + 2.1 CODE staged — 2.1 weights not pulled",
                                "current workflow has NO paint node => untextured (must add PBR node)"]),
