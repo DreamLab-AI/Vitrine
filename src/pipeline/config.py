@@ -31,6 +31,33 @@ def _redact_secrets(value: Any) -> Any:
 
 
 @dataclass
+class EndpointsConfig:
+    """Service endpoints on the ``v2g-net`` Docker bridge (ADR-013 / D-013.3).
+
+    DNS-name defaults replace the historic hardcoded ``192.168.2.48:port`` IPs
+    so the orchestrator is host-portable. The manifest ``[pipeline]`` block may
+    override the comfyui_* / agent_vlm_url keys for the legacy single-host case.
+    """
+    comfyui_url: str = "http://comfyui:8188"          # FLUX.2 + Hunyuan3D prompt-graph API
+    comfyui_api_url: str = "http://comfyui:3001"      # Salad add-on control-plane API (ADR-014)
+    agent_vlm_url: str = "http://agent-vlm:8080"      # gemma-4-26B-A4B unified VLM + reasoner
+    milo_url: str = "http://milo:8090"                # MILo mesh sidecar
+    come_url: str = "http://come:8091"                # CoMe mesh sidecar
+
+
+@dataclass
+class OversightConfig:
+    """Pipeline overseer selection (ADR-013 / D-013.6).
+
+    ``backend`` chooses who plans stages and recovers from failures end-to-end.
+    ``artifact_vlm`` is the orthogonal bulk per-frame artifact-triage tool (FR-27),
+    a transient model loaded only for the artifact stage then unloaded.
+    """
+    backend: str = "claude_code"        # claude_code (DEFAULT, no GPU cost) | gemma_local
+    artifact_vlm: str = "gemma_local"   # gemma_local (transient on-GPU) | claude_code
+
+
+@dataclass
 class IngestConfig:
     """Frame extraction parameters."""
     fps: float = 2.0  # 2fps for walkthroughs (SplatReady recommends 1.0)
@@ -59,6 +86,11 @@ class ReconstructConfig:
     matcher: str = "exhaustive"  # exhaustive for video (not sequential)
     single_camera: bool = True  # all frames share one camera model
     undistort: bool = True  # run image_undistorter before training
+    # SfM feature extractor (work-order item 4): "sift" (universal fallback) or
+    # "aliked" (ALIKED+LightGlue, SOTA for indoor presets). prefer_lichtfeld_plugin
+    # routes via the LichtFeld COLMAP plugin when available, else builds COLMAP.
+    feature_extractor: str = "sift"  # "sift" | "aliked"
+    prefer_lichtfeld_plugin: bool = False
 
 
 @dataclass
@@ -66,7 +98,9 @@ class TrainingConfig:
     """Gaussian splatting training parameters."""
     max_iterations: int = 30000
     iterations: int = 30000
-    strategy: str = "mrnf"
+    # Training strategy: "igs+" (ImprovedGS+, native v0.5.0 default — -26.8% time /
+    # -13.3% Gaussians vs MCMC), "mcmc", or "mrnf". See work-order item 6.
+    strategy: str = "igs+"
     sh_degree: int = 3
     lichtfeld_binary: str = "/opt/gaussian-toolkit/build/LichtFeld-Studio"
     target_psnr: float = 25.0
@@ -92,6 +126,14 @@ class TrainingConfig:
     # (~25 min) over MILo (~69 min) when the CoMe sidecar is available. When
     # False (default), MILo is the default high-quality path. See ADR-003.
     mesh_speed_priority: bool = False
+
+    # Native LichtFeld training flags (work-order item 6). PPISP is compiled into
+    # the core (parameters.hpp:145-155) but disabled; bilateral-grid / 3DGUT /
+    # pose-opt native flags are not yet wired. Off by default for backward compat.
+    ppisp_enabled: bool = False
+    bilateral_grid: bool = False
+    use_3dgut: bool = False
+    pose_opt: bool = False
 
     # Scene type preset: "default" or "indoor_reflective"
     scene_preset: str = "default"
@@ -160,7 +202,13 @@ class InpaintConfig:
     comfyui_direct_url: str = "http://192.168.2.48:8189"
     local_ip: str = "192.168.2.1"
     hf_token: str = ""
-    model: str = "flux-fill"
+    # Inpaint model (work-order item 1): "flux2" (FLUX.2-dev, staged default) or
+    # "flux-fill" (FLUX.1-Fill-dev fallback). FLUX.2 needs the Mistral-3 text
+    # encoder + FLUX.2 VAE alongside the diffusion checkpoint.
+    model: str = "flux2"
+    flux2_diffusion: str = "flux2_dev_fp8mixed.safetensors"
+    flux2_vae: str = "flux2-vae.safetensors"
+    flux2_text_encoder: str = "mistral_3_small_flux2_fp8.safetensors"
     denoise: float = 0.75
     steps: int = 28
     guidance: float = 30.0
@@ -178,6 +226,11 @@ class Hunyuan3DConfig:
     quality: str = "standard"
     multiview: bool = True
     turbo: bool = False
+    # Hunyuan3D 2.1 upgrade (work-order item 2). Probe → degrade to 2.0 if the
+    # 2.1 ldm/weights are absent. fallback_* paths handle MV/SV failure.
+    model_version: str = "2.1"
+    dit_checkpoint: str = "hunyuan3d-dit-v2-1.safetensors"
+    paint_checkpoint: str = "hunyuan3d-paintpbr-v2-1.safetensors"
     fallback_singleview: bool = True
     fallback_sam3d: bool = True
     timeout: int = 600
@@ -266,6 +319,8 @@ class PipelineConfig:
     status_file: str = "pipeline_status.json"
     output_dir: str = "./output"
 
+    endpoints: EndpointsConfig = field(default_factory=EndpointsConfig)
+    oversight: OversightConfig = field(default_factory=OversightConfig)
     ingest: IngestConfig = field(default_factory=IngestConfig)
     person_removal: PersonRemovalConfig = field(default_factory=PersonRemovalConfig)
     reconstruct: ReconstructConfig = field(default_factory=ReconstructConfig)
@@ -307,6 +362,8 @@ class PipelineConfig:
                 setattr(cfg, k, data[k])
 
         sub_map: dict[str, type] = {
+            "endpoints": EndpointsConfig,
+            "oversight": OversightConfig,
             "ingest": IngestConfig,
             "person_removal": PersonRemovalConfig,
             "reconstruct": ReconstructConfig,
@@ -346,6 +403,24 @@ class PipelineConfig:
             errors.append("training.max_iterations must be >= 1000")
         if self.training.target_psnr < 10:
             errors.append("training.target_psnr must be >= 10")
+        _valid_strategies = {"mrnf", "mcmc", "igs+"}
+        if self.training.strategy not in _valid_strategies:
+            errors.append(
+                f"training.strategy must be one of {sorted(_valid_strategies)}, "
+                f"got '{self.training.strategy}'"
+            )
+        _valid_oversight_backends = {"claude_code", "gemma_local"}
+        if self.oversight.backend not in _valid_oversight_backends:
+            errors.append(
+                f"oversight.backend must be one of {sorted(_valid_oversight_backends)}, "
+                f"got '{self.oversight.backend}'"
+            )
+        _valid_artifact_vlm = {"gemma_local", "claude_code"}
+        if self.oversight.artifact_vlm not in _valid_artifact_vlm:
+            errors.append(
+                f"oversight.artifact_vlm must be one of {sorted(_valid_artifact_vlm)}, "
+                f"got '{self.oversight.artifact_vlm}'"
+            )
         _valid_mesh_methods = {"tsdf", "milo", "come", "gaussianwrapping", "auto"}
         if self.training.mesh_method not in _valid_mesh_methods:
             errors.append(

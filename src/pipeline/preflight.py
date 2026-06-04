@@ -34,6 +34,11 @@ logger = logging.getLogger(__name__)
 
 REQUIRED_PYTHON = (3, 12)
 
+
+def _env_flag(name: str) -> bool:
+    """True when an env var is set to a truthy value (1/true/yes/on)."""
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
 # Dependencies classified by criticality
 CRITICAL_PYTHON_DEPS = [
     "torch",
@@ -358,8 +363,60 @@ def check_all() -> dict:
             f"CRITICAL: Missing dependencies: {', '.join(critical_missing)}"
         )
 
+    # SOTA registry idiot-check (advisory unless SOTA_STRICT). Validates the
+    # host against the model registry: checkpoints staged, VRAM fit, licence
+    # posture, pinning, known caveats. Raises only under strict + overall=FAIL.
+    sota = check_sota_environment()
+    if sota is not None:
+        summary["sota_overall"] = sota.get("overall")
+
     logger.info("Preflight check PASSED: %s", summary)
     return summary
+
+
+def check_sota_environment(
+    *, strict: bool | None = None, commercial: bool | None = None
+) -> dict | None:
+    """Validate the host against the SOTA model registry (idiot-check).
+
+    Delegates to ``sota_registry.check_environment``: are the chosen checkpoints
+    staged, does each model fit GPU VRAM, is the licence posture acceptable, are
+    ComfyUI nodes pinned, and surfaces known wiring caveats.
+
+    Advisory by default — logs the formatted report and never blocks a dev run
+    on a partially-staged host. Set ``strict`` (or the ``SOTA_STRICT`` env var)
+    to raise ``RuntimeError`` when ``overall == "FAIL"``. ``commercial`` (or
+    ``SOTA_COMMERCIAL``) switches posture so non-commercial models FAIL instead
+    of WARN.
+
+    Returns the structured report dict, or ``None`` if the registry cannot be
+    imported (a registry import error must never break preflight).
+    """
+    if strict is None:
+        strict = _env_flag("SOTA_STRICT")
+    if commercial is None:
+        commercial = _env_flag("SOTA_COMMERCIAL")
+
+    try:
+        from pipeline.sota_registry import check_environment, format_report
+    except Exception as e:  # noqa: BLE001 — registry optional; never break preflight
+        logger.warning("SOTA registry unavailable, skipping idiot-check: %s", e)
+        return None
+
+    report = check_environment(commercial_use=bool(commercial))
+    overall = report.get("overall", "PASS")
+    if overall == "FAIL":
+        text = format_report(report)
+        if strict:
+            raise RuntimeError(
+                "SOTA idiot-check FAILED (strict posture). Report:\n" + text
+            )
+        logger.warning("SOTA idiot-check overall=FAIL (advisory):\n%s", text)
+    elif overall == "WARN":
+        logger.info("SOTA idiot-check overall=WARN:\n%s", format_report(report))
+    else:
+        logger.info("SOTA idiot-check overall=PASS")
+    return report
 
 
 def print_report() -> None:
@@ -402,6 +459,15 @@ def print_report() -> None:
         print(f"  Optional deps not installed: {', '.join(missing_optional)}")
         print("  These are non-blocking but may limit functionality.")
     print("=" * 60)
+
+    # SOTA registry idiot-check (advisory in the report view).
+    try:
+        from pipeline.sota_registry import check_environment, format_report
+
+        print()
+        print(format_report(check_environment()))
+    except Exception as e:  # noqa: BLE001 — advisory only
+        print(f"  (SOTA idiot-check skipped: {e})")
 
 
 def _get_binary_version(binary: str) -> str | None:

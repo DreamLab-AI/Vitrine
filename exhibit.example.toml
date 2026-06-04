@@ -1,0 +1,54 @@
+# exhibit.toml — single human-authored pre-run manifest (ADR-013 / D-013.1).
+#
+# Copy to exhibit.toml, fill in, then materialise a runtime PipelineConfig:
+#     python -m pipeline.manifest exhibit.toml            # validate + summary
+#     python -m pipeline.manifest exhibit.toml -o run.json # write redacted config
+#
+# Secrets MUST use env: indirection — never inline a token here. The loader
+# resolves env:NAME at parse time and a missing referenced env-var is a hard,
+# named failure. Secrets are stripped before the JSON run-record is written.
+
+schema_version = "1.0"
+
+[exhibit]                                   # identity → run record + USD metadata (ADR-011)
+id          = "tate-2026-bronze"
+name        = "Bronze Forms — Tate Modern"
+venue       = "Tate Modern, London"
+date        = "2026-06-01"
+curator     = "A. Curator"
+description = "Single-room bronze sculpture exhibit, mixed natural/spot lighting."
+
+[drive]                                     # source footage location (ADR-009 ingest)
+url           = "https://drive.google.com/drive/folders/<id>"
+rclone_remote = "gdrive"                    # reuses the existing rclone_conf secret
+recursive     = true
+
+# Objects → DecomposeConfig.sam3_concepts/descriptions, with stable identity.
+# priority = "key" triggers the ADR-010 hull-recon + per-object FLUX recovery path.
+[[objects]]
+id             = "obj-001"
+name           = "Reclining Figure"
+sam3_concept   = "large bronze reclining human figure"
+description    = "Patinated bronze, ~2m, central plinth."
+priority       = "key"                      # key | standard
+expected_count = 1
+
+[[objects]]
+id             = "obj-002"
+name           = "Maquette Set"
+sam3_concept   = "small bronze maquette on shelf"
+priority       = "standard"
+expected_count = 4
+
+[secrets]                                   # env-var references only; never persisted to JSON
+hf_token           = "env:HF_TOKEN"
+gcloud_credentials = "env:GOOGLE_APPLICATION_CREDENTIALS"   # path to service-account json
+gcloud_project     = "dreamlab-v2g"
+
+[pipeline]                                  # optional overrides onto SOTA defaults (ADR-012)
+mesh_backend = "come"                       # tsdf | milo | come | gaussianwrapping | auto
+matcher      = "aliked_lightglue"           # -> reconstruct.matcher
+
+[oversight]                                 # who oversees the pipeline end-to-end (D-013.6)
+backend      = "claude_code"                # claude_code (default) | gemma_local
+artifact_vlm = "gemma_local"                # gemma_local | claude_code
