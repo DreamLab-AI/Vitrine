@@ -10,7 +10,7 @@ rewrite it. It adds new aggregates, entities, value objects, and ubiquitous-lang
 terms required to close the aspirational end-to-end workflow, traced through the
 fourteen deltas (D1–D14) of
 [`../decisions/gap-analysis-e2e-aspiration.md`](../decisions/gap-analysis-e2e-aspiration.md)
-and the nineteen functional requirements of
+and the forty functional requirements of
 [`../decisions/prd-v3-e2e-closure.md`](../decisions/prd-v3-e2e-closure.md).
 
 It builds on, and must be read alongside, the four existing model files:
@@ -20,11 +20,16 @@ It builds on, and must be read alongside, the four existing model files:
 - [`ubiquitous-language.md`](ubiquitous-language.md)
 - [`anti-corruption-layers.md`](anti-corruption-layers.md)
 
-It aligns by exact filename with three commissioned decision records (created by a
+It aligns by exact filename with the commissioned decision records (created by a
 peer agent; cross-referenced here whether or not they are yet present):
 [`adr-009-per-video-ingest-and-metadata.md`](../decisions/adr-009-per-video-ingest-and-metadata.md),
 [`adr-010-key-item-hull-recon.md`](../decisions/adr-010-key-item-hull-recon.md),
-[`adr-011-usd-metadata-enrichment.md`](../decisions/adr-011-usd-metadata-enrichment.md).
+[`adr-011-usd-metadata-enrichment.md`](../decisions/adr-011-usd-metadata-enrichment.md),
+[`adr-012-sota-tooling-modernisation.md`](../decisions/adr-012-sota-tooling-modernisation.md),
+[`adr-013-ingest-manifest-serial-model-lifecycle.md`](../decisions/adr-013-ingest-manifest-serial-model-lifecycle.md),
+[`adr-014-agent-controlled-comfyui-integration.md`](../decisions/adr-014-agent-controlled-comfyui-integration.md),
+[`adr-015-vitrine-web-onboarding.md`](../decisions/adr-015-vitrine-web-onboarding.md). The §2.6 agent
+loop is ADR-014; the §7 Onboarding/Setup context is ADR-015.
 
 ### Exactly what this extension builds on (so nothing is duplicated)
 
@@ -367,6 +372,35 @@ HullReconstructed{ hull_id, key_item_id, backend, is_watertight, has_texture, ti
 ObjectPosePersisted { key_item_id, centroid, rotation_quat, scale, timestamp }
 ```
 
+### 2.6 Agent-controlled recovery loop (ADR-014)
+
+The FLUX.2/Hunyuan3D recovery is no longer one-shot. The **orchestrator** (the in-container Claude Code
+agent; `docs/architecture.md` §"Claude Code as Orchestrator") runs a verify-or-retry loop, calling a
+**local vision tool** (`agent-vlm` = gemma-4-26B-A4B, ADR-013 D-013.5) to *see* the generated result
+and retaining the judgment itself. gemma-4 is a **tool, not a second orchestrator** — this preserves
+the "no hidden state machine; Claude decides what to run next" architecture.
+
+New **value objects** (on the existing per-object recovery flow — *no new aggregate*):
+
+```
+RecoveryRequest  { key_item_id, kind: inpaint|hull, target_region, object_identity, artifact_report_ref }
+RecoveryAttempt  { request_ref, attempt_index, params: {denoise, guidance, seed, mask}, output_ref }
+RecoveryVerdict  { attempt_ref, source: gemma-4|claude, score, decision: accept|re-prompt|veto, reason }
+```
+
+**Domain policy** `RecoveryController` (stateless helper the orchestrator invokes): emits
+`RecoveryAttempt`s and consumes `RecoveryVerdict`s under a config-bounded retry budget until
+`accept`/`veto`. Every attempt and verdict is appended to the per-video ledger and `v2g:*` `Lineage`
+(§3.3) — **annotate, never silently drop** (D8 anti-hallucination invariant §2.5 still gates which
+regions may be generated; this loop gates whether a *generated* result is *accepted*).
+
+**New domain events**:
+
+```
+RecoveryAttempted { key_item_id, kind, attempt_index, timestamp }
+RecoveryJudged    { key_item_id, attempt_index, source, score, decision, reason, timestamp }
+```
+
 ---
 
 ## 3. SceneAssembly context — extension (D12, D13, D14)
@@ -479,8 +513,16 @@ definition references an existing term it uses that term's established spelling.
 | **Lineage** | The provenance value object threading Video → Frame → KeyItem → Hull → USD node, carried in `MetadataRecord` and resolvable by the lineage query. |
 | **sidecar tag** | The per-frame JSON metadata file (`<frame>.json`) holding an `ImageMetadataTag`. Distinct from the Docker-container **sidecar** of `ubiquitous-language.md` — always written as two words. |
 | **pose backfill** | The post-COLMAP step that fills a `Frame`'s `pose_hint` (`PoseHint`) once its source frame is registered; turns the optional tag slot into real camera pose. |
+| **Vitrine** | The project's name (ADR-015 D-015.1): a museum display case, pairing with upstream LichtFeld Studio. CLI/package id `vitrine`; the web setup tool is **Vitrine Onboarding**. Supersedes "Video-to-Gaussian". |
+| **Vitrine Onboarding** | The schema-driven web setup tool (`vitrine-setup`): a re-entrant, no-history wizard that authors the single active `exhibit.toml` from a JSON Schema and provisions the run. Models the agentbox setup-tool pattern. |
+| **HardwareProfile** | The typed host probe (GPU count, per-GPU VRAM, RAM, disk) produced by `/api/hardware`; the input to hardware-aware `ModelSelection`. |
+| **ModelSelection** | The per-stage model/quant choice recommended to fit the `HardwareProfile` and written to the `[models]` / `[models.vram_plan]` manifest block; user-overridable. |
+| **SecretRef** | An `env:`-indirected reference (`env:HF_TOKEN`, `env:GOOGLE_APPLICATION_CREDENTIALS`) that is all the manifest ever holds; the actual secret lives only in the server-side keyring/Docker-secret. |
+| **Provisioning** | The deterministic setup phase: download/integrate models, ensure+pin the .48 ComfyUI, bring up `v2g-net`, verify readiness; ends by writing `provision.status = "ready"` and emitting the hand-off event. |
+| **setup/agent hand-off** | The boundary (ADR-015 D-015.5) where deterministic `Provisioning` ends and the interpretive internal Claude Code overseer begins: *setup makes the system runnable; the agent decides how to run it.* |
+| **OutputWriteBack** | The additive upload of finished artifacts back to the source Drive folder (or its `writeback_subdir`) when `[drive].writeback == true`; requires the Drive write scope from the browser-OAuth grant. |
 
-**New-term count: 14.**
+**New-term count: 22** (14 pipeline + 8 onboarding/setup).
 
 ---
 
@@ -490,22 +532,27 @@ These **extend** `anti-corruption-layers.md`. Only boundaries newly crossed by t
 aggregates are noted; existing ACLs (COLMAP, LichtFeld MCP, MILo/CoMe/GaussianWrapping
 sidecars, BOUNDARIES.md, Blender) are unchanged.
 
-### 5.1 rclone / Google Drive ACL — new (serves `Video`, `CaptureSession`)
+### 5.1 rclone / Google Drive ACL — new, read **and** write (serves `Video`, `CaptureSession`, `Provisioning`)
 
-**External system**: Google Drive accessed via rclone with service-account credentials
-(`drive_ingestor.py`). **Isolates** the Ingestion context from rclone path conventions,
-remote listing format, and credential handling.
+**External system**: Google Drive accessed via rclone. **Isolates** the Ingestion and
+Onboarding/Setup contexts from rclone path conventions, remote listing format, and
+credential handling. ADR-015 D-015.6 extends this ACL from **read-only ingest** to
+**read+write**: outputs are written back to the *same* source folder, which requires the
+Drive **write** scope in the FR-37 OAuth grant.
 
 | Domain concept | External concept | Translation |
 |----------------|------------------|-------------|
 | `Video.source_drive_path` | `rclone` remote path | `drive_ingestor` builds and verifies the remote path; the domain sees a `Video`, not an rclone URL |
 | `Video.copy_to_scratch()` | `rclone copy <remote> <nvme>` | One-video copy; checksum verified before `pending → copied` |
 | `CaptureSession` discovery | `rclone lsjson <session>` | Remote listing → list of `Video`s (one ledger row each) |
-| outputs push-back | `rclone copy <nvme> <remote>/outputs/` | Drive stays source of truth; only outputs are pushed back |
-| credentials | service-account key | **NFR-4 / FINDING-006**: supplied as a **Docker secret**, never a plaintext env var or image layer; the ACL reads the mounted secret, the domain never sees it |
+| `OutputWriteBack` (new, ADR-015) | `rclone copy <nvme> <source-folder>[/vitrine-output]` | When `[drive].writeback == true`, finished artifacts (USD scene, ksplat, per-object hulls, run report) are pushed to the **same** folder the source video came from (or its `writeback_subdir`); Drive remains source of truth — write-back is additive, never overwrites the source video |
+| ingest credentials | service-account key | **NFR-4 / FINDING-006**: supplied as a **Docker secret**, never a plaintext env var or image layer; the ACL reads the mounted secret, the domain never sees it |
+| write-back credentials | Google OAuth **refresh token** (Drive read+write scope) | ADR-015 D-015.4: obtained by the browser-OAuth flow in Vitrine Onboarding, **stored server-side** (keyring/Docker secret), referenced from the manifest only as `env:GOOGLE_APPLICATION_CREDENTIALS`; the ACL holds the token and proxies the call, the domain and the browser never see it |
 
 > Retention rule (§1.4) is enforced **above** this ACL: the domain decides when a
-> `Video` is purged; rclone only ever copies, never the authority on deletion.
+> `Video` is purged; rclone only ever copies, never the authority on deletion. The
+> write scope is **additive** — the ACL may create/upload under the source folder but is
+> never granted authority to delete the source video.
 
 ### 5.2 ComfyUI FLUX ACL — extended (serves `InpaintedView`)
 
@@ -514,8 +561,9 @@ inpaint. v3 **adds a new caller**: the per-object recovery loop.
 
 | Domain concept | ComfyUI concept | Translation |
 |----------------|-----------------|-------------|
-| `InpaintedView` (per key item) | FLUX.1-Fill workflow graph JSON | `comfyui_inpainter.py` substitutes the orbit-view image + coverage mask into the pre-built workflow; result → `InpaintedView` |
+| `InpaintedView` (per key item) | FLUX.2-dev workflow graph JSON (ADR-012/014) | `comfyui_inpainter.py` substitutes the orbit-view image + coverage mask into the pre-built workflow; result → `InpaintedView` |
 | anti-hallucination invariant (§2.5) | mask supplied to the workflow | The ACL passes **only** the unobserved-region mask; observed pixels are never sent for generation — the invariant is enforced at the adapter boundary |
+| `RecoveryAttempt` / `RecoveryVerdict` (§2.6) | graph API `/prompt`+`/history`+`/view`; Salad control API model load/free | The ACL exposes **two ComfyUI surfaces** (ADR-014): the graph API for execution and the Salad add-on control API for model lifecycle; the orchestrator's verify-or-retry loop crosses only the adapter, ComfyUI's API shape never enters the domain |
 | ComfyUI unavailable | `config.inpaint.enabled = False` | No-op (existing behaviour): key item proceeds to hull recon with whatever views exist; gate G8 records the skip |
 
 ### 5.3 Hunyuan3D ACL — new note (serves `Hull`)
@@ -544,6 +592,26 @@ ACL module:
 | `EnvironmentMesh` | `UsdGeomMesh` at `/World/Environment` | Re-homed from `/World/Objects/full_scene`; reuses existing `UsdGeomMesh` + `UsdPreviewSurface` translation |
 | `Lineage` | `v2g:source_video` / `v2g:source_frames` | Written as prim attributes; the FR-19 lineage query reads them back — round-trip stable (NFR-5) |
 
+### 5.5 Vitrine Onboarding host/secret ACL — new (serves the Onboarding/Setup context, §7)
+
+**External systems**: the host hardware (`nvidia-smi`/`/proc`), the Hugging Face Hub, and
+Google's OAuth endpoint, fronted by the `vitrine-setup` Rust/Axum backend. **Isolates** the
+Onboarding/Setup context (and the browser) from raw probe output, token handling, and
+external HTTP — the agentbox `/api/proxy` containment pattern (ADR-015 D-015.4).
+
+| Domain concept | External concept | Translation |
+|----------------|------------------|-------------|
+| `HardwareProfile` | `nvidia-smi --query-gpu`, `/proc/meminfo`, `df` | `/api/hardware` parses raw probe output into a typed `HardwareProfile` (GPU count, per-GPU VRAM, RAM, disk); the wizard sees the value object, never the CLI text |
+| `ModelSelection` | the FR-29 / D-013.4 per-stage table | The backend maps `HardwareProfile` → recommended model/quant per stage that fits VRAM; writes the `[models]` + `[models.vram_plan]` manifest block |
+| `SecretRef` (HF) | HF token string | Pasted token is `POST`ed to the backend, stored as a keyring/Docker-secret entry; the manifest holds only `env:HF_TOKEN`; the token never returns to the browser |
+| `SecretRef` (Google) | OAuth refresh token | Browser consent flow → refresh token stored server-side; manifest holds only `env:GOOGLE_APPLICATION_CREDENTIALS`; proxied Drive calls cross §5.1, never the browser |
+| `ManifestDraft` ⇆ `exhibit.toml` | `toml_edit::DocumentMut` | The backend round-trips the file (parse→validate→re-serialise) preserving comments/key order; `/api/validate` server-validates against the JSON Schema before save |
+| external HTTP (HF / Google / Drive) | `/api/proxy/{path}` | The backend injects `Authorization: Bearer` server-side and forwards; the browser issues no authenticated request itself — secrets stay off the wire to the client |
+
+> The ACL is the **only** holder of credentials. Its output `exhibit.toml` carries
+> `env:`-indirected references exclusively — the secret-containment invariant (FR-37, O19,
+> G-O3) is enforced at this adapter boundary, not by convention in the domain.
+
 ---
 
 ## 6. Context map — new and extended contexts
@@ -552,7 +620,7 @@ ACL module:
 flowchart TB
     subgraph EXT["External systems (ACLs)"]
         DRIVE["Google Drive / rclone"]
-        FLUX["ComfyUI FLUX.1-Fill"]
+        FLUX["ComfyUI FLUX.2-dev"]
         HY3D["Hunyuan3D"]
         USD["OpenUSD"]
     end
@@ -609,3 +677,180 @@ flowchart TB
 **Reading the map**: the lineage chain (dotted, bottom) — `Video.source_video` →
 `KeyItem.key_item_id` → `Hull.hull_id` → `Lineage` on the USD node — is the spine that
 makes every delivered prim resolvable to its source video and frames (D14, O4, G14).
+
+---
+
+## 7. Onboarding/Setup context — new (ADR-015)
+
+**New bounded context**, upstream of every other context. It is the **only** producer of
+the `exhibit.toml` manifest (ADR-013 §1) that the whole pipeline consumes, and the
+**only** holder of credentials. Two actors live here, explicitly bounded by the
+setup/agent hand-off (ADR-015 D-015.5): the deterministic **Setup** (the `vitrine-setup`
+tool) and the interpretive **internal overseer** (the in-container Claude Code agent,
+ADR-013 D-013.6). It does **no** reconstruction — it makes the system *runnable* and
+hands off.
+
+**Relationship to existing contexts**: Customer-Supplier **upstream** of Ingestion,
+Reconstruction, and Generative Recovery — it supplies the validated manifest + provisioned
+models + a live `v2g-net`, and they consume it. It is **Conformist** toward three external
+systems (host probe, Hugging Face, Google OAuth, ComfyUI/Salad) via the §5.5 + §5.1 ACLs.
+It is a **config wizard that also provisions** — unlike the agentbox setup tool it emulates,
+which only edits config (ADR-015 D-015.2/D-015.5).
+
+### 7.1 Aggregate root: `ExhibitManifest` (the single active configuration)
+
+The one human-authored input, modelled as an aggregate so its **re-entrant, no-history**
+rule (FR-35) is a domain invariant rather than a UI behaviour. There is exactly one
+active `ExhibitManifest`; editing reloads and overwrites the **same** file.
+
+```
+ExhibitManifest {                    # Aggregate Root (Onboarding/Setup)
+    exhibit: ExhibitIdentity         # name, description (free text)
+    objects: list[ObjectOfInterest]  # the object sub-list (ADR-013 [[objects]])
+    drive: DriveBinding              # source URL + write-back target (§7.4)
+    secrets: list[SecretRef]         # env:-indirected only — never a literal credential
+    models: ModelSelection           # hardware-selected per-stage choice (§7.3)
+    oversight: OversightChoice       # backend = claude_code (default) | gemma_local; artifact_vlm
+    provision: ProvisionStatus       # value object — the hand-off latch (§7.5)
+    schema_version: str              # fixes the manifest field set (NFR-5)
+}
+
+ObjectOfInterest {                   # Entity (owned by ExhibitManifest)
+    id: str                          # stable id (survives edits)
+    description: str                 # free-text object the agent will mediate
+    sam3_concept: str | None         # filled by the internal agent at hand-off, not by setup
+    priority: str                    # "key" → enters the ADR-010 hull-recon path
+}
+```
+
+**Invariants**
+
+1. **Single active manifest** (FR-35, D-015.2): exactly one `ExhibitManifest` exists; a
+   restart loads it and repopulates editable fields. No past-project list, no archive.
+2. **Secret containment** (FR-37, O19, G-O3): `secrets` holds only `SecretRef`s
+   (`env:`-indirected). A literal credential in the manifest is an invariant violation.
+3. `ObjectOfInterest.sam3_concept` is **not** authored by Setup — it is the interpretive
+   output the internal overseer fills after hand-off (the setup/agent boundary, §7.5).
+4. `provision.status` advances monotonically `unconfigured → provisioning → ready | failed`;
+   the hand-off event fires only on `ready`.
+
+### 7.2 Value object: `HardwareProfile` (D-015.3 — the probe result)
+
+```
+HardwareProfile {                    # Value Object — produced by /api/hardware
+    gpus: list[GpuInfo]              # per-GPU: name, total_vram_gb, free_vram_gb
+    ram_gb: float
+    disk_free_gb: float
+}
+```
+
+### 7.3 Value object: `ModelSelection` (D-015.3 — hardware-fit choices)
+
+The per-stage model/quant recommendation, written to the `[models]` /
+`[models.vram_plan]` manifest block. **Domain rule — VRAM fit** (FR-36, O18, G-O2): no
+selected stage model's `serial_peak_estimate_gb` may exceed the smallest GPU's
+`total_vram_gb` in the `HardwareProfile` (the serial lifecycle, ADR-013 D-013.2, bounds
+peak VRAM to the largest single stage). The user may override; an over-budget override is
+flagged, not silently accepted.
+
+```
+ModelSelection {                     # Value Object
+    inpaint: str                     # e.g. "flux2-dev-fp8mixed" (fallback flux1-fill)
+    hull: str                        # e.g. "hunyuan3d-2.1"      (fallback 2.0)
+    matcher: str                     # e.g. "aliked_lightglue"   (fallback sift)
+    mesh: str                        # milo | tsdf | come | gaussianwrap
+    artifact_vlm_quant: str          # gemma-4 quant (e.g. Q5_K_M)
+    serial_peak_estimate_gb: float   # max single-stage VRAM (informational; from probe)
+}
+```
+
+### 7.4 Value object: `DriveBinding` (D-015.6 — source + write-back)
+
+```
+DriveBinding {                       # Value Object
+    url: str                         # source (ingest) Drive folder
+    rclone_remote: str
+    writeback: bool                  # D-015.6 — upload outputs back to source
+    writeback_subdir: str | None     # defaults to the source folder
+}
+```
+
+`OutputWriteBack` (the act) crosses the §5.1 rclone ACL (now read+write); the Drive write
+scope it needs comes from the §5.5 browser-OAuth grant.
+
+### 7.5 Value object: `ProvisionStatus` + the setup/agent hand-off (D-015.5)
+
+The latch that bounds **deterministic Setup** from the **interpretive agent**. Setup
+performs the §5.5-mediated downloads, the ADR-014 ComfyUI ensure+pin (FR-32), and
+`v2g-net` bring-up, then writes `status = "ready"` and emits `ProvisionReady`. The internal
+Claude Code overseer consumes that event and does the judgement work — `ObjectOfInterest`
+free text → SAM3 concept candidates + per-object recovery plans (FR-9/FR-11).
+
+```
+ProvisionStatus {                    # Value Object — the hand-off latch
+    status: str                      # unconfigured → provisioning → ready | failed
+    models_integrated: list[str]     # which model checkpoints are present + pinned
+    comfyui_pinned: bool             # ADR-014 FR-32 ensure+pin succeeded
+    network_up: bool                 # v2g-net reachable
+    ready_at: datetime | None
+}
+```
+
+> **The boundary, stated once**: *Setup makes the system runnable; the agent decides how
+> to run it.* Everything in §7.1–§7.4 is deterministic, idempotent, and scriptable.
+> Everything downstream of `ProvisionReady` is the overseer's interpretation — consistent
+> with `docs/architecture.md` "no hidden state machine; Claude decides what to run next".
+
+**New domain events** (Onboarding/Setup):
+
+```
+ManifestSaved     { schema_version, object_count, timestamp }        # re-entrant overwrite
+HardwareProbed    { gpu_count, total_vram_gb, timestamp }
+ModelsSelected    { selection, serial_peak_estimate_gb, timestamp }
+SecretStored      { ref_name, backend: keyring|docker_secret, timestamp }  # value never logged
+ProvisionStarted  { selection_ref, timestamp }
+ProvisionReady    { models_integrated, comfyui_pinned, network_up, timestamp }  # hand-off fires
+```
+
+### 7.6 Context map — Onboarding/Setup upstream of the pipeline
+
+```mermaid
+flowchart LR
+    subgraph EXTO["External (ACL §5.5 / §5.1)"]
+        HOST["Host GPUs (nvidia-smi)"]
+        HF["Hugging Face Hub"]
+        GOOG["Google OAuth"]
+        CUI["ComfyUI / Salad (.48)"]
+    end
+
+    subgraph ONB["Onboarding/Setup (NEW — ADR-015)"]
+        WIZ["Vitrine Onboarding (vitrine-setup)"]
+        EM["ExhibitManifest (single active)"]
+        HW["HardwareProfile"]
+        MS["ModelSelection"]
+        PS["ProvisionStatus"]
+        WIZ --> EM
+        HW --> MS --> EM
+        WIZ --> PS
+    end
+
+    AGENT["Internal overseer (Claude Code, ADR-013)"]
+
+    HOST -. "§5.5 hardware probe" .-> HW
+    HF -. "§5.5 model pulls" .-> PS
+    GOOG -. "§5.5 OAuth (Drive r+w)" .-> EM
+    CUI -. "ADR-014 ensure+pin" .-> PS
+    EM -- "the one manifest" --> AGENT
+    PS -- "ProvisionReady (hand-off)" --> AGENT
+    AGENT -- "consumes" --> PIPE["Ingestion → … → Delivery"]
+
+    classDef new fill:#fff3cd,stroke:#d39e00;
+    classDef ext fill:#f8d7da,stroke:#c82333;
+    class WIZ,EM,HW,MS,PS,ONB new;
+    class HOST,HF,GOOG,CUI ext;
+```
+
+**Reading the map**: the Onboarding/Setup context is the single source of the
+`ExhibitManifest` and the single holder of secrets; it provisions deterministically and
+hands off to the internal overseer on `ProvisionReady` — the overseer, not setup, drives
+the pipeline from there.

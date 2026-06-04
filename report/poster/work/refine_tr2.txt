@@ -1,0 +1,11 @@
+This is the TOP-RIGHT QUADRANT of a printed A0 poster. Upscale to razor-crisp 4K. KEEP THE EXACT crop, composition, colours, icon positions and all four cut edges identical so it tiles seamlessly with neighbours. Do NOT move, add, remove or re-layout anything. Pure white background; Salford crimson red, teal, navy accents unchanged.
+
+THE SINGLE MOST IMPORTANT FIX: the small body paragraph under the heading "Hierarchical Scene Graph" is currently blurred into nonsense words. Re-render that paragraph crisply so it reads EXACTLY, word for word:
+"SAM2 decomposes the capture; masks are projected from 2D into the Gaussian field with 98.3% coverage, resolving 37 detections into 31 clean object prims."
+
+Everything else stays exactly as shown and must remain correctly spelled:
+- "DREAMLAB / AI CONSULTING LTD" logo top-right.
+- Title (cut at left): "...n Agentic Pipeline for / ...eritage Preservation".
+- Pipeline chips: "5. SAM2 Decompose / 37 -> 31 objects", "6. 360 deg Objects / Hunyuan3D + FLUX", "7. Mesh Backends / TSDF / MILo / CoMe", "8. USD Scene Graph / variant: Gaussian | Mesh".
+- "Four Pluggable Mesh Backends" table header "Backend  Strength  Time" with rows "TSDF  fast, 4.5M faces  4 min" and "MILo  Chamfer 2.6 mm, 7.8M  69 min".
+No invented or lorem-ipsum words anywhere. Output the refined quadrant only.

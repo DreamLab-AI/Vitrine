@@ -195,3 +195,97 @@ The pipeline modules (`src/pipeline/stages.py`) are designed as independent, sta
 | OpenUSD | 25.02+ | USD scene export |
 | Node.js | system | splat-transform (npm/npx) runtime |
 | NumPy | pipeline dep | Fibonacci-sphere scoring, mask projection |
+
+---
+
+## v3 End-to-End Architecture (Proposed)
+
+> Everything in this section is **design, not shipped code**. The v2 deployment above is current.
+> The v3 design is governed by ADR-012 through ADR-015 in `research/decisions/`.
+
+### Single-manifest input: `exhibit.toml`
+
+The pipeline's one human-authored input is a TOML manifest. It carries:
+
+- `[exhibit]` — project-level identity (id, name, venue, date, curator, description) that flows into USD metadata.
+- `[[objects]]` — the list of objects the agent will decompose and recover; each has a stable `id`, a `sam3_concept` string, and a `priority` (`key` | `standard`). Key-priority objects trigger the full hull-reconstruction + FLUX.2 recovery path.
+- `[drive]` — Google Drive source folder URL, rclone remote name, and (v3) a `writeback = true` flag so finished artifacts are uploaded back to the same Drive folder.
+- `[secrets]` — `env:NAME` references only. Credentials are never inlined, never written to the JSON run snapshot.
+- `[pipeline]` — optional overrides onto `PipelineConfig` SOTA defaults (mesh backend, matcher, etc.).
+- `[oversight]` — selects the pipeline overseer (see below).
+- `[models]` — hardware-selected model/quant choices written by Vitrine Onboarding.
+
+A `manifest.py` loader parses this, resolves `env:` references, and materialises the existing `PipelineConfig` as the runtime artifact. The manifest is the source; the JSON snapshot is the run record. ADR-013.
+
+### Orchestrator and tool: Claude Code + gemma-4
+
+The in-container **Claude Code** agent (accessible via ttyd on port 7681) remains the pipeline overseer. It drives the stateless `stages.py` functions, calls LichtFeld MCP tools, and works around failures end-to-end. There is no hidden state machine.
+
+**gemma-4-26B-A4B** is a unified multimodal vision tool the orchestrator calls — not a second orchestrator. It serves both per-frame artifact triage (FR-27: detecting motion ghosting, specular blowout, rolling-shutter skew, transient occluders) and metadata-fused reasoning (FR-28). The model is vision-capable: architecture `Gemma4ForConditionalGeneration` with a SigLIP vision encoder and `mmproj` projector. It is deployed as a containerised `agent-vlm` service on `v2g-net`. Qwen2.5-VL is retained as an optional fallback behind a capability probe.
+
+The `[oversight].backend` field in the manifest selects the overseer:
+
+- `claude_code` **(default)** — the in-container Claude Code agent, no local GPU cost; requires the user to log in to Claude Code inside the container once (session persists in the `claude-session` volume).
+- `gemma_local` — the local gemma-4 model also acts as overseer; fully on-host, no API key, but creates GPU-contention with heavy generative stages.
+
+The `[oversight].artifact_vlm` field (independent of `backend`) selects what performs bulk per-frame triage: `gemma_local` (default; transient, loaded for the artifact stage then unloaded) or `claude_code` (higher API cost on large frame sets).
+
+ADR-013, sections D-013.5 and D-013.6.
+
+### Serial model lifecycle and VRAM bounding
+
+A `ModelLifecycleManager` wraps each pipeline stage as a context manager. Each stage declares a `ModelSpec` with a VRAM estimate and an unload tier:
+
+- **Soft unload** (default) — in-process free via ComfyUI `POST /free`, llama.cpp/vLLM model unload, `torch.cuda.empty_cache()`. Fast, container stays warm.
+- **Hard unload** — `docker stop` / `docker start` on the service container. Full driver-level VRAM reclamation; used selectively for back-to-back heavy stages (FLUX.2 → Hunyuan3D) where soft-free leaves fragmentation.
+
+Peak VRAM = `max(stage VRAM)`, not `sum(stages)`. This is the only way the full SOTA model set (FLUX.2-dev ~32 GB fp8 + Hunyuan3D-2.1 ~16 GB + gemma-4 ~20 GB Q5_K_M + SAM3 ~8 GB) fits a single-host budget. ADR-013, section D-013.2.
+
+| Stage | Model | Engine | ~VRAM | Unload tier |
+|-------|-------|--------|-------|-------------|
+| Frame artifact triage + reasoning | gemma-4-26B-A4B (unified) | `agent-vlm:8080` | ~20 GB (Q5_K_M) | soft |
+| SfM matching | ALIKED + LightGlue | in-proc torch | < 4 GB | soft |
+| 3DGS training | LichtFeld / gsplat | native | scales with scene | n/a |
+| Decomposition | SAM3 | in-proc torch | ~8 GB | soft |
+| Inpaint / occluded-face recovery | FLUX.2-dev fp8mixed | `comfyui:8188` | ~32 GB | **hard** |
+| Hull reconstruction | Hunyuan3D-2.1 | `comfyui:8188` | ~16 GB | **hard** |
+| Mesh extraction | MILo (default) / CoMe | sidecar | sidecar GPU | n/a |
+
+### `v2g-net` Docker mesh
+
+Hardcoded `192.168.2.48:port` endpoints are replaced by a user-defined Docker bridge network on the GPU host. Services resolve by DNS name:
+
+```
+v2g-net (bridge)
+├── comfyui        :8188   FLUX.2-dev (fp8mixed) + Hunyuan3D-2.1 + Mistral-3 enc + FLUX.2 VAE
+│                  :3001   Salad add-on control-plane API (model probe / lifecycle)
+├── agent-vlm      :8080   gemma-4-26B-A4B (multimodal) — artifact VLM + reasoner
+├── gaussian-toolkit       orchestrator (addresses peers as http://comfyui:8188 etc.)
+├── milo  (sidecar)        device_ids ['1'] — docker exec
+└── come  (sidecar)        device_ids ['1'] — docker exec (gated, non-commercial)
+```
+
+The `ModelLifecycleManager` hard-tier uses `docker stop` / `docker start` on `comfyui` and `agent-vlm` on this network to guarantee VRAM reclamation. ADR-013, section D-013.3.
+
+### Agent-controlled ComfyUI recovery
+
+The existing `.48` ComfyUI is updated to a pinned state via the **Salad add-on control API** (`comfyui:3001`) — an in-container control plane for model probe, download, and lifecycle, not a cloud service. The `RecoveryController` (a stateless helper the orchestrator invokes) runs a per-object loop:
+
+1. **Plan** — compose the FLUX.2-dev inpaint or Hunyuan3D-2.1 hull graph from a template, parameterised by object identity and the artifact report.
+2. **Submit** — `POST /prompt` (graph API); poll `/history/{id}`; fetch outputs.
+3. **Evaluate** — gemma-4 (vision tool) scores the generated image or mesh render against object identity and artifact criteria.
+4. **Decide** — `accept` | `re-prompt` (adjust denoise/guidance/seed/mask, bounded retry budget) | `veto` (unrecoverable). Every attempt is annotated in the per-video ledger; nothing is silently dropped.
+5. **Release** — Salad control free/unload the stage model before the next stage.
+
+ADR-014. See also [v3 Pipeline Design](architecture/v3-pipeline.md) for the full `v2g-net` diagram.
+
+### SOTA tooling defaults (ADR-012)
+
+| Axis | v2 default | v3 default (proposed) |
+|------|-----------|----------------------|
+| Mesh backend | TSDF | **MILo** (SIGGRAPH Asia 2025) |
+| SfM matching | SIFT exhaustive | **ALIKED + LightGlue** |
+| Hull reconstruction | Hunyuan3D-2.0 | **Hunyuan3D-2.1** |
+| Inpainting | FLUX.1-Fill-dev | **FLUX.2-dev** (fp8mixed) |
+
+Fallbacks remain available (TSDF, SIFT, Hunyuan3D-2.0, FLUX.1-Fill) behind capability probes so a missing checkpoint degrades gracefully rather than halting. ADR-012.

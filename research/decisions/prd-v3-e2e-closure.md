@@ -72,8 +72,13 @@ profile — it does **not** redesign the selection policy (that is ADR-003's rem
 | O14 | Build reproducibility | Pinned version/commit for every model + tool (no HEAD clones) | 100% of build inputs pinned |
 | O15 | Semantic artifact rejection | VLM-flagged artifact frames vetoed/repaired before pooling, vs analyst ground truth | ≥ 90% precision on test scene |
 | O16 | Metadata-aware scaffolding | Reconstruction candidates selected with VLM + capture metadata in the loop | 100% of candidates carry a fused score |
+| O17 | Non-technical onboarding | A user authors a valid `exhibit.toml` via the web wizard with zero file editing | 100% of required manifest fields settable from the UI |
+| O18 | Hardware-correct model selection | Wizard-recommended model/quant per stage fits the probed per-GPU VRAM | 100% — no recommendation exceeds `/api/hardware` VRAM |
+| O19 | Secret containment | Credentials (HF token, Google refresh token) absent from browser JS, TOML, and git | 100% — secrets only as server-side keyring/Docker-secret, `env:`-referenced |
+| O20 | Output write-back | Finished artifacts uploaded back to the source Drive folder the video came from | 100% of completed runs with `[drive].writeback = true` |
 
-Success is the conjunction O1–O16 on the curated test scene, verified by the §6 quality gates.
+Success is the conjunction O1–O16 on the curated test scene (verified by the §6 quality gates);
+the onboarding objectives O17–O20 (ADR-015) are verified by the §6 onboarding gates G-O1..G-O4.
 
 ---
 
@@ -239,9 +244,10 @@ analysis §6) and are decided by **ADR-012**. `†` marks items requiring a mode
   3DGUT / ImprovedGS+ training flags per-preset (`stages.py:748-756`); evaluate native USD export
   vs `scripts/assemble_usd_scene.py` for the `v2g:*` schema. *Closes T7.*
 - **FR-27\*†** — Add a **VLM artifact-analysis** stage the containerised agent calls on photometric
-  survivors: a pinned local VLM (Qwen2.5-VL / InternVL3) emits a typed `artifact_report` (motion
-  ghosting, rolling-shutter, specular blowout, flare, transient occluders, compression blocking;
-  label + confidence + bbox) written as a `vlm` block in the ADR-009 per-frame sidecar. *Closes T8.*
+  survivors: the **unified multimodal gemma-4-26B-A4B agent** (ADR-013 D-013.5; Qwen2.5-VL / InternVL3
+  fallback) emits a typed `artifact_report` (motion ghosting, rolling-shutter, specular blowout, flare,
+  transient occluders, compression blocking; label + confidence + bbox) written as a `vlm` block in the
+  ADR-009 per-frame sidecar. *Closes T8.*
 - **FR-28\*** — **Metadata-aware candidate scaffolding.** Ingest per-capture/project metadata
   (camera/lens, capture session, operator notes, EXIF/SRT GPS) as an additive `capture` sidecar
   block, and fuse it with the FR-27 `artifact_report` and the FR-3 photometric tags to rank/scaffold
@@ -250,7 +256,99 @@ analysis §6) and are decided by **ADR-012**. `†` marks items requiring a mode
   never silently drops**; every veto/repair reason is recorded in the ledger and `v2g:*` lineage.
   *Closes T8.*
 
-**FR count: 28** (19 workflow-shape + 9 tooling).
+### Cross-cutting — Ingest manifest, serial model lifecycle, docker mesh (`manifest.py`, `model_lifecycle.py`, `config.py`, compose) — ADR-013
+
+These requirements give the pipeline a single human-authored input and a VRAM-bounded model
+schedule. They are decided by **ADR-013** and are gated on its Open Questions Q1–Q7. `†` marks
+items requiring a model pull / HF token.
+
+- **FR-29** — **Pre-run TOML ingest manifest** (`exhibit.toml`). A loader parses exhibit identity,
+  an object sub-list (array of tables, each with stable `id`/`sam3_concept`/`priority`), the Drive
+  URL, and `env:`-indirected secrets (HF, Google Cloud), and **materialises** the existing
+  `PipelineConfig`. Secrets are resolved at load and stripped before the JSON run snapshot; a missing
+  referenced env-var fails by name. `priority="key"` objects enter the ADR-010 hull-recon path. The
+  manifest also carries `[oversight]`: `backend` (**default `claude_code`** — the in-container Claude
+  Code overseer, which the user must log into inside the container once; `gemma_local` optional with a
+  GPU-contention tradeoff per ADR-013 D-013.6) and `artifact_vlm` (transient bulk-triage tool, default
+  `gemma_local`).
+- **FR-30†** — **Serial model load/unload lifecycle.** Stages run serially behind a
+  `ModelLifecycleManager`; each declares a `ModelSpec(engine, checkpoint, vram_estimate, gpu_affinity,
+  isolation)`. The manager asserts VRAM headroom, loads, yields, then unloads — `soft` (ComfyUI
+  `/free`, `cuda.empty_cache`) by default, `hard` (container stop/start) for FLUX.2↔Hunyuan3D. Peak
+  VRAM is bounded to the largest single stage, enabling the most-performant model per stage.
+- **FR-31** — **Docker-network model mesh (`v2g-net`).** Replace hardcoded `192.168.2.48:port` /
+  `localhost:port` endpoints (`config.py:135-136,152-153,171`) with service-DNS names (`comfyui:8188`,
+  `vlm:8081`, `reasoner:8080`), overridable from the manifest `[pipeline]` block. The lifecycle
+  manager owns container start/stop on this network. *gemma-4-26B-A4B is multimodal
+  (`Gemma4ForConditionalGeneration`, SigLIP vision, `mmproj`), so one `agent-vlm` model serves both the
+  FR-27 artifact VLM and the FR-28 reasoner — no separate Qwen2.5-VL required (fallback only).*
+
+### Cross-cutting — Agent-controlled ComfyUI on .48 (`comfyui_inpainter.py`, `workflows/`) — ADR-014
+
+- **FR-32** — **Update & pin the existing .48 ComfyUI.** Idempotently ensure the FLUX.2-dev /
+  Hunyuan3D-2.1 checkpoints and pinned custom nodes via the Salad add-on control API
+  (`probe_models`/`download_model`); missing checkpoints degrade to declared fallbacks (FLUX.1-Fill /
+  Hunyuan3D-2.0) behind a capability probe. Pins recorded in the ADR-012 T6 version lock.
+- **FR-33** — **Connect over `v2g-net`.** Replace hardcoded `192.168.2.48:{3001,8189,8188}` defaults
+  (`comfyui_inpainter.py:282-284`) with service-DNS endpoints (`comfyui:8188` graph, `comfyui:3001`
+  Salad control); the `ImageServer` binds the orchestrator's network address so ComfyUI fetches inputs
+  by DNS, not `192.168.2.1`. Literal-IP form retained only as a manifest override.
+- **FR-34** — **Agent control loop (VLM-in-the-loop).** Promote the one-shot `inpaint()` into a
+  `RecoveryController`: the gemma-4 agent plans the FLUX.2/Hunyuan3D graph, submits, **looks at** the
+  output, and decides `accept` | `re-prompt` (bounded retries, adjust denoise/guidance/seed/mask) |
+  `veto`. Annotates never drops — every attempt + VLM verdict + reason to the ledger + `v2g:*` lineage.
+  Operationalises FR-11/FR-27/FR-28.
+
+### Cross-cutting — Web onboarding & setup tool ("Vitrine Onboarding") (`vitrine-setup/`, `schema/exhibit.toml.schema.json`, `frontend/`) — ADR-015
+
+These requirements give the human-authored `exhibit.toml` (FR-29) an ergonomic, non-technical
+authoring surface modelled on the proven agentbox setup tool, and bound the setup-vs-agent hand-off.
+They are decided by **ADR-015** and gated on its Open Questions Q-015.1–Q-015.3. `†` marks items
+requiring a model pull / external credential.
+
+- **FR-35\*** — **Schema-driven onboarding wizard.** A frameworkless vanilla-JS frontend + a single
+  static Rust/Axum binary (`vitrine-setup`, ephemeral `127.0.0.1:0`) render a stepper (Exhibit →
+  Objects → Hardware/Models → Secrets/Login → Provision & Hand-off) from a **JSON Schema**
+  (`schema/exhibit.toml.schema.json`) that is the single source of truth for the ADR-013 manifest.
+  `toml_edit::DocumentMut` round-trips the file so comments and key order survive. The wizard's output
+  **is** the FR-29 `exhibit.toml` — zero translation. *Re-entrant, no history*: on start the backend
+  loads the existing manifest (if present) and populates editable fields; the user re-saves the **same**
+  single active file (no past-project list). *Realises ADR-015 D-015.2.*
+- **FR-36** — **Hardware-aware model selection.** A `/api/hardware` endpoint probes the host
+  (GPU count, per-GPU VRAM via `nvidia-smi`, RAM, disk) and maps it to the FR-29/D-013.4 per-stage
+  table, **recommending** the most-performant model/quant that fits (e.g. 48 GB → FLUX.2-dev fp8mixed +
+  Hunyuan3D-2.1 + gemma-4 Q5_K_M; 24 GB → smaller quants, `hard` unload everywhere). The user accepts
+  or overrides; choices write a new `[models]` + `[models.vram_plan]` manifest block. No recommendation
+  may exceed probed VRAM (O18). *Realises ADR-015 D-015.3.*
+- **FR-37\*†** — **Secret entry & browser-based login (server-side containment).** No credential ever
+  enters the browser JS or the TOML (extends NFR-4 / FINDING-006 to the onboarding surface). The HF
+  token is pasted → `POST` to the backend → stored as a host-keyring / Docker-secret entry, referenced
+  from the manifest only as `hf_token = "env:HF_TOKEN"` (FR-29 secret indirection), shown masked. Google
+  **browser OAuth** (Drive read + write scope) runs the consent flow in the browser; the **refresh token
+  is stored server-side**, never in the browser or TOML, referenced as
+  `gcloud_credentials = "env:GOOGLE_APPLICATION_CREDENTIALS"` (or an rclone remote). The Rust backend
+  holds the token and proxies Drive calls (`/api/proxy/*`, server-side `Authorization: Bearer`).
+  *Realises ADR-015 D-015.4.*
+- **FR-38†** — **Deterministic provisioning + setup/agent hand-off boundary.** Unlike the agentbox
+  config wizard, `vitrine-setup` **provisions**: it downloads & integrates the FR-36 models (HF pulls
+  via the stored token), ensures+pins the .48 ComfyUI checkpoints/nodes via the ADR-014 Salad control
+  API (FR-32), brings up `v2g-net`, and verifies readiness — idempotent, scriptable, no interpretation,
+  progress streamed to the UI. It ends by writing `provision.status = "ready"` and emitting a hand-off
+  event. The **internal Claude Code overseer** (FR-29 `[oversight]`, ADR-013 D-013.6) then does the
+  *interpretive* scaffolding: turning the free-text objects-of-interest into SAM3 concept candidates +
+  per-object recovery plans (FR-9/FR-11). Boundary: **setup makes the system runnable; the agent decides
+  how to run it.** *Realises ADR-015 D-015.5.*
+- **FR-39** — **Output write-back to the source Google Drive.** The manifest `[drive]` block gains
+  `writeback` / `writeback_subdir`; finished artifacts (USD scene, ksplat, per-object meshes, run report)
+  are uploaded back to the **same Drive folder** the source video came from (or a `vitrine-output/`
+  subfolder). Requires the Drive **write** scope from the FR-37 OAuth grant — the rclone/Drive ACL
+  extends from read-only ingest to read+write (DDD §5.1). *Realises ADR-015 D-015.6.*
+- **FR-40** — **Project rename to Vitrine.** New docs, the CLI/package id (`vitrine`), and the onboarding
+  tool adopt the name **Vitrine** now; a full code/repo/remote rename is an explicitly-scheduled,
+  separate follow-up (high blast radius — not done silently). *Realises ADR-015 D-015.1.*
+
+**FR count: 40** (19 workflow-shape + 9 tooling + 3 ingest/lifecycle + 3 ComfyUI agent-control +
+6 onboarding/setup).
 
 ---
 
@@ -309,8 +407,12 @@ one threshold). The pipeline **fails closed** on any gate marked blocking.
 | G-T4 Pins | T6 | Every model/tool pinned to tag/commit (no HEAD) | 100% | Scan Dockerfiles for unpinned clones / bare pip | Yes |
 | G-T5 VLM artifact precision | T8 | VLM-vetoed frames that are genuine artifacts vs analyst GT | ≥ 90% | Compare `artifact_report` vetoes vs ground truth on test scene | Yes |
 | G-T6 Fused scaffolding | T8 | Pooled candidates carry a fused (photometric + VLM + capture) score, no silent drops | 100% | Assert every pooled frame has a recorded score + every veto a reason | Yes |
+| G-O1 Schema round-trip | O17 | Wizard save → `exhibit.toml` re-loads and re-renders identical field values (comments/order preserved) | 100% | Save, reload, assert `toml_edit` diff is comment/order-stable and values equal | Yes |
+| G-O2 VRAM fit | O18 | Wizard model recommendation fits probed per-GPU VRAM | 100% | Assert each recommended `serial_peak_estimate_gb` ≤ `/api/hardware` GPU VRAM | Yes |
+| G-O3 Secret containment | O19 | No credential present in browser payloads, `exhibit.toml`, or git; only `env:`-references | Pass | Scan served JS + manifest + tree for plaintext token; assert only `env:` indirection | Yes |
+| G-O4 Write-back | O20 | Completed run with `writeback = true` uploads artifacts to the source Drive folder | 100% | Post-run `rclone lsjson` of the source/`vitrine-output` folder finds the artifact set | No |
 
-**Gate count: 23** (17 workflow-shape + 6 tooling).
+**Gate count: 27** (17 workflow-shape + 6 tooling + 4 onboarding).
 
 ---
 
@@ -354,7 +456,7 @@ scenes (ADR/PRD-v2 Phase 3); survey/georeferenced world placement (deferred per 
 
 ## 9. Decision Dependencies
 
-This PRD's requirements are realised by three new ADRs and one DDD extension, which it commissions
+This PRD's requirements are realised by seven new ADRs and one DDD extension, which it commissions
 by exact filename:
 
 | Artefact (filename) | Decides | Realises FR / closes deltas |
@@ -362,7 +464,10 @@ by exact filename:
 | **ADR-009** (`adr-009-*.md`) | Per-video ingest unit + per-image metadata sidecar schema + delete-on-verified-extraction | FR-1..FR-5 — D1, D2, D3, D14(root) |
 | **ADR-010** (`adr-010-*.md`) | Key-item ranking + threshold; FLUX-inpainted hull recovery; per-object world-pose persistence; depth-aware projection; the "correctly placed" contract | FR-8..FR-13 — D6, D7, D8, D9, D10 |
 | **ADR-011** (`adr-011-*.md`) | USD `v2g:*` metadata schema enrichment + textured environment mesh prim + lineage into USD | FR-14..FR-19 — D11, D12, D13, D14 |
-| **ADR-012** (`adr-012-*.md`) | SOTA tooling modernisation: MILo default, ALIKED+LightGlue, Hunyuan3D-2.1, FLUX Kontext, neural-SfM branch, version pins, native v0.5.x + plugin adoption, VLM artifact analysis + metadata-aware scaffolding | FR-20..FR-28 — T1..T8 |
+| **ADR-012** (`adr-012-*.md`) | SOTA tooling modernisation: MILo default, ALIKED+LightGlue, Hunyuan3D-2.1, **FLUX.2-dev** (amended from Kontext), neural-SfM branch, version pins, native v0.5.x + plugin adoption, VLM artifact analysis + metadata-aware scaffolding | FR-20..FR-28 — T1..T8 |
+| **ADR-013** (`adr-013-*.md`) | Pre-run TOML ingest manifest (`exhibit.toml`) + serial model load/unload lifecycle (VRAM-bounded, soft/hard unload) + docker-network model mesh (`v2g-net`); unified multimodal gemma-4 `agent-vlm` (artifact VLM + reasoner); target host .48 | FR-29..FR-31 — operationalises FR-27/FR-28; Q1–Q4/Q7 resolved 2026-06-04 |
+| **ADR-014** (`adr-014-*.md`) | Agent-controlled ComfyUI on .48: update+pin checkpoints/nodes via Salad control API; connect over `v2g-net` (service DNS); VLM-in-the-loop `RecoveryController` (gemma-4 plans→submits→evaluates→accept/re-prompt/veto); Generative Recovery bounded context + ACL | FR-32..FR-34 — operationalises FR-11/FR-27/FR-28 |
+| **ADR-015** (`adr-015-*.md`) | **Vitrine** rename; schema-driven web onboarding/setup tool (`vitrine-setup`, agentbox pattern: vanilla JS + Rust/Axum, JSON-Schema-driven `exhibit.toml` editor, `toml_edit` round-trip, re-entrant/no-history); hardware-aware model selection; browser-OAuth + server-side secret containment; deterministic-provisioning vs internal-agent hand-off; Drive output write-back; new Onboarding/Setup bounded context + Drive write-back ACL | FR-35..FR-40 — authors FR-29 manifest; Q-015.1–Q-015.3 open |
 | **DDD extension** (`research/ddd/v3-e2e-extensions.md`) | New aggregates/value objects: per-video work unit, per-image metadata, key-item ranking, object pose, `v2g:*` annotation — extending the existing DDD model (`research/ddd/{aggregates,bounded-contexts,ubiquitous-language,anti-corruption-layers}.md`). Tooling (ADR-012) adds **no** new aggregate — the VLM `artifact_report` and `capture` block are additive fields on the existing Frame / ImageMetadataTag | All phases — vocabulary + aggregate boundaries for D1–D14 |
 
 D4 (declarative profile) and D5 (resumable DAG) are realised directly in this PRD's FR/NFR
@@ -396,6 +501,20 @@ D4 (declarative profile) and D5 (resumable DAG) are realised directly in this PR
 | T6 | Tooling | FR-25 | G-T4 | 012 |
 | T7 | Tooling | FR-26 | G-T2 | 012 |
 | T8 | Tooling | FR-27, FR-28 | G-T5, G-T6 | 012 |
+| O1 | Ingest/ops | FR-29 | — (manifest contract) | 013 |
+| O2 | Ingest/ops | FR-30 | — (VRAM-bounded run) | 013 |
+| O3 | Ingest/ops | FR-31 | — (docker mesh) | 013 |
+| O4 | Generative | FR-32 | — (pin/probe contract) | 014 |
+| O5 | Generative | FR-33 | — (network connect) | 014 |
+| O6 | Generative | FR-34 | G8 (verified recovery) | 014 |
+| O17 | Onboarding | FR-35 | G-O1 | 015 |
+| O18 | Onboarding | FR-36 | G-O2 | 015 |
+| O19 | Onboarding | FR-37 | G-O3 | 015 |
+| O20 | Onboarding | FR-38, FR-39 | G-O4 | 015 |
+| — | Onboarding (rename) | FR-40 | — (docs contract) | 015 |
 
 Every delta D1–D14 and tooling gap T1–T8 traces to at least one FR; every blocking gate traces to a
-delta or tooling gap. Coverage is complete.
+delta or tooling gap. FR-29..FR-31 (ADR-013) + FR-32..FR-34 (ADR-014) operationalise FR-11/FR-27/FR-28;
+FR-35..FR-40 (ADR-015) author the FR-29 manifest and bound the setup/agent hand-off.
+ADR-013 Q1–Q4/Q7 resolved 2026-06-04, Q5/Q6 open (non-blocking); ADR-015 Q-015.1–Q-015.3 open
+(non-blocking). Coverage is complete.

@@ -1,0 +1,12 @@
+This is the BOTTOM-LEFT QUADRANT of a printed A0 poster. Upscale to razor-crisp 4K. KEEP THE EXACT crop, composition, colours, icon positions and all four cut edges identical so it tiles seamlessly with neighbours. Do NOT move, add, remove or re-layout anything. Pure white background; Salford crimson red, teal, navy accents unchanged.
+
+THE SINGLE MOST IMPORTANT FIX: the small body paragraph under the heading "Photoreal Radiance Field" is currently blurred into nonsense words. Re-render that paragraph crisply so it reads EXACTLY, word for word:
+"Stage 4 optimises a 3D Gaussian Splatting field for 30k iterations, reaching real-time novel-view synthesis at the captured resolution."
+
+Everything else stays exactly as shown and must remain correctly spelled:
+- The caption on the top gallery photo: "Handheld 4K video walkthrough".
+- The three big red statistic dials: "29.6 dB / PSNR", "0.921 / SSIM", "0.108 / LPIPS".
+- The three big red stats below: "1.18M / gaussians", "160 / FPS", "24 min / train".
+- The 2x3 grid of gallery photos paired with colourful depth/confidence maps stays sharp with no text on it.
+- Headings cut at the right edge ("Per-Obj...", "Deployment...") stay cut exactly as shown.
+No invented or lorem-ipsum words anywhere. Output the refined quadrant only.

@@ -1,7 +1,12 @@
 # Aspirational End-to-End Workflow — Diagram as Code
 
 **Date**: 2026-06-04
-**Status**: Target architecture (drives PRD-v3, ADR-009/010/011/012, DDD v3 extensions)
+**Status**: Target architecture (drives PRD-v3, ADR-009/010/011/012/013, DDD v3 extensions)
+**Entry point** (ADR-013): a pre-run `exhibit.toml` manifest (exhibit identity + object sub-list +
+Drive URL + `env:`-indirected HF/GCloud secrets) materialises `PipelineConfig`; stages run serially
+behind a VRAM-bounded model lifecycle (load best model → run → unload) over the `v2g-net` docker mesh
+(`comfyui` FLUX.2-dev/Hunyuan3D-2.1, `agent-vlm` = the unified multimodal **gemma-4-26B-A4B** serving
+both artifact-VLM and reasoner roles; Qwen2.5-VL fallback only — ADR-013 D-013.5).
 **Scope**: From a Google Drive folder of raw videos to a richly-annotated USD scene graph
 with a polygonal textured environment and correctly-placed, textured 3D hulls of the
 key items in the scene.
@@ -83,7 +88,7 @@ flowchart TD
         direction TB
         OBJ{{"For each KEY item"}}:::part
         MVR["Multiview orbit render"]:::done
-        FLUX["LOCAL FLUX.1 Kontext inpaint unseen/occluded views (ComfyUI, ADR-012)"]:::miss
+        FLUX["LOCAL FLUX.2-dev inpaint unseen/occluded views (ComfyUI, ADR-012/013/014)"]:::miss
         HULL_B{"Hull backend branch"}:::branch
         H3D["Hunyuan3D 2.1 (ComfyUI) → textured GLB (ADR-012)"]:::done
         TSDF_O["gsplat depth → TSDF fallback"]:::done
@@ -181,7 +186,7 @@ flowchart LR
 ```
 
 > **SOTA defaults (ADR-012):** matcher → `aliked_lightglue` for indoor presets (SIFT fallback);
-> hull → `Hunyuan3D 2.1`; inpaint → `FLUX.1 Kontext`; `mesh_method` default → `milo` (TSDF only
+> hull → `Hunyuan3D 2.1`; inpaint → `FLUX.2-dev` (ADR-013, amended from Kontext); `mesh_method` default → `milo` (TSDF only
 > on sidecar-down); optional neural SfM (`VGGT`/`MASt3R`) precedes COLMAP for low-overlap captures.
 
 ---
@@ -219,11 +224,11 @@ flowchart TD
 
     PHOTO["Photometric survivors (blur/exposure/sharpness pass)"]:::part
     DEDUP["Cluster near-duplicates by phash → representatives"]:::miss
-    VLM["VLM artifact analysis (Qwen2.5-VL / InternVL3)<br/>ghosting · rolling-shutter · specular blowout ·<br/>flare · transient occluder · compression blocking"]:::miss
+    VLM["VLM artifact analysis (unified gemma-4-26B-A4B; Qwen2.5-VL/InternVL3 fallback)<br/>ghosting · rolling-shutter · specular blowout ·<br/>flare · transient occluder · compression blocking"]:::miss
     CAP[("Capture / project metadata<br/>camera · lens · session · operator notes · EXIF/SRT GPS")]:::miss
     FUSE{"Fuse: Fibonacci coverage (prior)<br/>× VLM artifact score (veto)<br/>× capture context"}:::branch
     POOLOK["Scaffold → COLMAP pool candidate"]:::part
-    REPAIR["Flag region → FLUX Kontext inpaint (ADR-010 FR-11)"]:::miss
+    REPAIR["Flag region → FLUX.2-dev inpaint (ADR-010 FR-11; ADR-014 RecoveryController)"]:::miss
     LEDGER[("Per-video ledger + v2g:* lineage:<br/>record score, veto/repair reason")]:::part
 
     PHOTO --> DEDUP --> VLM

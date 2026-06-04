@@ -1,0 +1,16 @@
+This image is the TOP-RIGHT QUADRANT of a printed A0 scientific poster. Upscale it to razor-crisp 4K for large-format print. Keep the EXACT same layout, composition, colours, icons and crop. Keep all four cropped edges precisely as they are (content cut off at an edge stays cut off in the same place) so the quadrant tiles seamlessly. Do NOT add borders, frames or padding. Pure white background; University of Salford crimson red, teal and navy accents unchanged.
+
+Render ALL text crisp and spelled EXACTLY as follows (correct any blur to these exact words):
+- Logo top-right: "DREAMLAB  /  AI CONSULTING LTD".
+- Title (cut at left edge): "...n Agentic Pipeline for / ...eritage Preservation".
+- Four pipeline icon-chips, each with its label exactly:
+  "5. SAM2 Decompose  /  37 -> 31 objects"
+  "6. 360 deg Objects  /  Hunyuan3D + FLUX"
+  "7. Mesh Backends  /  TSDF / MILo / CoMe"
+  "8. USD Scene Graph  /  variant: Gaussian | Mesh"
+- Panel heading "Hierarchical Scene Graph" (heading partly cut at left) then body text reading EXACTLY:
+  "SAM2 decomposes the capture; masks are projected from 2D into the Gaussian field with 98.3% coverage, resolving 37 detections into 31 clean object prims."
+- Panel heading "Four Pluggable Mesh Backends" then a table with header "Backend  Strength  Time" and the first rows reading EXACTLY:
+  "TSDF   fast, 4.5M faces   4 min"
+  "MILo   Chamfer 2.6 mm, 7.8M   69 min"
+Only increase fidelity: cleaner anti-aliased text, smoother flat-vector icons, sharper photographic and 3D-render regions. Output the refined quadrant only.

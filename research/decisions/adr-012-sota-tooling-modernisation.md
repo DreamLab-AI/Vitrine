@@ -33,8 +33,11 @@ Python pipeline re-implements or ignores. Audit findings, with evidence:
   exists in the repo.
 
 - **T4 — Inpainting pinned at FLUX.1-Fill-dev.** `comfyui_inpainter.py:88` loads
-  `flux1-fill-dev.safetensors`. FLUX.1 Kontext is context-aware and materially better for
-  inpainting/edit tasks — the per-object occluded-face recovery that ADR-010 FR-11 commissions.
+  `flux1-fill-dev.safetensors`. A context-aware edit model is materially better for the per-object
+  occluded-face recovery that ADR-010 FR-11 commissions. **Superseded by ADR-013:** the owner has
+  designated **FLUX.2-dev** (already staged on this host) as the target inpaint/edit model rather
+  than FLUX.1 Kontext — see ADR-013 §model-selection. Earlier "FLUX.1 Kontext" wording below is
+  retained for history but the binding target is now FLUX.2-dev.
 
 - **T5 — No neural feed-forward SfM option.** COLMAP is the only SfM path and is cloned at an
   **untagged HEAD** (`Dockerfile.consolidated:104`). VGGT / MASt3R-SfM / DUSt3R reconstruct in
@@ -91,10 +94,11 @@ re-implementation (see D-012.4).
 ### D-012.3 — Upgrade the generative models (closes T3, T4)
 
 Move the image-to-3D hull backend to **Hunyuan3D-2.1** (`hunyuan3d_client.py` model IDs) and the
-inpainter to **FLUX.1 Kontext** (`comfyui_inpainter.py`). Both are served through the existing
-ComfyUI endpoint; this is a checkpoint + workflow-graph change, not new infrastructure. The local
-FLUX wiring that ADR-010 FR-11 commissions targets Kontext from the outset. Keep 2.0 / FLUX.1-Fill
-as declared fallbacks behind a capability probe so a missing checkpoint degrades, not breaks.
+inpainter to **FLUX.2-dev** (`comfyui_inpainter.py`) — *amended from FLUX.1 Kontext per owner
+preference; see ADR-013.* Both are served through the existing ComfyUI endpoint; this is a
+checkpoint + workflow-graph change, not new infrastructure. The local FLUX wiring that ADR-010
+FR-11 commissions targets FLUX.2-dev from the outset. Keep Hunyuan3D-2.0 / FLUX.1-Fill as declared
+fallbacks behind a capability probe so a missing checkpoint degrades, not breaks.
 
 ### D-012.4 — Adopt native v0.5.x + plugin ecosystem; pin everything (closes T5, T6, T7)
 
@@ -158,20 +162,20 @@ the second, semantic pass invoked by the agent on the surviving candidates.
 ## Consequences
 
 ### Positive
-- Quality jump (MILo mesh, learned matching, Hunyuan3D-2.1, FLUX Kontext) with mostly config-level
+- Quality jump (MILo mesh, learned matching, Hunyuan3D-2.1, FLUX.2-dev) with mostly config-level
   change; the heavy infrastructure already exists.
 - Deterministic, reproducible builds; PRD-v3 NFR-5 holds end-to-end.
 - Less bespoke code to maintain as native/plugin paths absorb custom orchestration and USD export.
 - A fast SfM option (neural feed-forward) for low-overlap captures COLMAP currently fails.
 
 ### Negative
-- Larger model/VRAM/disk footprint (Hunyuan3D-2.1, FLUX Kontext, ALIKED/LightGlue weights, neural
+- Larger model/VRAM/disk footprint (Hunyuan3D-2.1, FLUX.2-dev, ALIKED/LightGlue weights, neural
   SfM checkpoints) on the GPU host and the ComfyUI server.
 - MILo/learned-matching sidecars add build complexity vs. the always-available in-process TSDF/SIFT.
 - Native-flag and plugin adoption couples us to upstream v0.5.x behaviour and its release cadence.
 
 ### Risks
-- **Gated/licensed weights.** FLUX.1 Kontext and FLUX.1-dev are gated on Hugging Face (licence
+- **Gated/licensed weights.** FLUX.2-dev (and the FLUX.1 fallbacks) are gated on Hugging Face (licence
   acceptance + token); Hunyuan3D weights have their own licence. *Mitigation*: model-pull step
   requires a HF token with the licences accepted; capability probe degrades to the declared
   fallback when a checkpoint is absent.
@@ -210,7 +214,7 @@ the second, semantic pass invoked by the agent on the surviving candidates.
 - **ADR-003** — pluggable mesh-backend *selection policy*; D-012.1 changes only the **default**
   value, not the policy.
 - **ADR-006** — `.ksplat` / web-splat delivery (unaffected).
-- **ADR-009/010/011** — workflow-shape closure; ADR-010 FR-11 now targets FLUX Kontext, ADR-011's
+- **ADR-009/010/011** — workflow-shape closure; ADR-010 FR-11 now targets FLUX.2-dev (ADR-013/014), ADR-011's
   `v2g:*` schema is evaluated against native USD export. D-012.5's VLM `artifact_report` and capture
   metadata extend the ADR-009 per-frame sidecar and feed ADR-010's inpaint recovery and ADR-011's
   lineage.
