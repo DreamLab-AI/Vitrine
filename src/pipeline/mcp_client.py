@@ -194,6 +194,28 @@ class McpClient:
     def save_ply(self, path: str) -> dict[str, Any]:
         return self.call_tool("scene.save_ply", {"path": path})
 
+    # ------------------------------------------------------------------
+    # Native scene export (LichtFeld v0.5.1+: USD / SOG / SPZ / HTML).
+    # These export the currently-loaded scene — call load_checkpoint() first
+    # if the training session is no longer resident.
+    # ------------------------------------------------------------------
+
+    def export_usd(self, path: str, **extra: Any) -> dict[str, Any]:
+        """Export the loaded scene to USD via native scene.export_usd (v0.5.1+)."""
+        return self.call_tool("scene.export_usd", {"path": path, **extra})
+
+    def export_sog(self, path: str, **extra: Any) -> dict[str, Any]:
+        return self.call_tool("scene.export_sog", {"path": path, **extra})
+
+    def export_spz(self, path: str, **extra: Any) -> dict[str, Any]:
+        return self.call_tool("scene.export_spz", {"path": path, **extra})
+
+    def export_html(self, path: str, **extra: Any) -> dict[str, Any]:
+        return self.call_tool("scene.export_html", {"path": path, **extra})
+
+    def export_status(self) -> dict[str, Any]:
+        return self.call_tool("scene.export_status")
+
     def training_start(self) -> dict[str, Any]:
         return self.call_tool("training.start")
 

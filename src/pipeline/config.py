@@ -6,9 +6,28 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any
+
+_SECRET_KEY_RE = re.compile(r"(token|secret|password|api[_-]?key|apikey)", re.IGNORECASE)
+
+
+def _redact_secrets(value: Any) -> Any:
+    """Recursively blank secret-named string fields (e.g. ``hf_token``) so they
+    are never written into a persisted config snapshot (SEC-01/SEC-03 — these
+    snapshots are uploaded to Drive alongside outputs). Redacted to "" (their
+    default) so the file round-trips and runtime re-resolves from env/secrets.
+    """
+    if isinstance(value, dict):
+        return {
+            k: ("" if (_SECRET_KEY_RE.search(k) and isinstance(v, str) and v) else _redact_secrets(v))
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_secrets(v) for v in value]
+    return value
 
 
 @dataclass
@@ -55,9 +74,14 @@ class TrainingConfig:
     convergence_window: int = 500
     convergence_threshold: float = 0.001
     checkpoint_interval: int = 5000
-    # Mesh backend: "tsdf" (default), "milo", "come", "gaussianwrapping", or "auto".
-    # "auto" triggers the ADR-003 heuristic in stages._select_mesh_backend().
-    mesh_method: str = "tsdf"
+    # Mesh backend: "come" (default — project pivot 2026-06-04: ~3x faster than
+    # MILo at comparable F1, confidence-based), "milo" (high-quality), "tsdf"
+    # (fast fallback), "gaussianwrapping" (thin structures), or "auto".
+    # train() routes a concrete backend directly and falls back to LichtFeld/TSDF
+    # when the come sidecar is unavailable — so this default is SAFE but will
+    # silently degrade to TSDF unless the image is built with INSTALL_COME=1 and
+    # the come sidecar is running. See ADR-004 + work-order-sota-modernisation.md.
+    mesh_method: str = "come"
 
     # When True the ADR-003 auto-selection policy is applied regardless of the
     # mesh_method value, unless mesh_method is set to a concrete backend name.
@@ -201,6 +225,12 @@ class ExportConfig:
     format: str = "usd"
     include_materials: bool = True
     coordinate_system: str = "right_handed_y_up"
+    # Prefer LichtFeld's native USD export (scene.export_usd, v0.5.1+) over the
+    # custom scripts/assemble_usd_scene.py path. When True, stages.assemble_usd()
+    # tries native export first (best-effort, additive); the custom assembler
+    # stays as fallback and still supplies multi-object hierarchy + ADR-011
+    # v2g:* customData until the native-customData parity probe confirms parity.
+    prefer_native_usd: bool = True
 
 
 @dataclass
@@ -253,9 +283,12 @@ class PipelineConfig:
         return asdict(self)
 
     def save(self, path: str | Path) -> None:
+        # SEC-01/SEC-03: redact secret-named fields (e.g. inpaint.hf_token)
+        # before persisting — run snapshots are uploaded to Drive with outputs.
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(self.to_dict(), indent=2, default=str), encoding="utf-8")
+        data = _redact_secrets(self.to_dict())
+        p.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
 
     @classmethod
     def load(cls, path: str | Path) -> PipelineConfig:

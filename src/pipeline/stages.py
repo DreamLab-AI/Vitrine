@@ -425,6 +425,11 @@ class PipelineStages:
         selected_dir = self.job_dir / "frames_selected"
         selector.copy_selected(selected, str(selected_dir))
 
+        # FR-3 / ADR-009: write a per-image metadata sidecar for each selected
+        # frame so the quality scores (otherwise discarded after selection)
+        # become a durable lineage root (video→frame→object→USD). Best-effort.
+        sidecars = self._write_frame_sidecars(selected, selected_dir)
+
         return StageResult(
             success=True, stage="select_frames",
             metrics={
@@ -432,9 +437,53 @@ class PipelineStages:
                 "selected": len(selected),
                 "target": sel_cfg.target_frames,
                 "fibonacci_coverage": coverage_used,
+                "sidecars_written": sidecars,
             },
             artifacts={"selected_frames_dir": str(selected_dir), "count": str(len(selected))},
         )
+
+    def _write_frame_sidecars(self, selected: list, selected_dir: Path) -> int:
+        """Write a ``<frame>.json`` metadata sidecar (schema ``v2g.frame.1``) for
+        each selected frame, under ``frames_selected/frame_metadata/`` so the
+        image directory stays clean for COLMAP. Captures the quality scores that
+        are otherwise discarded after selection (FR-3 / ADR-009). Fields not yet
+        known at this stage (source_video, capture_session, source_timestamp_pts,
+        pose_hint) are written as ``null`` and backfilled by later stages.
+        Never raises.
+        """
+        meta_dir = selected_dir / "frame_metadata"
+        try:
+            meta_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            logger.debug("sidecar dir create failed: %s", exc)
+            return 0
+
+        written = 0
+        for s in selected:
+            try:
+                payload = {
+                    "schema_version": "v2g.frame.1",
+                    "frame_name": Path(s.path).name,
+                    "source_video": None,
+                    "capture_session": None,
+                    "frame_index": getattr(s, "index", None),
+                    "source_timestamp_pts": None,
+                    "blur_score": getattr(s, "blur_score", None),
+                    "exposure_score": getattr(s, "exposure_score", None),
+                    "sharpness": getattr(s, "sharpness", None),
+                    "phash": getattr(s, "phash", None),
+                    "composite_score": getattr(s, "composite_score", None),
+                    "kept": True,
+                    "selection_reason": "quality+coverage",
+                    "pose_hint": None,
+                }
+                (meta_dir / f"{Path(s.path).stem}.json").write_text(
+                    json.dumps(payload, indent=2), encoding="utf-8"
+                )
+                written += 1
+            except Exception as exc:  # pragma: no cover - best-effort
+                logger.debug("sidecar write failed for %s: %s", getattr(s, "path", "?"), exc)
+        return written
 
     def _load_colmap_camera_centers(self, scores: list) -> "Optional[np.ndarray]":
         """Best-effort load of per-frame camera centres from an existing COLMAP
@@ -1496,42 +1545,86 @@ class PipelineStages:
         masks_dir = self.job_dir / "sam3_masks"
         has_masks = masks_dir.exists() and any(masks_dir.glob("*.npy"))
 
+        # ADR-010 / FR-9: concept-priority weights for key-item ranking. Key
+        # gallery items (artworks, furniture, fixtures) outrank structural
+        # surfaces; unknown concepts default to 1.0.
+        concept_priority = {
+            "paintings": 3.0, "frames": 2.5, "sculptures": 3.0, "furniture": 2.0,
+            "fixtures": 1.5, "doorways": 1.0,
+            "walls": 0.5, "floor": 0.3, "ceiling": 0.3,
+        }
+        min_gaussians = self.config.decompose.min_object_gaussians
+
         extracted: list[dict[str, Any]] = []
+        dropped: list[dict[str, Any]] = []
 
         for obj in objects:
             label = obj.get("label", "unknown")
             safe_name = label.replace(" ", "_").replace("/", "_")[:50]
             out_ply = objects_dir / f"{safe_name}.ply"
 
+            # full_scene (and the no-mask fallback) is the whole environment —
+            # never keyness-ranked or dropped.
             if label == "full_scene" or not has_masks:
                 shutil.copy2(str(trained_ply), str(out_ply))
-                extracted.append({"label": label, "ply": str(out_ply)})
+                extracted.append({"label": label, "ply": str(out_ply),
+                                  "gaussian_count": -1, "keyness": float("inf")})
                 logger.info("Copied trained PLY as '%s': %s", label, out_ply)
-            else:
-                # Try mask-based extraction
-                try:
-                    ok = self._extract_with_mask(obj, trained_ply, out_ply, masks_dir)
-                    if ok:
-                        extracted.append({"label": label, "ply": str(out_ply)})
-                        continue
-                except Exception as exc:
-                    logger.warning("Mask extraction failed for '%s': %s", label, exc)
+                continue
 
-                # Fallback: copy full PLY
+            # Mask-based extraction returns the number of gaussians assigned.
+            count = 0
+            try:
+                count = self._extract_with_mask(obj, trained_ply, out_ply, masks_dir)
+            except Exception as exc:
+                logger.warning("Mask extraction failed for '%s': %s", label, exc)
+                count = 0
+
+            if count <= 0:
+                # Un-isolable object: preserve prior behaviour (copy full PLY).
                 shutil.copy2(str(trained_ply), str(out_ply))
-                extracted.append({"label": label, "ply": str(out_ply)})
+                extracted.append({"label": label, "ply": str(out_ply),
+                                  "gaussian_count": -1, "keyness": 0.0})
+                continue
+
+            # FR-9: enforce the (previously dead) min_object_gaussians threshold.
+            if count < min_gaussians:
+                logger.info("Dropping '%s': %d gaussians < min_object_gaussians=%d",
+                            label, count, min_gaussians)
+                dropped.append({"label": label, "gaussian_count": count})
+                try:
+                    out_ply.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                continue
+
+            keyness = count * concept_priority.get(label.lower(), 1.0)
+            extracted.append({"label": label, "ply": str(out_ply),
+                              "gaussian_count": count, "keyness": round(keyness, 2)})
 
         if not extracted:
             return StageResult(
                 success=False, stage="extract_objects",
-                error="No objects could be extracted",
+                error=(f"No objects met min_object_gaussians={min_gaussians} "
+                       f"({len(dropped)} dropped below threshold)"),
+                metrics={"dropped_below_threshold": len(dropped)},
             )
+
+        # FR-9: rank by keyness (descending) so downstream per-object hull
+        # reconstruction processes the most significant items first.
+        extracted.sort(key=lambda e: e.get("keyness", 0.0), reverse=True)
 
         return StageResult(
             success=True, stage="extract_objects",
-            metrics={"extracted_count": len(extracted)},
+            metrics={
+                "extracted_count": len(extracted),
+                "dropped_below_threshold": len(dropped),
+                "min_object_gaussians": min_gaussians,
+                "ranking": [e["label"] for e in extracted],
+            },
             artifacts={
                 "object_plys": json.dumps([e["ply"] for e in extracted]),
+                "object_ranking": json.dumps(extracted),
                 **{f"ply:{e['label']}": e["ply"] for e in extracted},
             },
         )
@@ -1542,17 +1635,21 @@ class PipelineStages:
         trained_ply: Path,
         output_path: Path,
         masks_dir: Path,
-    ) -> bool:
-        """Extract a subset of gaussians using a SAM3 mask. Returns True on success."""
+    ) -> int:
+        """Extract a subset of gaussians using a SAM3 mask.
+
+        Returns the number of gaussians assigned to the object (0 on any
+        failure). Callers use the count to enforce min_object_gaussians (FR-9).
+        """
         import numpy as np
 
         object_id = obj.get("object_id")
         if object_id is None:
-            return False
+            return 0
 
         mask_path = masks_dir / f"mask_{int(object_id):04d}.npy"
         if not mask_path.exists():
-            return False
+            return 0
 
         mask = np.load(str(mask_path))
 
@@ -1563,7 +1660,7 @@ class PipelineStages:
         else:
             points = np.asarray(pcd.points) if hasattr(pcd, "points") else None
         if points is None or len(points) == 0:
-            return False
+            return 0
 
         h, w = mask.shape[-2], mask.shape[-1]
         xy = points[:, :2]
@@ -1578,7 +1675,7 @@ class PipelineStages:
         mask_2d = mask[0] if mask.ndim == 3 else mask
         inside = mask_2d[py, px] > 0
         if inside.sum() == 0:
-            return False
+            return 0
 
         filtered_points = points[inside]
         colors = None
@@ -1592,7 +1689,7 @@ class PipelineStages:
 
         filtered_pcd.export(str(output_path))
         logger.info("Extracted %d/%d points for '%s'", inside.sum(), len(points), obj.get("label", "unknown"))
-        return True
+        return int(inside.sum())
 
     # ------------------------------------------------------------------
     # Stage 8: Mesh objects
@@ -1951,6 +2048,40 @@ class PipelineStages:
     # Stage 10: Assemble USD
     # ------------------------------------------------------------------
 
+    def _export_native_usd(self, out_path: Path) -> str:
+        """Best-effort native USD export via LichtFeld MCP (scene.export_usd,
+        v0.5.1+). Tries the resident training scene first, then a checkpoint
+        reload. Returns the path on success, "" on any failure (the composed
+        assembler remains the authority). Never raises.
+        """
+        try:
+            from pipeline.mcp_client import McpClient, McpError, McpConnectionError
+        except Exception:  # pragma: no cover - import guard
+            return ""
+        try:
+            client = McpClient(self.config.mcp_endpoint)
+            if not client.ping():
+                logger.info("Native USD export skipped: LichtFeld MCP not reachable at %s",
+                            self.config.mcp_endpoint)
+                return ""
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                client.export_usd(str(out_path))
+            except (McpError, McpConnectionError):
+                # Scene may not be resident; reload the latest checkpoint/PLY and retry.
+                candidates = sorted(self.job_dir.rglob("*.ckpt")) or sorted(self.job_dir.rglob("model/**/*.ply"))
+                if not candidates:
+                    return ""
+                client.load_checkpoint(str(candidates[-1]))
+                client.export_usd(str(out_path))
+            if out_path.exists() and out_path.stat().st_size > 0:
+                logger.info("Native LichtFeld USD export -> %s", out_path)
+                return str(out_path)
+            return ""
+        except Exception as exc:  # pragma: no cover - best-effort
+            logger.info("Native USD export failed (%s); using composed assembler", exc)
+            return ""
+
     def assemble_usd(self, objects: dict | list | str, cameras: dict | str | None = None) -> StageResult:
         """Compose USD scene from meshes using the standalone assembler.
 
@@ -1972,6 +2103,15 @@ class PipelineStages:
         usd_dir = self.job_dir / "usd"
         usd_dir.mkdir(parents=True, exist_ok=True)
         usd_path = usd_dir / "scene.usda"
+
+        # LichtFeld native USD export (scene.export_usd, v0.5.1+). Additive and
+        # best-effort: produces an authoritative native scene USD alongside the
+        # composed scene below. The composed assembler still supplies the
+        # multi-object hierarchy + ADR-011 v2g:* metadata until the native
+        # customData parity probe confirms native can carry it.
+        native_usd = ""
+        if getattr(self.config.export, "prefer_native_usd", False):
+            native_usd = self._export_native_usd(usd_dir / "scene_native.usd")
 
         # Copy trained PLY as scene.ply (needed by the assembler)
         final_ply = self.job_dir / "scene.ply"
@@ -2025,12 +2165,14 @@ class PipelineStages:
                 "mesh_count": len(objects),
                 "usd_size_bytes": usd_size,
                 "used_standalone_assembler": assembled,
+                "native_usd_exported": bool(native_usd),
                 "blender_assembled": blender_result.get("success", False),
                 "blender_components_removed": blender_result.get("components_removed", 0),
                 "preview_count": len(blender_result.get("renders", [])),
             },
             artifacts={
                 "usd_path": str(usd_path),
+                "native_usd_path": native_usd,
                 "final_ply": str(final_ply) if final_ply.exists() else "",
                 "previews_dir": str(self.job_dir / "previews"),
                 "blender_renders": json.dumps(blender_result.get("renders", [])),
