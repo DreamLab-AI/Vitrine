@@ -1,0 +1,148 @@
+\chapter{Hierarchical Scene Reconstruction and Per-Object Emplacement}
+\label{ch:scenegraph}
+
+\section{From a Monolithic Field to a Structured Scene}
+\label{sec:sg-overview}
+
+The Gaussian field produced in Chapter~\ref{ch:reconstruction} is photoreal but undifferentiated: 1.18~million primitives describing a room, with no notion of where one artwork ends and the next begins. For a passive fly-through this is sufficient. For preservation it is not. A curator cannot attach a catalogue record to a region of an amorphous point cloud, cannot extract a single sculpture for study, and cannot re-light or re-compose the scene. The defining achievement of the v2.0 system is the transformation of this monolithic field into a \emph{structured scene}: a hierarchical Universal Scene Description (\acrshort{usd}) graph in which the environment and each salient object are distinct, individually-addressable entities, each carrying both a photoreal splat representation and a watertight, textured polygonal mesh, each positioned at its surveyed location.
+
+This chapter documents that transformation end-to-end: promptable decomposition of the field with \acrshort{sam}2; projection of the resulting masks from image space into the 3D Gaussian set; independent 360\textdegree\ reconstruction of each object as a textured mesh via multi-view generative inference; construction of the \acrshort{usd} scene graph; and emplacement of every object mesh at its \acrshort{colmap}-surveyed centroid within the environment mesh.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.9\textwidth]{v2/object_in_room.jpg}
+  \caption{A single segmented object, independently reconstructed as a textured polygonal mesh and emplaced at its surveyed position within the meshed gallery environment. The object retains full 360\textdegree\ geometry---including surfaces never directly observed in the source walkthrough---through generative completion.}
+  \label{fig:sg-object-in-room}
+\end{figure}
+
+\section{Promptable Decomposition with SAM2}
+\label{sec:sg-segmentation}
+
+Scene decomposition begins in image space. The toolkit applies the Segment Anything Model~2 (\acrshort{sam}2, \parencite{Ravi2024SAM2}) across the 240 registered keyframes from the reconstruction. Unlike its predecessor \parencite{Kirillov2023}, \acrshort{sam}2 propagates masks coherently across a video sequence, which the toolkit exploits to obtain temporally consistent object identities: the same sculpture carries the same mask identity across the many frames in which it appears.
+
+The module \texttt{sam2\_segmentor.py} drives this stage with a dense grid-point prompting strategy. Rather than relying on a single seed per object, it tiles each keyframe with a regular grid of prompt points, generating a superset of candidate masks, then merges and de-duplicates them across views using mask intersection-over-union and cross-frame propagation. This yields a set of \emph{view-consistent} 2D mask tracks, each corresponding to a candidate object.
+
+\section{Mask Projection into the Gaussian Field}
+\label{sec:sg-projection}
+
+A 2D mask track identifies an object in pixels; the scene graph requires it in 3D Gaussians. The module \texttt{mask\_projector.py} bridges this gap. For each Gaussian in the trained field, the projector tests, across all keyframes in which that Gaussian is visible, whether its image-space projection falls inside the object's mask. A Gaussian is assigned to an object when a robust majority of its visible projections agree, which suppresses single-view labelling errors caused by occlusion boundaries and mask bleed.
+
+\begin{technote}
+The projection achieves \textbf{98.3\% Gaussian coverage}: all but a small residual of the 1.18M Gaussians are confidently assigned either to a labelled object or to the environment. The residual---predominantly Gaussians on reflective glass and at depth discontinuities, where view consensus breaks down---is folded into the environment shell rather than mislabelled.
+\end{technote}
+
+The grid-point superset initially yields \textbf{37 candidate object clusters}. A coherence filter then removes clusters that are spatially fragmented, too small to reconstruct meaningfully, or duplicates of a larger neighbour, leaving \textbf{31 retained objects} that proceed to per-object reconstruction. Each retained object now exists as a labelled subset of the Gaussian field with a known 3D extent and centroid.
+
+\section{Per-Object 360\textdegree\ Generative Reconstruction}
+\label{sec:sg-generative}
+
+A segmented Gaussian subset is still only as complete as the source walkthrough. A visitor capturing a gallery on a phone never films the back of a plinth-mounted sculpture, the underside of a suspended work, or the rear of a framed piece hung close to a wall. The labelled Gaussians therefore describe only the \emph{observed} hemisphere of each object. To produce a genuine 360\textdegree\ artefact---one that can be lifted out of the scene and inspected from any angle---the missing geometry must be inferred. The toolkit does this through a multi-view generative reconstruction subsystem, illustrated in Figure~\ref{fig:sg-genpipe}.
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[
+      node distance=8mm and 12mm,
+      box/.style={draw, rounded corners, align=center, minimum height=11mm, minimum width=24mm, font=\small, fill=LightGrey, draw=MidGrey},
+      acc/.style={draw, rounded corners, align=center, minimum height=11mm, minimum width=24mm, font=\small, fill=DreamLabAccent!12, draw=DreamLabAccent},
+      outbox/.style={draw, rounded corners, align=center, minimum height=11mm, minimum width=24mm, font=\small, fill=SuccessGreen!15, draw=SuccessGreen!70!black},
+      arr/.style={-{Stealth[length=2.4mm]}, MidGrey, thick}
+    ]
+    \node[box] (obj) {Segmented\\object Gaussians};
+    \node[box, right=of obj] (orbit) {64 orbit\\renders};
+    \node[acc, right=of orbit] (diff) {Hunyuan3D 2.0\\(ComfyUI)};
+    \node[acc, below=10mm of diff] (flux) {FLUX.1\\inpainting};
+    \node[outbox, right=of diff] (mesh) {Watertight\\PBR mesh};
+    \draw[arr] (obj) -- (orbit);
+    \draw[arr] (orbit) -- (diff);
+    \draw[arr] (flux) -- node[right, font=\scriptsize, text=MidGrey]{disocclusion} (diff);
+    \draw[arr] (diff) -- (mesh);
+    \draw[arr] (orbit.south) |- node[below, pos=0.25, font=\scriptsize, text=MidGrey]{background fill} (flux.west);
+  \end{tikzpicture}
+  \caption{Per-object generative reconstruction. The object's Gaussian subset is rendered from 64 orbiting viewpoints; FLUX.1 completes disoccluded background; Hunyuan3D~2.0, executed through ComfyUI, fuses the multi-view set into a single watertight, \acrshort{pbr}-textured polygonal mesh.}
+  \label{fig:sg-genpipe}
+\end{figure}
+
+\subsection{Orbit Rendering}
+\label{sec:sg-orbit}
+
+For each retained object, the module \texttt{multiview\_renderer.py} renders the object's Gaussian subset from \textbf{64 viewpoints} arranged on an orbit around the object's centroid---a Fibonacci-distributed hemisphere supplemented by an equatorial ring---at a canonical scale and framing. These renders are clean, isolated views of the object against a neutral field, the input modality expected by the downstream generative model. Where the orbit places a virtual camera behind the object, in a region the original capture never observed, the corresponding render is empty or partial; these gaps are precisely what the generative stage completes.
+
+\subsection{Background Completion with FLUX.1}
+\label{sec:sg-flux}
+
+Before multi-view fusion, the module \texttt{comfyui\_inpainter.py} applies FLUX.1 \parencite{FLUX2024} to in-paint disoccluded regions of each orbit render---filling the background and any object surface revealed by the new viewpoint but absent from the splat. This conditions the generative reconstruction on plausible, consistent imagery rather than holes, markedly improving the watertightness and texture continuity of the final mesh.
+
+\subsection{Multi-View Fusion with Hunyuan3D 2.0}
+\label{sec:sg-hunyuan}
+
+The completed multi-view set is then fused into a single textured mesh by Hunyuan3D~2.0 \parencite{Zhao2025Hunyuan}, executed as a node graph within ComfyUI \parencite{ComfyUI2024} on port~8188 via the module \texttt{hunyuan3d\_client.py}. The model regresses a coherent 3D shape from the multi-view evidence and bakes a \acrshort{pbr} texture, producing a \emph{watertight, fully-textured polygonal mesh} for each object---complete on all sides, including surfaces the source walkthrough never saw. ComfyUI's node-graph execution lets the toolkit version the exact inference workflow as data, so every object is reconstructed by an identical, reproducible pipeline.
+
+\section{The USD Scene Graph}
+\label{sec:sg-usd}
+
+With an environment mesh (Chapter~\ref{ch:meshing}) and 31 per-object meshes in hand, the module \texttt{usd\_assembler.py} composes them into a single hierarchical \acrshort{usd} scene graph \parencite{Pixar2019}. The hierarchy mirrors the LichtFeld scene-graph harmonisation discussed in Chapter~\ref{ch:lichtfeld}, giving a clean correspondence between the trainer's internal nodes and the exported prims. The layout is:
+
+\begin{lstlisting}[language=, caption={Hierarchical scene-graph layout (abridged).}, label={lst:sg-usd}]
+/World
+  /Environment            # room shell
+    variantSet "rep" = { Gaussian | Mesh }
+    /Gaussian             # splat payload
+    /Mesh                 # extracted polygonal shell
+  /Objects
+    /Object_007           # one prim per retained object
+      variantSet "rep" = { Gaussian | Mesh }
+      /Gaussian           # labelled splat subset
+      /Mesh               # generative 360 mesh + PBR texture
+      metadata: { title, artist, date, medium, provenance }
+      xform: surveyed pose
+    /Object_012
+    ...                   # 31 object prims total
+\end{lstlisting}
+
+The architectural device that makes this scene serve every downstream use is the per-prim \textbf{variant set} \texttt{rep}, switching between a \texttt{Gaussian} and a \texttt{Mesh} representation. A browser client resolves the \texttt{Gaussian} variant for maximum photoreal fidelity; a game engine or VR client resolves the \texttt{Mesh} variant for collision, relighting, and interaction. Crucially, both variants of a given prim are \emph{co-registered}---they occupy the same surveyed pose---so switching representation never moves an object. The splat and the mesh are two views of one entity, not two separate assets.
+
+\section{Emplacement at Surveyed Positions}
+\label{sec:sg-emplacement}
+
+Each object mesh is reconstructed in its own canonical frame, centred and scaled for the generative model. To place it back into the room, the assembler reads the object's \acrshort{colmap}-surveyed centroid---computed from the labelled Gaussian subset, whose positions inherit the metric Structure-from-Motion frame of Chapter~\ref{ch:reconstruction}---and writes the corresponding rigid transform onto the object's \texttt{xform}. Scale is recovered from the labelled subset's bounding extent. The result is that all \textbf{31 object prims sit at their true positions within the environment mesh}, reproducing the gallery's actual spatial composition rather than an arbitrary arrangement.
+
+Because emplacement is driven by surveyed geometry rather than manual placement, the composition is reproducible and metrically faithful: the distance between two artworks in the scene graph matches the distance between them in the room, to within the Structure-from-Motion error budget.
+
+\begin{figure}[htbp]
+  \centering
+  \begin{subfigure}[t]{0.48\textwidth}
+    \centering
+    \includegraphics[width=\textwidth]{v2/multi_object_composed.jpg}
+    \caption{Composed view.}
+    \label{fig:sg-composed}
+  \end{subfigure}\hfill
+  \begin{subfigure}[t]{0.48\textwidth}
+    \centering
+    \includegraphics[width=\textwidth]{v2/multi_object_topdown.jpg}
+    \caption{Top-down plan.}
+    \label{fig:sg-topdown}
+  \end{subfigure}
+
+  \vspace{2mm}
+  \begin{subfigure}[t]{0.62\textwidth}
+    \centering
+    \includegraphics[width=\textwidth]{v2/multi_object_rear.jpg}
+    \caption{Rear view, exposing generatively-completed back surfaces.}
+    \label{fig:sg-rear}
+  \end{subfigure}
+  \caption{The composed scene graph rendered from several viewpoints. Each object is an independent, fully-textured 360\textdegree\ mesh emplaced at its surveyed position. The rear view (\subref{fig:sg-rear}) shows geometry the original single-pass walkthrough never observed, recovered through per-object generative reconstruction.}
+  \label{fig:sg-multiobject}
+\end{figure}
+
+\section{Outcome}
+\label{sec:sg-outcome}
+
+Figure~\ref{fig:sg-multiobject} shows the assembled scene from multiple angles. The top-down plan (\subref{fig:sg-topdown}) confirms that emplacement reproduces the gallery's true layout; the rear view (\subref{fig:sg-rear}) confirms that each object is genuinely complete in 360\textdegree, not a flat billboard of the observed face.
+
+\begin{keyfinding}
+A single hand-held 4K walkthrough was transformed into a hierarchical scene graph of 31 individually-addressable objects, each reconstructed as a watertight, \acrshort{pbr}-textured 360\textdegree\ mesh and emplaced at its surveyed position within a meshed environment. Every object carries co-registered splat and mesh representations and a metadata slot, making the reconstruction not a passive record but an interactive, curatable preservation artefact.
+\end{keyfinding}
+
+\begin{recommendation}
+Per-object segmentation and generative reconstruction should be standard in heritage capture, not an optional extra. The marginal cost---automated \acrshort{sam}2 decomposition and per-object inference---is modest against the value unlocked: object-level metadata, independent study and re-use, interactive selection, and a scene that can be re-composed and re-lit. Capture once; address every object forever.
+\end{recommendation}

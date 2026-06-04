@@ -1,0 +1,427 @@
+\chapter{Module 5: Metadata and Agentic Scaffolding}
+\label{ch:module-metadata}
+
+\begin{tcolorbox}[
+  enhanced,
+  colback=LightGrey,
+  colframe=MidGrey,
+  fonttitle=\bfseries\sffamily,
+  title={Module Information},
+  sharp corners=south,
+  boxrule=0.6pt
+]
+\begin{description}[font=\sffamily\bfseries, leftmargin=4cm, style=sameline]
+  \item[Prerequisites] Module~1 (Chapter~\ref{ch:module-capture}) and Module~3 (Chapter~\ref{ch:module-viewing}); familiarity with JSON syntax helpful
+  \item[Duration] 4--5 hours (half day to full day)
+  \item[Hardware] Any computer with a text editor and web browser
+  \item[Software] Text editor with JSON syntax highlighting; optionally a JSON schema validator
+  \item[Budget tier] Free
+\end{description}
+\end{tcolorbox}
+
+\medskip
+
+\noindent\textbf{Learning Objectives.} Upon completing this module, participants will be able to:
+\begin{enumerate}
+  \item Explain why structured metadata is essential for the long-term value of 3D cultural heritage captures.
+  \item Complete a full metadata record using the cultural heritage capture schema.
+  \item Validate a metadata record against the JSON schema.
+  \item Describe how the agentic orchestrator uses metadata to automate cataloguing and quality assurance.
+  \item Design a basic automated cataloguing workflow that links capture metadata to an institutional collection management system.
+\end{enumerate}
+
+\section{Why Metadata Matters}
+\label{sec:meta-why}
+
+A Gaussian splat file without metadata is a point cloud. A Gaussian splat file with metadata is a cultural heritage record. The difference is not technical---it is epistemic. Without knowing who created the original work, when and where it was captured, under what conditions, with what permissions, and through what processing pipeline, a 3D reconstruction has no more archival value than an unlabelled photograph found in a drawer.
+
+\begin{keyfinding}
+In digital preservation practice, metadata loss is the primary mechanism by which digital objects become orphaned---separated from the contextual information that gives them meaning and makes them findable. A 2019 survey by the Digital Preservation Coalition found that metadata absence or inadequacy was cited as a preservation risk more frequently than format obsolescence, storage failure, or institutional change.
+\end{keyfinding}
+
+For 3D cultural heritage captures, the metadata requirement is more demanding than for traditional 2D documentation because:
+
+\begin{itemize}
+  \item The processing pipeline introduces a chain of technical decisions (frame extraction rate, \acrshort{colmap} parameters, training iterations, mesh extraction method) that affect the fidelity and characteristics of the output. These must be recorded for reproducibility.
+  \item The 3D representation may contain both authentic and synthesised content (if inpainting or multi-view generation was used), and the boundaries between them must be documented.
+  \item Multiple output formats (PLY, SPLAT, GLB, USD) are derived from the same capture, and the relationships between them must be explicit.
+  \item Per-object segmentation introduces sub-artefact metadata (individual objects within a scene), creating a hierarchical metadata structure.
+\end{itemize}
+
+\section{The Cultural Heritage Capture Metadata Schema}
+\label{sec:meta-schema}
+
+The metadata schema developed for this project formalises the information required to fully document a cultural heritage Gaussian splat capture. It is structured into four sections, reflecting the lifecycle of the capture from field recording through processing to preservation and access.
+
+\subsection{Section 1: Capture Information}
+
+This section records what was captured, by whom, where, and under what conditions. It is completed at the time of capture (Module~1) and corresponds to the capture metadata form introduced in Section~\ref{sec:cap-metadata}.
+
+\begin{lstlisting}[language={}, caption={Capture metadata section.}, label={lst:meta-capture}]
+{
+  "capture": {
+    "id": "b7e4f2a1-3c89-4d56-a012-7890abcdef12",
+    "title": "Sculpture X by Artist Y",
+    "date": "2026-04-01T14:30:00Z",
+    "location": {
+      "name": "University of Salford, New Adelphi Gallery",
+      "gps": [53.4870, -2.2742],
+      "room": "Gallery 2, North Wall"
+    },
+    "creator": {
+      "name": "Artist Name",
+      "role": "sculptor",
+      "contact": "artist@example.com"
+    },
+    "operator": {
+      "name": "Capture Operator Name",
+      "institution": "University of Salford"
+    },
+    "rights": {
+      "licence": "CC BY-SA 4.0",
+      "permissions": "Written consent from artist, dated
+                       2026-03-15",
+      "restrictions": "No commercial derivative works
+                        without additional consent"
+    },
+    "description": "Wire mesh figure, approximately 2m tall,
+                     mixed media including found objects and
+                     LED lighting strips. The work is
+                     site-specific, designed for this gallery
+                     wall, and responds to the natural light
+                     from the adjacent skylight.",
+    "lighting": "Mixed: gallery track lighting (3200K) plus
+                  diffuse natural light from north-facing
+                  skylight. Captured at 14:30 to minimise
+                  direct sunlight.",
+    "scale_reference": {
+      "type": "ruler",
+      "size_cm": 30,
+      "location": "Base of plinth, front-left"
+    },
+    "cultural_context": "Part of 'Material Worlds' exhibition,
+                          curated by Curator Name, Spring 2026.
+                          Fourth work in the artist's ongoing
+                          series exploring industrial heritage
+                          through reclaimed materials."
+  }
+}
+\end{lstlisting}
+
+\subsection{Section 2: Technical Capture Information}
+
+This section records the technical parameters of the capture itself---device, resolution, duration, and capture methodology. It is partially auto-populated from video file metadata and partially completed by the operator.
+
+\begin{lstlisting}[language={}, caption={Technical capture metadata section.}, label={lst:meta-technical}]
+{
+  "technical": {
+    "device": {
+      "make": "Apple",
+      "model": "iPhone 15 Pro",
+      "lens": "Main (24mm equivalent, f/1.78)"
+    },
+    "video": {
+      "resolution": "3840x2160",
+      "fps": 30,
+      "codec": "H.265 (HEVC)",
+      "bitrate_mbps": 100,
+      "duration_seconds": 180,
+      "file_size_mb": 2250
+    },
+    "stabilisation": "handheld (OIS active)",
+    "capture_patterns": ["orbit", "detail_pass"],
+    "height_levels": 2,
+    "notes": "Two full orbits at chest height and
+               raised arm height. Three detail passes:
+               head, torso junction, base/plinth."
+  }
+}
+\end{lstlisting}
+
+\subsection{Section 3: Processing Information}
+
+This section is populated automatically by the \texttt{gaussian-toolkit} pipeline as it processes the capture. It records every significant parameter and metric from each processing stage, providing a complete provenance chain from raw video to final output.
+
+\begin{lstlisting}[language={}, caption={Processing metadata section.}, label={lst:meta-processing}]
+{
+  "processing": {
+    "pipeline_version": "gaussian-toolkit v2.1.0",
+    "configuration": "standard",
+    "timestamp_start": "2026-04-01T15:10:00Z",
+    "timestamp_end": "2026-04-01T16:45:00Z",
+    "frame_extraction": {
+      "total_frames": 5400,
+      "extracted_frames": 2700,
+      "rejected_blur": 85,
+      "final_frames": 2615,
+      "extraction_rate": "every 2nd frame",
+      "blur_threshold": 100.0
+    },
+    "colmap": {
+      "matching_method": "sequential",
+      "registered_images": 2484,
+      "registration_rate": 0.95,
+      "sparse_points": 285000,
+      "mean_reprojection_error_px": 0.73,
+      "processing_time_minutes": 35
+    },
+    "training": {
+      "method": "3dgs_original",
+      "iterations": 30000,
+      "learning_rate_initial": 0.00016,
+      "densify_from_iter": 500,
+      "densify_until_iter": 15000,
+      "final_gaussian_count": 1850000,
+      "final_loss": 0.0042,
+      "processing_time_minutes": 48,
+      "gpu": "NVIDIA RTX 4090 24GB"
+    },
+    "mesh_extraction": {
+      "method": "milo",
+      "vertices": 736000,
+      "faces": 1472000,
+      "processing_time_minutes": 22
+    },
+    "modifications": [
+      {
+        "type": "inpainting",
+        "description": "Removed visitor visible in frames
+                         1200-1350",
+        "region": "centre-left, floor level",
+        "timestamp": "2026-04-02T09:00:00Z",
+        "operator": "Operator Name"
+      }
+    ]
+  }
+}
+\end{lstlisting}
+
+\subsection{Section 4: Preservation and Access Information}
+
+This section records the output artefacts, their locations, and access pathways. It is the link between the capture/processing record and the institutional discovery and access systems.
+
+\begin{lstlisting}[language={}, caption={Preservation and access metadata section.}, label={lst:meta-preservation}]
+{
+  "preservation": {
+    "original_video": {
+      "filename": "capture_001.mp4",
+      "sha256": "a1b2c3d4e5f6...",
+      "storage_location": "institutional_repository/raw/
+                            b7e4f2a1/"
+    },
+    "gaussian_ply": {
+      "filename": "scene.ply",
+      "sha256": "f6e5d4c3b2a1...",
+      "gaussian_count": 1850000,
+      "file_size_mb": 142
+    },
+    "gaussian_splat": {
+      "filename": "scene.splat",
+      "sha256": "1a2b3c4d5e6f...",
+      "file_size_mb": 85
+    },
+    "mesh_glb": {
+      "filename": "scene.glb",
+      "sha256": "9f8e7d6c5b4a...",
+      "vertices": 736000,
+      "file_size_mb": 67
+    },
+    "usd_scene": {
+      "filename": "scene.usda",
+      "sha256": "0a1b2c3d4e5f..."
+    },
+    "browser_viewer_url":
+        "https://heritage.salford.ac.uk/viewer/b7e4f2a1",
+    "catalogue_record_url":
+        "https://collections.salford.ac.uk/record/UoS.2026.043",
+    "archival_package": {
+      "filename": "b7e4f2a1_archive.tar.gz",
+      "sha256": "5e4d3c2b1a0f...",
+      "deposited": "2026-04-05",
+      "repository": "University of Salford Institutional
+                      Repository"
+    }
+  }
+}
+\end{lstlisting}
+
+\section{The Complete Schema}
+\label{sec:meta-complete}
+
+The four sections above compose into a single JSON document that constitutes the complete metadata record for a cultural heritage capture. The full schema, when assembled, provides:
+
+\begin{itemize}
+  \item \textbf{Provenance chain.} From the original artwork (creator, cultural context) through the capture event (operator, conditions, technique) through the processing pipeline (every parameter, every quality metric) to the preservation outputs (file hashes, storage locations, access URLs).
+  \item \textbf{Reproducibility.} Given the original video and the processing section of the metadata, the reconstruction can be exactly reproduced by running the same pipeline version with the same parameters.
+  \item \textbf{Discoverability.} The capture section provides the descriptive metadata needed for catalogue search, subject indexing, and cross-collection linking.
+  \item \textbf{Authenticity documentation.} The modifications array in the processing section records every post-capture alteration (inpainting, synthetic view generation), ensuring that the distinction between authentic capture and synthesised content is permanently documented.
+\end{itemize}
+
+\begin{recommendation}
+Adopt the metadata schema as a mandatory component of every capture workflow. A capture without a completed metadata record should not be accepted for processing. This ``no metadata, no processing'' policy ensures that metadata collection happens at the point of capture---when the information is freshest and most accurate---rather than being deferred and eventually lost.
+\end{recommendation}
+
+\section{How the Agentic Orchestrator Uses Metadata}
+\label{sec:meta-agentic}
+
+The agentic orchestrator described in Chapter~\ref{ch:pipeline} uses the metadata record as both an input to processing decisions and a target for automated enrichment.
+
+\subsection{Processing Decisions}
+
+The orchestrator reads the capture metadata to configure the processing pipeline:
+
+\begin{description}
+  \item[Device-aware defaults.] The device model in the technical section determines default camera intrinsic parameters, reducing \acrshort{colmap}'s search space and improving registration speed and reliability.
+  \item[Capture pattern optimisation.] The capture pattern description (orbit, walkthrough, detail pass) informs the frame extraction strategy. Orbits benefit from uniform frame sampling; walkthroughs benefit from adaptive sampling that extracts more frames during turns.
+  \item[Quality targets.] The cultural context and intended use (archival, public engagement, research) determine whether to use Quick, Standard, or Archival processing configuration.
+\end{description}
+
+\subsection{Automated Enrichment}
+
+After processing, the orchestrator enriches the metadata record with computed information:
+
+\begin{description}
+  \item[Quality assessment.] Registration rate, training loss, and Gaussian count are interpreted against known quality thresholds. If the registration rate falls below 80\%, the orchestrator flags the capture for recapture consideration and generates a diagnostic report identifying likely causes.
+  \item[Spatial indexing.] GPS coordinates are geocoded to produce human-readable location descriptions (``New Adelphi Building, University of Salford, Greater Manchester'') and linked to geographic identifiers (GeoNames, Wikidata).
+  \item[Rights validation.] The orchestrator checks that the rights field is populated and conforms to a recognised licence identifier (Creative Commons, institutional licence codes). Captures with missing or unrecognised rights information are flagged for curatorial review.
+  \item[Format validation.] Output files are checked for integrity (file hashes), format compliance (valid PLY header, valid glTF structure), and completeness (all expected outputs present).
+\end{description}
+
+\begin{technote}
+The agentic orchestrator in the \texttt{gaussian-toolkit} uses Claude Code (Anthropic) as its reasoning engine, with the metadata JSON as primary context for each decision. This means the quality assessment is not a rigid rule engine---it reasons about the \emph{combination} of factors (e.g., a low registration rate is more concerning for an archival capture than for a quick preview) and generates natural-language diagnostic reports that non-specialist operators can understand.
+\end{technote}
+
+\section{Automated Cataloguing Workflows}
+\label{sec:meta-cataloguing}
+
+The metadata schema is designed to bridge the gap between the 3D reconstruction pipeline and institutional collection management systems. The following automated workflows are supported by the \texttt{gaussian-toolkit} orchestrator:
+
+\subsection{Workflow 1: Ingest to Collection Management System}
+
+Upon completion of processing and quality validation, the orchestrator can automatically create a catalogue record in the institution's CMS:
+
+\begin{enumerate}
+  \item Extract the descriptive fields (title, creator, date, description, rights) from the capture section.
+  \item Map them to the CMS's metadata schema (Dublin Core, Spectrum, or custom).
+  \item Create a new catalogue record via the CMS API.
+  \item Attach the browser viewer URL as a media representation.
+  \item Attach the metadata JSON as a documentation file.
+  \item Return the CMS record URL and write it into the preservation section of the metadata.
+\end{enumerate}
+
+\begin{table}[htbp]
+  \centering
+  \caption{Metadata mapping from capture schema to Dublin Core.}
+  \label{tab:dublin-core-mapping}
+  \begin{tabular}{@{}l l L{6cm}@{}}
+    \toprule
+    \textbf{Capture Schema Field} & \textbf{Dublin Core} & \textbf{Notes} \\
+    \midrule
+    \texttt{capture.title}       & \texttt{dc:title}       & Direct mapping \\
+    \texttt{capture.creator.name} & \texttt{dc:creator}    & Creator of the original work \\
+    \texttt{capture.date}        & \texttt{dc:date}        & Date of capture (not creation of original work) \\
+    \texttt{capture.description} & \texttt{dc:description} & Extended with technical summary \\
+    \texttt{capture.rights.licence} & \texttt{dc:rights}   & Licence identifier \\
+    \texttt{capture.location.name} & \texttt{dc:coverage}  & Spatial coverage \\
+    ``3D Gaussian Splat''        & \texttt{dc:type}        & Fixed value \\
+    ``application/x-ply''        & \texttt{dc:format}      & MIME type for PLY \\
+    \texttt{capture.operator.institution} & \texttt{dc:publisher} & Capturing institution \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Workflow 2: Batch Cataloguing}
+
+For high-volume capture programmes (e.g., documenting an entire exhibition), the orchestrator processes captures in batch mode:
+
+\begin{enumerate}
+  \item The operator captures multiple spaces/objects in sequence, completing a metadata form for each.
+  \item All captured videos and metadata forms are placed in a staging directory.
+  \item The orchestrator processes each capture in sequence (or in parallel, if multiple GPUs are available).
+  \item Upon completion, a batch report is generated summarising all captures: their processing status, quality metrics, and CMS record URLs.
+  \item Captures that failed quality thresholds are listed with diagnostic summaries and suggested remedies.
+\end{enumerate}
+
+\subsection{Workflow 3: Periodic Re-Capture Monitoring}
+
+For heritage sites that require periodic re-documentation (buildings undergoing conservation, seasonal installations), the orchestrator can:
+
+\begin{enumerate}
+  \item Compare new captures with previous captures of the same location (matched by GPS coordinates and scene title).
+  \item Generate difference reports highlighting areas of visible change.
+  \item Maintain a temporal series of captures linked through the metadata schema's preservation section.
+\end{enumerate}
+
+\section{Integration with Museum Collection Management Systems}
+\label{sec:meta-integration}
+
+The metadata schema and automated workflows are designed to integrate with the collection management systems in common use across UK cultural heritage institutions:
+
+\begin{description}
+  \item[CollectiveAccess] Open-source CMS widely used by universities and small museums. Integration via the Providence REST API, with custom metadata elements mapped from the capture schema.
+
+  \item[Axiell (EMu/Collections)] Used by major UK museums including the V\&A and the Science Museum Group. Integration via the Axiell API, with the capture schema mapped to Axiell's event-based documentation model.
+
+  \item[Omeka S] Open-source digital collections platform common in academic contexts. Integration via the Omeka S API, with metadata mapped to custom vocabularies derived from the capture schema.
+
+  \item[ResourceSpace] Open-source digital asset management, often used for media-rich collections. Integration via the ResourceSpace API, with the splat viewer URL stored as a media preview and the metadata JSON as an attached document.
+\end{description}
+
+\begin{recommendation}
+When deploying the capture workflow in a new institution, begin with a manual metadata review step between processing completion and CMS ingestion. Run the automated workflow but require a curator to review and approve each catalogue record before it becomes publicly visible. After 20--30 captures have been reviewed without significant corrections, the manual review step can be relaxed to spot-checking.
+\end{recommendation}
+
+\section{Practical Exercise: Complete Metadata Record}
+\label{sec:meta-exercise}
+
+\begin{tcolorbox}[
+  enhanced,
+  colback=SuccessGreen!8,
+  colframe=SuccessGreen,
+  fonttitle=\bfseries\sffamily,
+  title={Exercise 5.1: Full Metadata Record},
+  sharp corners=south,
+  boxrule=0.6pt
+]
+\textbf{Objective:} Complete a full metadata record for the capture processed in Exercises~1.1 and~2.1, including all four sections of the schema.
+
+\textbf{Time:} 60--90 minutes
+
+\textbf{Steps:}
+\begin{enumerate}
+  \item Open a text editor with JSON syntax highlighting.
+  \item Create a new JSON file and populate the \texttt{capture} section using the metadata form completed during Module~1.
+  \item Populate the \texttt{technical} section from the video file properties (resolution, duration, codec---most video players display these in a ``file information'' or ``properties'' panel).
+  \item Populate the \texttt{processing} section from the pipeline metrics recorded during Exercise~2.1 (\acrshort{colmap} registration rate, Gaussian count, training iterations).
+  \item Populate the \texttt{preservation} section with the output file names and (if you completed Exercise~3.2) the archival package information.
+  \item Validate the JSON: ensure it is syntactically valid (no trailing commas, matching braces) using a validator such as \texttt{jsonlint.com} or a text editor plugin.
+  \item Review the record: is there any information that a future researcher would need to understand this capture that is not recorded? If so, add it to the appropriate \texttt{notes} or \texttt{cultural\_context} field.
+\end{enumerate}
+
+\textbf{Expected outcome:} A complete, valid JSON metadata record that documents the full provenance chain from original subject through capture to processed output. The record should be self-contained---a reader with no prior knowledge of the project should be able to understand what was captured, how, and where the results are stored.
+\end{tcolorbox}
+
+\begin{tcolorbox}[
+  enhanced,
+  colback=SuccessGreen!8,
+  colframe=SuccessGreen,
+  fonttitle=\bfseries\sffamily,
+  title={Exercise 5.2: Catalogue Integration Design},
+  sharp corners=south,
+  boxrule=0.6pt
+]
+\textbf{Objective:} Design the integration between the capture metadata schema and your institution's (or a hypothetical institution's) collection management system.
+
+\textbf{Time:} 45--60 minutes
+
+\textbf{Steps:}
+\begin{enumerate}
+  \item Identify the target CMS (or choose one from the list in Section~\ref{sec:meta-integration}).
+  \item Map each field in the capture metadata schema to the corresponding field in the CMS's metadata model. Where no direct mapping exists, propose a custom field or note the gap.
+  \item Sketch the automated workflow: what triggers the catalogue record creation? What fields are auto-populated versus requiring human review? What is the approval process?
+  \item Identify the access pathways: how does a public user find and view the 3D capture from the catalogue? What URL structure links the catalogue record to the browser viewer?
+  \item Document your design as a one-page workflow diagram and field mapping table.
+\end{enumerate}
+
+\textbf{Expected outcome:} A practical integration design that could be handed to a developer for implementation. Participants from institutions with existing CMS deployments should produce designs specific to their systems; others should produce a design for one of the open-source systems listed above.
+\end{tcolorbox}

@@ -1,10 +1,16 @@
-# Gaussian Toolkit Architecture
+# Vitrine / Gaussian Toolkit Architecture
 
-> **Boundary note:** Gaussian Toolkit is our fork of [LichtFeld Studio](https://github.com/MrNeRF/LichtFeld-Studio) (MrNeRF). LichtFeld Studio is the upstream product. We add the video-to-scene pipeline, web interface, Docker deployment, and research. See [BOUNDARIES.md](../../BOUNDARIES.md) for the complete separation policy and the decision framework for where new code belongs.
+> **Rename note (2026-06-04):** The pipeline product is renamed from **Video-to-Gaussian** to
+> **Vitrine**. Code identifiers still say `video2splat` / `gaussian-toolkit`; a full code rename is a
+> separate scheduled follow-up (ADR-015).
 
-## System Overview
+> **Boundary note:** Vitrine (Gaussian Toolkit) is our fork of [LichtFeld Studio](https://github.com/MrNeRF/LichtFeld-Studio) (MrNeRF). LichtFeld Studio is the upstream product. We add the video-to-scene pipeline, web interface, Docker deployment, and research. See [BOUNDARIES.md](../../BOUNDARIES.md) for the complete separation policy and the decision framework for where new code belongs.
 
-> See also: [docs/architecture.md](../architecture.md) for the two-container deployment architecture.
+## System Overview (v2 — current)
+
+> See also: [docs/architecture.md](../architecture.md) for the three-container deployment architecture and the **v3 End-to-End Architecture (Proposed)** section.
+>
+> For the v3 pipeline design reference, see [architecture/v3-pipeline.md](v3-pipeline.md).
 
 Gaussian Toolkit integrates multiple components into a unified 3D Gaussian Splatting pipeline running in two Docker containers on dual RTX 6000 Ada GPUs (96GB total VRAM).
 

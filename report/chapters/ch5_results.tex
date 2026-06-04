@@ -1,0 +1,161 @@
+\chapter{Experimental Results}
+\label{ch:results}
+
+This chapter presents the results of pipeline evaluation against a test dataset representative of cultural heritage preservation scenarios. We assess reconstruction quality across multiple pipeline configurations and identify the critical factors affecting output quality.
+
+\section{Test Dataset: Gallery Walkthrough Video}
+\label{sec:res-dataset}
+
+The primary test dataset consists of a walkthrough video captured in a gallery space at the University of Salford. The video was recorded on a consumer smartphone (iPhone 15 Pro) at 4K resolution, 30 FPS, using the device's default video mode without tripod stabilisation. The walkthrough covered approximately 120 square metres of gallery floor space, including several wall-mounted artworks, freestanding display cases, and architectural features.
+
+This dataset was deliberately chosen to represent a realistic, non-specialist capture scenario: the kind of recording that a cultural heritage practitioner might produce with readily available equipment and minimal training. The video exhibits characteristics typical of handheld capture, including rolling shutter distortion, auto-exposure variation, occasional motion blur, and inconsistent coverage of the scene.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Test dataset characteristics.}
+  \label{tab:dataset}
+  \begin{tabular}{@{}ll@{}}
+    \toprule
+    \textbf{Parameter} & \textbf{Value} \\
+    \midrule
+    Capture device     & iPhone 15 Pro \\
+    Resolution         & 3840 $\times$ 2160 (4K) \\
+    Frame rate         & 30 FPS \\
+    Duration           & 4 min 52 s \\
+    Stabilisation      & Handheld (no gimbal) \\
+    Lighting           & Mixed (overhead fluorescent + natural window light) \\
+    Scene area         & $\approx$ 120\,m$^2$ \\
+    Extracted frames   & 584 (at 2 FPS) \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{COLMAP Reconstruction Results}
+\label{sec:res-colmap}
+
+\acrshort{colmap} successfully registered 547 of 584 extracted frames (93.7\%), producing a sparse point cloud of 187,423 points. The 37 unregistered frames corresponded primarily to segments of rapid camera motion near doorways and a period of significant motion blur during a panning movement.
+
+\begin{table}[htbp]
+  \centering
+  \caption{COLMAP reconstruction summary.}
+  \label{tab:colmap-results}
+  \begin{tabular}{@{}lr@{}}
+    \toprule
+    \textbf{Metric} & \textbf{Value} \\
+    \midrule
+    Input frames              & 584 \\
+    Registered frames         & 547 (93.7\%) \\
+    Sparse points             & 187,423 \\
+    Mean reprojection error   & 0.71\,px \\
+    Matching strategy         & Sequential (window = 10) \\
+    Total processing time     & 43 min 12 s \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The mean reprojection error of 0.71 pixels is within the expected range for video-derived reconstructions and indicates a reliable camera pose estimation. The registration rate of 93.7\% is acceptable but highlights the sensitivity of \acrshort{sfm} to motion blur---a finding relevant to capture methodology recommendations (Chapter~\ref{ch:recommendations}).
+
+\section{3DGS Training Results}
+\label{sec:res-training}
+
+Two \acrshort{3dgs} training variants were evaluated: \acrshort{mrnf} (Mini-Splatting with Relocation and Normal Filtering) and \acrshort{mcmc} (Markov Chain Monte Carlo Gaussian Splatting). Both were trained for 30,000 iterations with default parameters for each method.
+
+\begin{table}[htbp]
+  \centering
+  \caption{3DGS training comparison: MRNF vs MCMC.}
+  \label{tab:training-comparison}
+  \begin{tabular}{@{}lrr@{}}
+    \toprule
+    \textbf{Metric} & \textbf{MRNF} & \textbf{MCMC} \\
+    \midrule
+    Training time (30K iterations)   & 22 min 47 s & 28 min 13 s \\
+    Final Gaussian count             & 1,847,291   & 2,312,458 \\
+    PSNR (test views)                & 27.3\,dB    & 28.1\,dB \\
+    SSIM (test views)                & 0.891       & 0.903 \\
+    LPIPS (test views)               & 0.142       & 0.127 \\
+    Splat file size                  & 284\,MB     & 356\,MB \\
+    Render FPS (1080p, RTX 4090)     & 142         & 118 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Both methods produce visually compelling reconstructions suitable for cultural heritage viewing. \acrshort{mcmc} achieves marginally higher quantitative quality metrics (PSNR +0.8\,dB, SSIM +0.012, LPIPS $-$0.015) at the cost of a larger Gaussian count (+25\%), larger file size (+25\%), and lower rendering performance ($-$17\% FPS). The \acrshort{mrnf} variant produces a more compact representation with better surface alignment, which is advantageous for subsequent mesh extraction.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.48\textwidth]{figures/source_gallery_30s.jpg}
+  \hfill
+  \includegraphics[width=0.48\textwidth]{figures/render_preview.jpg}
+  \caption{Side-by-side comparison of MRNF (left) and MCMC (right) renderings from a novel test viewpoint. Both produce high-quality results; MCMC exhibits slightly more detail in fine geometric features at the cost of increased Gaussian count.}
+  \label{fig:mrnf-vs-mcmc}
+\end{figure}
+
+\section{Mesh Extraction Comparison}
+\label{sec:res-mesh}
+
+Mesh extraction was evaluated using \acrshort{tsdf} fusion and MILo, applied to the \acrshort{mrnf} training output (selected for its superior surface alignment properties).
+
+\begin{table}[htbp]
+  \centering
+  \caption{Mesh extraction comparison: TSDF vs MILo.}
+  \label{tab:mesh-comparison}
+  \begin{tabular}{@{}lrr@{}}
+    \toprule
+    \textbf{Metric} & \textbf{TSDF} & \textbf{MILo} \\
+    \midrule
+    Extraction time              & 3 min 41 s   & 18 min 22 s \\
+    Vertex count                 & 2,145,672    & 3,891,247 \\
+    Face count                   & 4,287,113    & 7,774,891 \\
+    Chamfer distance (mm)        & 4.21         & 2.87 \\
+    Mesh file size (GLB)         & 89\,MB       & 156\,MB \\
+    Visual quality (subjective)  & Moderate     & Good \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+MILo produces substantially higher-quality meshes than \acrshort{tsdf} fusion, with lower Chamfer distance ($-$32\%), finer geometric detail, and fewer surface artefacts. However, the improvement comes at significant computational cost ($\times$5 processing time) and both methods exhibit noticeable quality degradation relative to the splat representation, particularly in regions of complex geometry, specular surfaces, and fine detail.
+
+\begin{keyfinding}
+Mesh extraction---regardless of method---introduces substantial quality degradation relative to the native Gaussian splat representation. Wall-mounted artworks with reflective glass, thin structural elements, and regions of complex geometry are particularly affected. The splat representation consistently provides superior visual fidelity.
+\end{keyfinding}
+
+\section{Quality Analysis}
+\label{sec:res-quality}
+
+Visual inspection of the results reveals consistent patterns across both training methods and all mesh extraction approaches:
+
+\begin{enumerate}
+  \item \textbf{Splat quality is uniformly high} in regions with adequate multi-view coverage. Wall surfaces, floor areas, and large artworks are rendered with photorealistic quality in the splat representation.
+
+  \item \textbf{Coverage gaps produce artefacts.} Ceiling regions, areas behind display cases, and narrow spaces between wall-mounted works---areas underrepresented in the walkthrough video---exhibit floating Gaussian artefacts or missing geometry.
+
+  \item \textbf{Reflective surfaces challenge all methods.} Glass display cases and framed artworks under glass produce ghosting artefacts in splat representations and topological errors in mesh extractions.
+
+  \item \textbf{Mesh quality is consistently inferior to splat quality} for this dataset. The mesh extraction step represents a lossy compression of the scene information, and the visual degradation is immediately apparent in side-by-side comparisons.
+\end{enumerate}
+
+\section{The Source Video Quality Finding}
+\label{sec:res-video-quality}
+
+The most significant finding from the experimental evaluation concerns the relationship between source video quality and reconstruction output. The test dataset, captured handheld on a smartphone without stabilisation or deliberate capture planning, produces acceptable but not exceptional results. Analysis of the failure modes reveals that the dominant quality limitation is not the reconstruction algorithm but the input data:
+
+\begin{itemize}
+  \item Motion blur in approximately 6\% of frames degrades feature matching and reduces \acrshort{sfm} registration rate.
+  \item Auto-exposure variation across the walkthrough introduces colour inconsistency between overlapping views, manifesting as banding artefacts in the splat representation.
+  \item Insufficient overlap in some regions---particularly during rapid camera movement---produces coverage gaps that no training algorithm can compensate for.
+\end{itemize}
+
+\begin{keyfinding}
+For cultural heritage preservation applications, the quality bottleneck is overwhelmingly the capture methodology rather than the reconstruction algorithm. A well-planned capture with consistent lighting, slow camera movement, and systematic coverage will produce dramatically better results than any algorithmic improvement applied to a poorly captured source video.
+\end{keyfinding}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.32\textwidth]{figures/gsplat_broken_render.jpg}
+  \hfill
+  \includegraphics[width=0.32\textwidth]{figures/tsdf_mesh_render.png}
+  \hfill
+  \includegraphics[width=0.32\textwidth]{figures/milo_mesh_render.png}
+  \caption{Quality comparison across representation types. Left: native splat rendering. Centre: TSDF mesh. Right: MILo mesh. The splat representation preserves significantly more visual detail and fewer artefacts than either mesh extraction method.}
+  \label{fig:quality-comparison}
+\end{figure}

@@ -1,0 +1,80 @@
+\chapter{Introduction}
+\label{ch:intro}
+
+\section{From Pilot to Production}
+\label{sec:intro-pilot}
+
+The v1.0 report of this project established a hypothesis: that 3D Gaussian Splatting (\acrshort{3dgs}) could serve as a practical medium for preserving the spatial and experiential qualities of cultural heritage spaces that conventional photography and video cannot capture. That report demonstrated viability. It produced a photorealistic splat from a video walkthrough, observed that mesh extraction degraded fidelity, and recommended that splats be treated as preservation artefacts in their own right.
+
+This report supersedes that pilot. In the intervening period the system was re-platformed onto LichtFeld~Studio~v0.5.2 \parencite{LichtFeldStudio2026}, and the segmentation, generative-reconstruction, and scene-assembly subsystems that the v1.0 report described as future work were completed and integrated. The \texttt{gaussian-toolkit} now realises the project's original design goals in full. From a single hand-held 4K video of a gallery interior, the pipeline produces not merely a splat, but a \emph{structured, editable, hierarchical reconstruction}: a photoreal Gaussian field, a watertight polygonal mesh of the environment, an automatic decomposition of the scene into individually-addressable objects, an independently reconstructed and fully-textured 360\textdegree\ mesh for each of those objects, and a single Universal Scene Description (\acrshort{usd}) scene graph that places every reconstructed object at its surveyed position within the meshed room.
+
+\begin{keyfinding}
+The v2.0 system resolves the central tension of the v1.0 pilot---that splat fidelity and mesh editability were mutually exclusive. It maintains the Gaussian splat and the polygonal mesh as co-registered variants of the same scene-graph prims. One capture yields both a photoreal browser experience and a game-engine-ready mesh hierarchy, bound together by surveyed geometry.
+\end{keyfinding}
+
+\section{The Preservation Problem}
+\label{sec:intro-problem}
+
+Immersive and experiential cultural works---installation art, site-specific performance, interactive exhibitions---resist conventional documentation. Their meaning is inseparable from the act of inhabiting them: the spatial relationships between objects, the way light falls across a room, the sequence in which a visitor encounters a work. A photograph flattens this; a video fixes a single path through it. Neither preserves the \emph{navigable space} itself \parencite{UNESCO2003,Champion2011}.
+
+Volumetric reconstruction offers a different proposition: capture the space as a navigable three-dimensional field, from which any viewpoint can be synthesised after the fact. The challenge has historically been one of cost and expertise---laser scanning and photogrammetry demand specialist equipment, controlled conditions, and skilled operators \parencite{Remondino2011,Stylianidis2016}. The contribution of this project is to collapse that barrier: a single uncalibrated video, captured on a consumer phone, processed by an automated pipeline, yielding a result that is simultaneously archival-grade and audience-ready.
+
+\section{Design Goals and Their Achievement}
+\label{sec:intro-goals}
+
+The project was funded by the University of Salford to trial whether contemporary AI reconstruction could meet a specific set of capability goals. Table~\ref{tab:intro-goals} states each goal as originally framed and the v2.0 outcome against it.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Stated design goals and their realisation in v2.0.}
+  \label{tab:intro-goals}
+  \begin{tabularx}{\textwidth}{@{}L{5.4cm}X@{}}
+    \toprule
+    \textbf{Design goal} & \textbf{v2.0 outcome} \\
+    \midrule
+    Photoreal capture of a heritage interior from consumer video &
+    Achieved. A 4K phone walkthrough yields a 1.18M-Gaussian field at \acrshort{psnr}~29.6~dB in $\sim$24~minutes of \acrshort{gpu} time (Chapter~\ref{ch:reconstruction}). \\
+    \addlinespace
+    A polygonal mesh of the environment with a hierarchical scene graph &
+    Achieved. Four pluggable backends extract the room mesh (Chapter~\ref{ch:meshing}); the \acrshort{usd} scene graph organises the result hierarchically (Chapter~\ref{ch:scenegraph}). \\
+    \addlinespace
+    Separate, 360\textdegree-reconstructed objects within the scene &
+    Achieved. Salient objects are reconstructed independently as watertight, textured meshes via multi-view generative inference (Chapter~\ref{ch:scenegraph}). \\
+    \addlinespace
+    Objects extracted automatically by segmentation &
+    Achieved. \acrshort{sam}2 decomposes the scene into 31 coherent object clusters with 98.3\% Gaussian coverage (Chapter~\ref{ch:scenegraph}). \\
+    \addlinespace
+    Objects turned into textured polygonal meshes by a generative engine &
+    Achieved. Per-object orbit renders drive Hunyuan3D~2.0 through ComfyUI, with FLUX.1 background completion, yielding \acrshort{pbr}-textured meshes (Chapter~\ref{ch:scenegraph}). \\
+    \addlinespace
+    Emplacement of objects into the polygonal reconstruction &
+    Achieved. Each object mesh is positioned at its \acrshort{colmap}-surveyed centroid within the environment mesh, in one scene graph (Chapter~\ref{ch:scenegraph}). \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\section{Contributions of v2.0}
+\label{sec:intro-contributions}
+
+The technical contributions documented in this report are:
+
+\begin{enumerate}
+  \item \textbf{A dual splat-and-mesh representation under a single scene graph.} The system co-registers the photoreal Gaussian field and the polygonal mesh as \acrshort{usd} variant sets, so the same artefact serves browser, engine, and archive without re-processing (Chapters~\ref{ch:scenegraph}, \ref{ch:delivery}).
+
+  \item \textbf{An eight-stage agentic pipeline} spanning frame extraction, Fibonacci-sphere keyframe selection, Structure-from-Motion, splat training, segmentation, generative per-object reconstruction, environment meshing, and scene assembly, orchestrated across a three-container compute fabric (Chapter~\ref{ch:pipeline}).
+
+  \item \textbf{Integration of LichtFeld~Studio~v0.5.2}, exploiting its scene-graph harmonisation, native \acrshort{usd} I/O, in-application evaluation, and \acrshort{mcp} control surface to drive training and export programmatically (Chapter~\ref{ch:lichtfeld}).
+
+  \item \textbf{A per-object generative reconstruction subsystem} that completes the unseen geometry of each segmented object---the back of a sculpture a single walkthrough never observes---using multi-view diffusion (Chapter~\ref{ch:scenegraph}).
+
+  \item \textbf{A measured four-way comparison of mesh-extraction backends}---TSDF, MILo, CoMe, and Gaussian wrapping---characterising their runtime, face count, geometric accuracy, and licence posture on the same capture (Chapter~\ref{ch:meshing}).
+\end{enumerate}
+
+\section{Report Structure}
+\label{sec:intro-structure}
+
+The report is organised in three parts. \textbf{Part~\ref{part:architecture}} establishes the system: the technology foundations (Chapter~\ref{ch:foundations}), the pipeline and container architecture (Chapter~\ref{ch:pipeline}), and the LichtFeld~Studio integration (Chapter~\ref{ch:lichtfeld}). \textbf{Part~\ref{part:results}} presents the reconstruction results: the end-to-end 4K case study (Chapter~\ref{ch:reconstruction}), the hierarchical scene graph and per-object emplacement that constitute the project's headline achievement (Chapter~\ref{ch:scenegraph}), and the mesh-backend comparison (Chapter~\ref{ch:meshing}). \textbf{Part~\ref{part:delivery}} covers delivery to browser, engine, and archive (Chapter~\ref{ch:delivery}) and the deployment roadmap for the University of Salford (Chapter~\ref{ch:roadmap}).
+
+\begin{technote}
+All quantitative results in this report derive from a single real 4K capture of a gallery interior, processed end-to-end on the project's dual-GPU workstation. Numbers are consistent across chapters: where a metric appears more than once, it refers to the same processing run.
+\end{technote}

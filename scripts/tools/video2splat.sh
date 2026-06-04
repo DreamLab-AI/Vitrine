@@ -50,8 +50,9 @@ echo "=== Stage 3: LichtFeld Training ==="
 echo "Dataset: $DATASET"
 echo "Output:  $OUTPUT/model"
 
-LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}:/home/devuser/workspace/gaussians/LichtFeld-Studio/build" \
-    /home/devuser/workspace/gaussians/LichtFeld-Studio/build/LichtFeld-Studio \
+LICHTFELD_BUILD="${LICHTFELD_BUILD:-$(cd "$(dirname "$0")/../.." && pwd)/build}"
+LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}:${LICHTFELD_BUILD}" \
+    "${LICHTFELD_BUILD}/LichtFeld-Studio" \
     --headless \
     --data-path "$DATASET" \
     --output-path "$OUTPUT/model" \

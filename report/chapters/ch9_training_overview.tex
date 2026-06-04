@@ -1,0 +1,205 @@
+\chapter{Training Programme Overview}
+\label{ch:training-overview}
+
+This chapter introduces the DreamLab AI Cultural Heritage Capture Training Programme, a structured series of modules designed to equip a broad range of practitioners with the skills and knowledge required to capture, process, view, and catalogue cultural heritage content using the \acrshort{3dgs} workflow described in Part~I of this report. The programme translates the technical findings and recommendations of the pilot project into practical, hands-on training that can be delivered as workshops, self-directed learning, or embedded within institutional training calendars.
+
+\section{Rationale}
+\label{sec:train-rationale}
+
+The pilot project established that \acrshort{3dgs} offers a viable, high-quality pathway for cultural heritage preservation. However, a technology is only as useful as the people who can operate it. The gap between a containerised pipeline running on a developer's workstation and a routinely deployed institutional capability is bridged by training---not of the technology, but of the practitioners who will capture, curate, and disseminate the resulting digital heritage artefacts.
+
+\begin{keyfinding}
+Capture methodology is the dominant quality factor in Gaussian splat reconstruction (Chapter~\ref{ch:results}). No amount of algorithmic sophistication compensates for poorly captured source material. Training in capture technique is therefore the single highest-leverage intervention for improving preservation outcomes.
+\end{keyfinding}
+
+This programme follows the DreamLab AI workshop methodology: module-based, audience-differentiated, hardware-aware, and budget-conscious. Each module is self-contained with clearly stated prerequisites, enabling institutions to deploy individual modules according to their immediate needs or to deliver the full programme as a multi-day intensive.
+
+\section{Target Audiences}
+\label{sec:train-audiences}
+
+The programme addresses five distinct audience profiles, each with different entry points, learning objectives, and depth requirements:
+
+\begin{description}[style=nextline]
+  \item[Artists and Creators]
+    Practitioners whose work may be the subject of preservation. Their primary concern is understanding what the capture process involves, how it represents their work, and what creative control they retain. They need enough technical literacy to assess whether a reconstruction faithfully represents their artistic intent, and to participate in capture planning.
+
+  \item[Curators and Collection Managers]
+    Professionals responsible for determining what is preserved and how it is catalogued. They need to understand the metadata requirements for cultural heritage captures, the practical constraints of capture (time, access, lighting), and the integration of 3D assets with existing collection management systems (CMS). They will typically commission captures rather than perform them.
+
+  \item[Academic Researchers]
+    Scholars in cultural studies, digital humanities, art history, museum studies, and related fields. They require sufficient depth to evaluate the fidelity and limitations of 3D reconstructions as research sources, to design studies around preserved content, and to publish findings that reference volumetric artefacts. Some will also conduct captures of their own research subjects.
+
+  \item[Technical Staff]
+    IT professionals, digital media technicians, and studio operators who will operate the capture hardware, run the processing pipeline, troubleshoot failures, and maintain the infrastructure. They require the deepest technical knowledge and the most hands-on practice.
+
+  \item[Students]
+    Undergraduate and postgraduate students in creative technologies, digital media, computer science, cultural studies, and adjacent disciplines. They benefit from the full programme as a transferable skill set, and many will serve as capture operators in institutional deployments.
+\end{description}
+
+Table~\ref{tab:audience-modules} maps each audience to the modules most relevant to their role.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Audience--module mapping. \textbullet\ = essential, $\circ$ = recommended, --- = optional.}
+  \label{tab:audience-modules}
+  \begin{tabular}{@{}l c c c c c@{}}
+    \toprule
+    \textbf{Module} & \textbf{Artists} & \textbf{Curators} & \textbf{Academics} & \textbf{Technicians} & \textbf{Students} \\
+    \midrule
+    1: Capture        & $\circ$ & $\circ$ & \textbullet & \textbullet & \textbullet \\
+    2: Processing     & ---     & ---     & $\circ$     & \textbullet & \textbullet \\
+    3: Viewing        & $\circ$ & \textbullet & \textbullet & \textbullet & \textbullet \\
+    4: Advanced       & ---     & ---     & $\circ$     & \textbullet & $\circ$ \\
+    5: Metadata       & $\circ$ & \textbullet & \textbullet & $\circ$     & $\circ$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{Module Map and Prerequisites}
+\label{sec:train-modules}
+
+The five training modules follow a natural progression from capture through processing to viewing and distribution, with advanced techniques and metadata management as specialised extensions. Figure~\ref{fig:module-map} illustrates the dependency relationships.
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[
+    node distance=1.8cm and 2.5cm,
+    block/.style={
+      rectangle, rounded corners=3pt,
+      draw=MidGrey, fill=LightGrey,
+      text width=3.5cm, minimum height=1.4cm,
+      align=center, font=\small\sffamily
+    },
+    core/.style={block, fill=UoSRed!10, draw=UoSRed},
+    advanced/.style={block, fill=DreamLabAccent!10, draw=DreamLabAccent},
+    arrow/.style={-{Stealth[length=3mm]}, thick, MidGrey}
+  ]
+    \node[core] (m1) {Module 1\\Scene \& Artifact\\Capture};
+    \node[core, right=of m1] (m2) {Module 2\\Processing\\Pipeline};
+    \node[core, right=of m2] (m3) {Module 3\\Viewing \&\\Distribution};
+    \node[advanced, below=1cm of m2] (m4) {Module 4\\Advanced\\Techniques};
+    \node[advanced, below=1cm of m3] (m5) {Module 5\\Metadata \&\\Agentic Scaffolding};
+
+    \draw[arrow] (m1) -- (m2);
+    \draw[arrow] (m2) -- (m3);
+    \draw[arrow] (m2) -- (m4);
+    \draw[arrow] (m1) -- (m5);
+    \draw[arrow] (m3) -- (m5);
+  \end{tikzpicture}
+  \caption{Module dependency map. Core modules (red border) follow a linear progression; advanced modules (purple border) branch from the core pathway. Module~5 draws on both capture (Module~1) and viewing (Module~3) knowledge.}
+  \label{fig:module-map}
+\end{figure}
+
+Each module specifies its prerequisites explicitly. Modules~1--3 form the core pathway and should be completed in sequence. Modules~4 and~5 can be taken in either order once their prerequisites are met.
+
+\section{Hardware Tiers}
+\label{sec:train-hardware}
+
+Gaussian splat capture and processing spans a wide range of hardware capability and cost. The programme is designed to deliver useful outcomes at every tier, while being transparent about the quality and capability differences between them.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Hardware tiers for cultural heritage Gaussian splat capture and processing.}
+  \label{tab:hardware-tiers}
+  \begin{tabular}{@{}L{2.2cm}L{3.5cm}L{3.5cm}L{4cm}@{}}
+    \toprule
+    \textbf{Tier} & \textbf{Capture Device} & \textbf{Processing} & \textbf{Typical Output} \\
+    \midrule
+    \textbf{Phone} (Beginner)
+      & iPhone 12+ or flagship Android with 4K video, LiDAR optional
+      & Cloud processing (Polycam, Luma AI) or institutional GPU server
+      & 500K--2M Gaussians, suitable for web viewing \\
+    \addlinespace
+    \textbf{Consumer Camera} (Intermediate)
+      & Mirrorless/DSLR with 4K video (e.g., Sony A7 series, Canon R series), gimbal stabiliser
+      & Local workstation with NVIDIA RTX 3080+ (16\,GB VRAM) or institutional GPU server
+      & 2M--5M Gaussians, high-quality web and engine viewing \\
+    \addlinespace
+    \textbf{Professional} (Advanced)
+      & Cinema camera (Blackmagic, RED), drone (DJI Mavic/Inspire), terrestrial LiDAR (Leica BLK360)
+      & Dedicated GPU workstation with RTX 4090 (24\,GB VRAM) or multi-GPU server
+      & 5M--15M Gaussians, archival quality, multi-modal fusion \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{technote}
+The phone tier is deliberately included as a first-class pathway. Modern smartphone cameras---particularly the iPhone~15~Pro and Samsung Galaxy S24 Ultra---produce video of sufficient quality for useful Gaussian splat reconstructions. For many cultural heritage scenarios, a phone capture made \emph{today} is infinitely more valuable than a professional capture that never happens due to budget or scheduling constraints.
+\end{technote}
+
+\section{Budget Tiers}
+\label{sec:train-budget}
+
+Cost is a material constraint for cultural institutions. The programme distinguishes three budget tiers, each with a coherent set of tools that can deliver the full capture-to-viewing workflow:
+
+\begin{table}[htbp]
+  \centering
+  \caption{Budget tiers for the cultural heritage Gaussian splat workflow.}
+  \label{tab:budget-tiers}
+  \begin{tabular}{@{}L{2.2cm}L{4cm}L{4cm}L{3cm}@{}}
+    \toprule
+    \textbf{Tier} & \textbf{Tools} & \textbf{Processing} & \textbf{Monthly Cost} \\
+    \midrule
+    \textbf{Free}
+      & Phone camera, \texttt{gaussian-toolkit} (open source), gsplat.js viewer
+      & Institutional GPU server or Google Colab (free tier, limited)
+      & \pounds 0 \\
+    \addlinespace
+    \textbf{Standard} (\pounds 100/month)
+      & Consumer camera + gimbal, \texttt{gaussian-toolkit}, cloud GPU (RunPod, Vast.ai)
+      & 10--20 captures/month on rented GPU at \pounds 1--3/hour
+      & \pounds 50--100 \\
+    \addlinespace
+    \textbf{Professional} (\pounds 500/month)
+      & Professional camera/drone, \texttt{gaussian-toolkit} + SAM3 segmentation, Hunyuan MV API credits, dedicated cloud GPU or on-premises workstation
+      & 50+ captures/month, advanced segmentation and inpainting
+      & \pounds 300--500 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{recommendation}
+Institutions beginning their Gaussian splat preservation programme should start at the Free tier using existing smartphone hardware and an institutional GPU server. The quality is sufficient for initial cataloguing and public engagement, and early captures establish institutional knowledge that improves the return on investment when upgrading to higher tiers.
+\end{recommendation}
+
+\section{Learning Outcomes}
+\label{sec:train-outcomes}
+
+Upon completing the full programme, participants will be able to:
+
+\begin{enumerate}
+  \item Plan and execute a video capture session optimised for Gaussian splat reconstruction, including camera movement, lighting assessment, and scale reference placement.
+
+  \item Document captures using the structured metadata schema (Module~5), ensuring that technical, curatorial, and rights information accompanies every digital artefact.
+
+  \item Process captured video through the \texttt{gaussian-toolkit} pipeline, from Docker installation through \acrshort{colmap} registration to trained Gaussian splat output.
+
+  \item Evaluate reconstruction quality by inspecting \acrshort{colmap} registration rates, Gaussian count, and visual fidelity in the browser viewer.
+
+  \item Publish Gaussian splat artefacts to web-based viewers and embed them within institutional web pages and collection management systems.
+
+  \item (Advanced) Perform per-object segmentation, scene cleanup, multi-view generation, and game-engine import.
+
+  \item (Advanced) Design and implement automated cataloguing workflows using the agentic metadata scaffolding described in Module~5.
+\end{enumerate}
+
+Individual module learning outcomes are specified at the start of each module chapter.
+
+\section{Delivery Format}
+\label{sec:train-delivery}
+
+The programme is designed for flexible delivery across multiple formats:
+
+\begin{description}
+  \item[Intensive workshop (2--3 days)] All five modules delivered sequentially with hands-on exercises. Requires access to a venue with Wi-Fi, power, and ideally an on-site GPU workstation or cloud GPU allocation. Participants capture a real space on Day~1 and view their processed result on Day~2 or~3.
+
+  \item[Module-per-session (5 half-days)] Each module delivered as a standalone half-day session, typically spaced one or two weeks apart. Allows time for participants to practice between sessions and brings captures from their own contexts.
+
+  \item[Self-directed online] Module materials, video walkthroughs, and exercise specifications provided for asynchronous completion. Requires participants to have access to hardware and processing infrastructure independently.
+
+  \item[Embedded curriculum] Individual modules integrated into existing academic courses in digital media, cultural studies, museum studies, or computer science. Module~1 (Capture) is particularly well-suited to practical studio modules; Module~5 (Metadata) integrates naturally with information science and cataloguing courses.
+\end{description}
+
+\begin{keyfinding}
+The most effective delivery format observed during the pilot was the intensive workshop, where participants captured a real space on the first day and viewed their reconstructed scene in a browser by the end of the programme. The tangible, immediate result---walking through a digital version of a space they had filmed hours earlier---produced a level of engagement and understanding that no amount of slides or documentation could achieve.
+\end{keyfinding}

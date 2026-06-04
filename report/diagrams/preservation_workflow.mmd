@@ -1,0 +1,42 @@
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#2A7B88', 'primaryTextColor': '#fff', 'primaryBorderColor': '#1B2A4A', 'lineColor': '#5C6B7A'}}}%%
+flowchart TB
+    subgraph Survey["1. Site Survey & Planning"]
+        A1[Heritage Site Assessment] --> A2[Capture Strategy]
+        A2 --> A3[Equipment Selection]
+        A3 --> A4[Lighting & Weather Plan]
+    end
+
+    subgraph Capture["2. Data Capture"]
+        B1[Video Walkthrough<br/>Overlap > 70%]
+        B2[Drone Overhead<br/>Grid Pattern]
+        B3[Detail Close-ups<br/>Inscriptions / Textures]
+    end
+
+    subgraph Reconstruct["3. 3D Reconstruction"]
+        C1[SfM Registration]
+        C2[Gaussian Training<br/>MILo / MCMC]
+        C3[Quality Assessment<br/>PSNR, SSIM, LPIPS]
+        C4{Quality OK?}
+        C5[Re-capture<br/>Problem Areas]
+    end
+
+    subgraph Preserve["4. Preservation Outputs"]
+        D1[Archival Gaussian PLY<br/>Lossless Representation]
+        D2[Mesh Export<br/>Conservation Grade]
+        D3[USD Scene Package<br/>Materials + Lighting]
+        D4[Web Viewer<br/>Public Access]
+        D5[AR Experience<br/>On-site Interpretation]
+    end
+
+    Survey --> Capture
+    B1 --> C1
+    B2 --> C1
+    B3 --> C1
+    C1 --> C2 --> C3 --> C4
+    C4 -->|Yes| Preserve
+    C4 -->|No| C5 --> Capture
+
+    style Survey fill:#1B2A4A,color:#fff
+    style Capture fill:#3B82F6,color:#fff
+    style Reconstruct fill:#2A7B88,color:#fff
+    style Preserve fill:#E07A5F,color:#fff

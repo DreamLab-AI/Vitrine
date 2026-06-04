@@ -1,0 +1,14 @@
+This image is the TOP-LEFT QUADRANT of a printed A0 scientific poster. Upscale it to razor-crisp 4K for large-format print. Keep the EXACT same layout, composition, colours, icons and crop. Keep all four cropped edges precisely as they are (content cut off at an edge stays cut off in the same place) so the quadrant tiles seamlessly. Do NOT add borders, frames or padding. Pure white background; University of Salford crimson red, teal and navy accents unchanged.
+
+Render ALL text crisp and spelled EXACTLY as follows (correct any blur to these exact words):
+- Logo: "University of Salford  MANCHESTER" with the lion-crest shield.
+- Title (partly cut at right edge): "Video-to-Gaussian — A ... / Volumetric Cultural-He ..." (do not complete the cut words).
+- Section banner: "Eight-Stage Ag..." (cut at right edge).
+- Four pipeline icon-chips, each with its label exactly:
+  "1. Capture  /  4K/30fps"
+  "2. Frames  /  600 -> 240 keyframes"
+  "3. COLMAP SfM  /  250k pts, 0.64 px"
+  "4. 3DGS Train  /  1.18M gaussians"
+- Panel heading "The Challenge" then body text reading EXACTLY:
+  "Cultural heritage is fragile, immovable and under-documented. Galleries and historic interiors are usually captured as flat photos that lose material appearance, view-dependent lighting and spatial relationships. The pipeline preserves the space as one structured, photoreal 3D scene from a single handheld 4K walkthrough."
+Only increase fidelity: cleaner anti-aliased text, smoother flat-vector icons, sharper photographic regions. Output the refined quadrant only.

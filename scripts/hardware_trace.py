@@ -64,7 +64,7 @@ def sample_system():
         return {}
 
 
-def sample_disk(path="/home/devuser/workspace/gaussians"):
+def sample_disk(path=os.environ.get("TRACE_DISK_PATH", str(Path(__file__).resolve().parent.parent))):
     """Sample disk usage."""
     try:
         stat = os.statvfs(path)
@@ -176,7 +176,9 @@ _tracer = None
 def get_tracer(output_path=None):
     global _tracer
     if _tracer is None:
-        path = output_path or "/home/devuser/workspace/gaussians/test-data/gallery_output/hardware_trace.json"
+        path = output_path or str(Path(os.environ.get(
+            "TEST_DATA_DIR", str(Path(__file__).resolve().parent.parent.parent / "test-data")
+        )) / "gallery_output" / "hardware_trace.json")
         _tracer = HardwareTracer(path)
     return _tracer
 

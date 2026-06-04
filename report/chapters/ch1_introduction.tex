@@ -1,0 +1,69 @@
+\chapter{Introduction}
+\label{ch:introduction}
+
+\section{Project Context}
+\label{sec:intro-context}
+
+The University of Salford (\acrshort{uos}) established its AI Knowledge Exchange Community of Practice (\acrshort{ke} \acrshort{cop}) in 2025 as a mechanism for fostering cross-disciplinary collaboration between academic researchers and industry partners in the application of artificial intelligence to real-world challenges. Within this framework, a pilot project was commissioned to investigate how emerging AI-driven 3D reconstruction technologies might be applied to a persistent and growing problem in the cultural sector: the preservation of immersive, experiential, and intangible cultural heritage.
+
+DreamLab AI Consulting Ltd was engaged to lead this investigation, bringing expertise in generative AI workflows, 3D reconstruction pipelines, and agentic software orchestration. The project was supervised by Roger McKinley, Creative Technology and Content Manager at the University of Salford, whose portfolio encompasses the intersection of creative technologies, digital content strategy, and cultural heritage preservation across the institution's partnerships and facilities.
+
+The pilot ran from late 2025 through early 2026, encompassing a literature review, technology assessment, pipeline development, and experimental evaluation. This report documents the complete findings of that investigation and provides actionable recommendations for future development.
+
+\section{The Preservation Challenge}
+\label{sec:intro-challenge}
+
+The cultural heritage sector has long grappled with the challenge of preserving works that resist conventional archival methods. While physical artefacts---paintings, sculptures, manuscripts---can be stored, conserved, and digitised through well-established processes, a growing proportion of contemporary cultural production exists in forms that are fundamentally ephemeral, spatial, and experiential.
+
+Immersive art installations, site-specific performances, interactive digital works, and mixed-reality experiences derive their meaning and impact from the audience's embodied presence within them. They are, by design, impossible to fully capture through traditional documentation. A video recording of an immersive light installation captures neither the peripheral vision envelopment nor the spatial audio that defines the experience. A photograph of an interactive sculpture captures one moment of one configuration from one viewpoint, discarding the temporal and participatory dimensions that constitute the work.
+
+This challenge is compounded by the accelerating pace of technological change in the creative industries. Works created with specific hardware configurations, software versions, or physical installations may become inaccessible within years as their technical dependencies become obsolete. The preservation problem is therefore not merely one of documentation but of \emph{re-experienceability}---creating representations that allow future audiences to encounter something meaningfully proximate to the original spatial experience.
+
+\begin{keyfinding}
+Traditional digital preservation methods---photography, video, written description---are structurally inadequate for capturing the experiential qualities that define immersive and site-specific cultural works. Volumetric capture methods that preserve spatial relationships, viewing freedom, and environmental context are required.
+\end{keyfinding}
+
+\section{DreamLab AI's Role and Approach}
+\label{sec:intro-approach}
+
+DreamLab AI Consulting Ltd approached this challenge through the lens of practical workflow engineering rather than pure research. While the underlying technologies---\acrlong{3dgs}, neural rendering, Structure-from-Motion---are subjects of active academic investigation, the core question for cultural heritage practitioners is not whether these methods are theoretically capable but whether they can be deployed reliably, efficiently, and at a cost proportionate to the preservation need.
+
+Our approach therefore centred on three principles:
+
+\begin{enumerate}
+  \item \textbf{End-to-end pipeline integration.} Rather than evaluating individual algorithms in isolation, we developed a complete pipeline---from video capture through 3D reconstruction to browser-based viewing---that could be assessed as a cohesive workflow.
+
+  \item \textbf{Containerised reproducibility.} The pipeline was packaged within Docker containers to ensure that results could be reproduced independently of the host computing environment, addressing the dependency management challenges that plague research software.
+
+  \item \textbf{AI-assisted orchestration.} We employed agentic AI systems---specifically Claude Code by Anthropic---to automate pipeline configuration, error recovery, and parameter optimisation, reducing the expertise barrier for non-specialist operators.
+\end{enumerate}
+
+The resulting system, the \texttt{gaussian-toolkit}, represents a practical answer to the question of how cultural institutions might begin incorporating volumetric capture into their preservation workflows without requiring dedicated 3D graphics expertise.
+
+\section{Report Structure}
+\label{sec:intro-structure}
+
+The remainder of this report is organised as follows:
+
+\begin{description}[style=nextline]
+  \item[Chapter~\ref{ch:background} --- Background]
+    Reviews the conceptual and institutional context, including the UNESCO framework for intangible cultural heritage, the experience economy's influence on cultural production, and the current state of digital preservation practice.
+
+  \item[Chapter~\ref{ch:technology} --- Technology Foundations]
+    Provides a technical overview of the key technologies employed: 3D Gaussian Splatting, Structure-from-Motion via \acrshort{colmap}, mesh extraction methods, object segmentation, and rendering targets.
+
+  \item[Chapter~\ref{ch:pipeline} --- The Gaussian Toolkit Pipeline]
+    Describes the architecture, containerisation, and AI orchestration of the \texttt{gaussian-toolkit}, including its web interface and integrated 3D viewer.
+
+  \item[Chapter~\ref{ch:results} --- Experimental Results]
+    Presents the findings from pipeline evaluation against test datasets, including reconstruction quality, training performance, and mesh extraction comparisons.
+
+  \item[Chapter~\ref{ch:recommendations} --- Recommendations]
+    Articulates the primary recommendation---to treat splat representations as first-class preservation artefacts---alongside supporting recommendations for capture methodology and delivery infrastructure.
+
+  \item[Chapter~\ref{ch:future} --- Future Directions]
+    Identifies emerging technologies and funding pathways that could extend and scale the approach, including EU Horizon 2027 alignment.
+
+  \item[Chapter~\ref{ch:conclusion} --- Conclusion]
+    Summarises the findings and outlines concrete next steps for the University of Salford.
+\end{description}

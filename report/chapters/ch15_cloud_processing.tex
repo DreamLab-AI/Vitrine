@@ -1,0 +1,166 @@
+\chapter{Cloud Processing Options}
+\label{ch:cloud}
+
+\begin{center}
+\textit{Learning Objectives: Understand cloud GPU rental options, estimate costs per scene, and choose the right tier for your project budget.}\\[0.5em]
+\textbf{Prerequisites:} Module~2 (Processing Pipeline) \hfill \textbf{Time:} 30\,minutes
+\end{center}
+
+\vspace{1em}
+
+The gaussian-toolkit pipeline is fully containerised with Docker, meaning it can run on \emph{any} cloud GPU provider without modification. This chapter presents pricing options, capacity planning, and recommendations for different project scales.
+
+\section{Why Cloud Processing?}
+
+Not every institution has access to dedicated GPU hardware. The pipeline requires:
+
+\begin{itemize}
+  \item \textbf{Minimum:} One NVIDIA GPU with 12\,GB VRAM (RTX 3060 or equivalent)
+  \item \textbf{Recommended:} One GPU with 24--48\,GB VRAM (RTX 4090, A100, or RTX 6000 Ada)
+  \item \textbf{Optimal:} Two GPUs --- one for training, one for MILo mesh extraction
+\end{itemize}
+
+Cloud rental eliminates capital expenditure and provides access to high-end hardware on demand. A complete scene capture (COLMAP + training + mesh extraction) takes approximately 30 minutes on an RTX 4090, costing as little as \pounds0.18 per scene.
+
+\section{Cloud GPU Providers}
+\label{sec:cloud-providers}
+
+\begin{table}[htbp]
+\centering
+\caption{Cloud GPU provider comparison (prices as of March 2026, approximate GBP equivalents).}
+\label{tab:cloud-pricing}
+\small
+\begin{tabular}{@{}llrrp{4.5cm}@{}}
+\toprule
+\textbf{Provider} & \textbf{GPU} & \textbf{\pounds/hr} & \textbf{\pounds/scene} & \textbf{Notes} \\
+\midrule
+RunPod        & RTX 4090    & 0.35 & 0.18 & Docker native, spot pricing available \\
+Vast.ai       & RTX 4090    & 0.24 & 0.12 & Cheapest spot, community GPUs \\
+Salad Cloud   & RTX 4090    & 0.20 & 0.10 & Batch processing, ComfyUI integration \\
+Lambda Cloud  & A100 (40G)  & 0.88 & 0.44 & Enterprise SLA, persistent storage \\
+Lambda Cloud  & H100        & 1.99 & 1.00 & Maximum performance \\
+Google Colab Pro+ & A100   & 40/mo & 0.13$^\dagger$ & Unlimited A100 sessions \\
+AWS g5.xlarge & A10G (24G)  & 0.81 & 0.41 & Enterprise, reserved pricing available \\
+\bottomrule
+\multicolumn{5}{l}{\footnotesize $^\dagger$ Assumes 300 scenes/month at 40\,\pounds/month subscription.}
+\end{tabular}
+\end{table}
+
+\section{Budget Tiers}
+\label{sec:budget-tiers}
+
+\begin{recommendation}{Free Tier (\pounds0/month)}
+Use Google Colab free tier (T4 GPU, 15\,GB VRAM). Sufficient for COLMAP and basic 3DGS training at reduced resolution. Processing time approximately 2$\times$ longer than RTX 4090. MILo mesh extraction not available (insufficient VRAM). Suitable for evaluation and small-scale testing.
+\end{recommendation}
+
+\begin{recommendation}{Starter Tier (\pounds50/month)}
+Google Colab Pro (\pounds8/month) plus \pounds42 in RunPod credits. Covers approximately 120 scene captures per month with RTX 4090 quality. Recommended for pilot projects and proof-of-concept work. This is the tier proposed for the UoS AI KE CoP pilot.
+\end{recommendation}
+
+\begin{recommendation}{Professional Tier (\pounds200/month)}
+Dedicated RunPod or Lambda Cloud allocation. Covers approximately 500+ scene captures per month. Enables MILo mesh extraction, per-object segmentation, and batch processing. Suitable for institutional deployment across multiple venues.
+\end{recommendation}
+
+\begin{recommendation}{Enterprise Tier (\pounds500+/month)}
+Reserved cloud instances or on-premise GPU (RTX 4090 $\approx$ \pounds1,600 capital). At 500+ scenes/month, on-premise hardware pays for itself within 3--4 months. Recommended for sustained production workflows.
+\end{recommendation}
+
+\section{Cost Per Scene Breakdown}
+\label{sec:cost-breakdown}
+
+\begin{table}[htbp]
+\centering
+\caption{Detailed cost breakdown per scene on RunPod RTX 4090 (\pounds0.35/hr).}
+\label{tab:cost-per-scene}
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+\textbf{Pipeline Stage} & \textbf{Time} & \textbf{GPU Cost} & \textbf{API Cost} \\
+\midrule
+Frame extraction       & 30\,s  & \pounds0.003 & --- \\
+COLMAP reconstruction  & 5\,min & \pounds0.029 & --- \\
+3DGS training (30K)    & 5\,min & \pounds0.029 & --- \\
+MILo mesh extraction   & 17\,min & \pounds0.099 & --- \\
+Blender texture bake   & 1\,min & \pounds0.006 & --- \\
+SAM3 segmentation      & 2\,min & \pounds0.012 & --- \\
+Claude Code orchestration & ---  & --- & \pounds0.05--0.20$^\ast$ \\
+\midrule
+\textbf{Total}         & \textbf{30\,min} & \textbf{\pounds0.18} & \textbf{\pounds0.05--0.20} \\
+\bottomrule
+\multicolumn{4}{l}{\footnotesize $^\ast$ Anthropic API cost depends on orchestration complexity; free with OAuth session.}
+\end{tabular}
+\end{table}
+
+\section{Deployment Options}
+
+\subsection{Option A: Fully Cloud-Based}
+
+Upload video via the web interface running on a cloud GPU instance. The Docker container includes all dependencies. Steps:
+
+\begin{enumerate}
+  \item Rent a GPU instance (RunPod, Vast.ai, or Lambda)
+  \item Deploy the gaussian-toolkit Docker image
+  \item Access the web UI at \texttt{http://\textless instance-ip\textgreater:7860}
+  \item Upload video, monitor pipeline, download results
+\end{enumerate}
+
+\textbf{Advantage:} Zero local hardware required. Works from any device with a browser.\\
+\textbf{Disadvantage:} Video upload time depends on internet speed. 1\,GB video at 10\,Mbps = 14 minutes.
+
+\subsection{Option B: Hybrid (Local Capture, Cloud Processing)}
+
+Capture video locally, upload to cloud storage (S3, GCS, or direct upload), process on cloud GPU, download results.
+
+\textbf{Advantage:} Captures at full original quality without re-encoding.\\
+\textbf{Disadvantage:} Requires cloud storage management.
+
+\subsection{Option C: On-Premise with Cloud Burst}
+
+Run the pipeline on local hardware (university GPU workstation) for routine processing, burst to cloud for high-demand periods (e.g.\ during capture campaigns at heritage events).
+
+\textbf{Advantage:} Lowest ongoing cost, data stays on-premise.\\
+\textbf{Disadvantage:} Requires initial capital expenditure for GPU hardware.
+
+\section{Recommendations for the UoS Pilot}
+
+\begin{keyfinding}
+For the \pounds10K AI KE CoP pilot, we recommend the \textbf{Starter Tier} (\pounds50/month cloud budget) combined with access to the University's existing SAMCT DevLab GPU (24\,GB, as specified in the bid). This provides:
+\begin{itemize}
+  \item On-premise processing for routine captures (DevLab GPU)
+  \item Cloud burst capacity for batch processing during Lightwaves/WITW events
+  \item Approximately 120 cloud-processed scenes per month
+  \item Total cloud cost for 3-month pilot: \pounds150
+\end{itemize}
+The remaining budget supports DreamLab AI consultation time (\pounds3,600), technical staff (\pounds5,250), and equipment sourcing.
+\end{keyfinding}
+
+\section{Comparison with Commercial 3D Scanning Services}
+\label{sec:commercial-comparison}
+
+To contextualise the cost efficiency of the AI-driven pipeline, we surveyed commercial 3D scanning providers in the Greater Manchester area. Table~\ref{tab:commercial-scanning} summarises typical pricing.
+
+\begin{table}[htbp]
+\centering
+\caption{Commercial 3D scanning costs in Greater Manchester (March 2026).}
+\label{tab:commercial-scanning}
+\small
+\begin{tabular}{@{}p{5.5cm}rr@{}}
+\toprule
+\textbf{Service} & \textbf{Cost Range} & \textbf{vs.\ Pipeline} \\
+\midrule
+Room-scale LIDAR point cloud (150\,m\textsuperscript{2}) & \pounds1,500--5,000 & 3,750--27,800$\times$ \\
+Room-scale + 3D model/BIM deliverable & \pounds3,000--15,000+ & 7,500--83,000$\times$ \\
+Matterport virtual tour (150\,m\textsuperscript{2}) & \pounds380--760 & 950--4,200$\times$ \\
+Individual artifact (simple geometry) & \pounds80--180 & 200--1,000$\times$ \\
+Heritage-grade artifact scan & \pounds300--1,000+ & 750--5,500$\times$ \\
+On-site technician day rate & \pounds750--2,500 & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent\textbf{Local providers identified:} Scancast (Manchester, art/sculpture specialist), Manchester Measured Survey, Manchester Metrology (Scanology reseller), ScanM2 (Faro/Leica architectural), Castle Keep Surveys (heritage laser scanning), Design 79 Solutions (Cheshire, from \pounds80+VAT per object), and the University of Manchester's Matterport heritage project (People's History Museum, The Whitworth, Band on the Wall).
+
+\begin{technote}{Complementary, Not Competing}
+Commercial scanning delivers metrically calibrated, engineering-grade data---sub-millimetre LIDAR accuracy, CAD/BIM deliverables, and regulatory compliance. The \acrshort{3dgs} pipeline produces photorealistic novel-view-synthesis assets optimised for visual experience rather than measurement. The two approaches are \emph{complementary}: LIDAR for structural documentation, Gaussian splats for experiential preservation. For cultural heritage applications where the goal is capturing \emph{how a space feels} rather than its precise dimensions, the AI pipeline offers a viable and dramatically more accessible alternative.
+\end{technote}
+
+At \pounds0.18--0.40 per scene (cloud compute), the gaussian-toolkit pipeline enables cultural organisations to digitise their entire programme of events---every exhibition, every installation, every performance space---at a cost that would cover barely a single room under commercial scanning rates. This democratisation of volumetric capture is the central value proposition of the project.

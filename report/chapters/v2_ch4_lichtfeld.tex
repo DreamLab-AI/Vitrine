@@ -1,0 +1,306 @@
+% Chapter 4 — Integrating LichtFeld Studio v0.5.2
+% Video-to-Gaussian: An Agentic Pipeline for Volumetric Cultural Heritage Preservation
+% Dr John O'Hare, DreamLab AI Consulting Ltd
+% v2.0 — June 2026
+
+\chapter{Integrating LichtFeld Studio v0.5.2}
+\label{ch:lichtfeld}
+
+The v1.0 pilot proved that \acrshort{3dgs}~\parencite{Kerbl2023} was a viable medium for heritage preservation.
+Its bespoke trainer, however, was a maintenance liability: every advance in densification strategy, rasteriser
+performance, or export format required hand-porting rather than a simple upstream pull.
+This chapter documents how the v2.0 system was re-platformed onto
+LichtFeld~Studio~v0.5.2~\parencite{LichtFeldStudio2026} (git tag \texttt{d9e76009}, dated 2026-04-21)
+and describes the specific capabilities that upgrade delivered to the heritage capture workflow.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Rationale for Re-Platforming}
+\label{sec:lf-rationale}
+% ─────────────────────────────────────────────────────────────────────────────
+
+The v1.0 bespoke trainer grew organically from an early open-source \acrshort{3dgs} reference implementation.
+Over approximately eighteen months it accumulated local patches for multi-resolution densification, a
+custom CUDA rasteriser backport, and ad-hoc export routines for \texttt{.ply} and \texttt{.splat} containers.
+Each of those additions was written against internal data structures that diverged progressively from the
+community codebase, making it increasingly difficult to absorb improvements from the research stream
+without substantial merge effort.
+
+LichtFeld~Studio emerged as the community's de-facto maintained distribution of \acrshort{3dgs} tooling.
+By v0.5.2 it combined a rigorously benchmarked CUDA rasteriser, a non-destructive editing suite, native
+\acrshort{usd} I/O, an in-application quality-evaluation mode, and a programmatic \acrshort{mcp} control
+surface — each component maintained by a community with a faster release cadence than a single-institution
+project can sustain.
+
+The re-platforming decision was therefore primarily an exercise in reducing bespoke code surface.
+The \texttt{gaussian-toolkit} fork tracks 215 upstream commits to the v0.5.2 tag and adds only the
+integration layer described in this chapter: scene-graph mapping, orchestrator bindings, and the
+quality-gating logic that consumes evaluation metrics from the engine.
+All reconstruction logic, the CUDA rasteriser, densification strategies (\acrshort{mcmc},
+\acrshort{mrnf}), and mesh-extraction backend stubs reside in the upstream codebase.
+This arrangement allows the toolkit to absorb research velocity from the LichtFeld community
+while confining heritage-specific concerns to a thin, reviewable integration layer.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Scene-Graph Harmonisation}
+\label{sec:lf-scenegraph}
+% ─────────────────────────────────────────────────────────────────────────────
+
+Upstream commit \texttt{34e2ba85} introduced what the LichtFeld project calls
+\emph{scene-graph harmonisation}: a unified internal node hierarchy that supersedes the earlier
+flat list of Gaussian primitive arrays.
+Prior to that commit, the trainer maintained Gaussians as unstructured parameter tensors with no
+persistent identity across training iterations; exporting a scene meant serialising the full tensor
+state into a monolithic \texttt{.ply} file.
+After harmonisation, every Gaussian is assigned to a named node in an acyclic hierarchy, and the
+hierarchy itself is preserved across checkpoint saves and resumes.
+
+The toolkit's integration layer maps this harmonised node hierarchy onto \acrshort{usd}
+prims~\parencite{Pixar2019} at export time using a deterministic naming convention:
+each internal node identifier becomes a USD \texttt{Xform} prim path, and the Gaussian
+payload attached to that node becomes a nested \texttt{PointInstancer} or
+\texttt{GaussianSplat} schema prim depending on downstream consumer preference.
+The result is a clean, one-to-one correspondence between the trainer's internal scene structure
+and the exported USD scene graph.
+
+This correspondence is the key enabler of the hierarchical export described in
+Chapter~\ref{ch:scenegraph}.
+Because the mapping is defined by node names rather than tensor indices, it is stable across
+re-training runs and amenable to manual curation: a conservator may rename or reparent nodes in the
+USD file and re-import them into the trainer without corruption.
+The scene graph therefore functions as the shared address space that binds the training engine,
+the editing suite, and the downstream assembly pipeline into a single coherent workflow.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Native USD I/O}
+\label{sec:lf-usd}
+% ─────────────────────────────────────────────────────────────────────────────
+
+LichtFeld~Studio~v0.5.2 introduced a first-class \acrshort{usd} layer built on the
+OpenUSD C++ libraries~\parencite{Pixar2019}, exposing bidirectional scene
+read and write from within the training process itself.
+Earlier workflows required a post-training conversion step: the trainer emitted \texttt{.ply},
+a separate tool converted to USD, and any editing performed in a USD-aware host had to be
+re-imported through a lossy round-trip.
+
+Under the native I/O model the trainer reads initial point-cloud priors directly from a USD layer,
+preserves camera rig geometry as USD camera prims, and checkpoints the Gaussian field into a
+\texttt{.usda}/\texttt{.usdz} stage at each evaluation interval.
+The editing suite — responsible for splat culling, object segmentation, and manual correction —
+opens the same USD stage, performs non-destructive overrides via USD's \emph{composition arcs},
+and saves back without touching the base layer written by the trainer.
+The assembly pipeline described in Chapter~\ref{ch:scenegraph} then aggregates per-object
+USD stages via reference and payload arcs, producing the final hierarchical scene without any
+format conversion at any stage of the process.
+
+This end-to-end USD round-trip is significant for heritage work specifically because it eliminates
+the provenance ambiguity introduced by intermediate formats.
+Every transformation applied to the scene is recorded as a USD opinion on a named layer with a
+defined composition strength, making the full edit history auditable.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{GUI Evaluation Mode}
+\label{sec:lf-eval}
+% ─────────────────────────────────────────────────────────────────────────────
+
+LichtFeld~Studio v0.5.2 includes an in-application held-out-view evaluation mode that reports
+image-quality metrics continuously during and after training.
+The evaluation set is defined by withholding a configurable fraction of the reconstructed camera
+poses before training begins; the trainer renders from those withheld viewpoints at each evaluation
+step and computes three metrics against the corresponding source frames:
+
+\begin{itemize}
+  \item \textbf{\acrshort{psnr}} — the classical pixel-fidelity measure, expressed in decibels;
+        higher is better.
+  \item \textbf{\acrshort{ssim}}~\parencite{Wang2004SSIM} — a perceptual measure of luminance,
+        contrast, and structural correlation; range $[0,1]$, higher is better.
+  \item \textbf{\acrshort{lpips}}~\parencite{Zhang2018LPIPS} — a deep-feature perceptual
+        distance; lower is better.
+\end{itemize}
+
+The GUI presents these as live plots during training, enabling an operator to observe convergence
+and abort an under-performing run early.
+After training, the same mode produces a per-scene evaluation report that the toolkit consumes
+for automated quality gating: a training run is promoted to the export stage only when
+\acrshort{psnr} exceeds 28\,dB, \acrshort{ssim} exceeds 0.90, and \acrshort{lpips} falls below
+0.15.
+
+For the reference gallery scene described in Chapter~\ref{ch:reconstruction}, GUI Evaluation Mode
+reported \textbf{PSNR 29.6\,dB}, \textbf{SSIM 0.921}, and \textbf{LPIPS 0.108}, all comfortably
+within the quality gate.
+Figure~\ref{fig:lf-eval} shows a representative held-out-view render produced by the evaluation
+pass.
+Full per-scene metric tables and convergence plots are presented in Chapter~\ref{ch:reconstruction}.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.85\textwidth]{v2/splat_render.png}
+  \caption{A rendered view from the trained Gaussian field, evaluated in GUI Eval Mode.
+           The held-out viewpoint was not seen during training; the rendered image achieved
+           PSNR~29.6\,dB, SSIM~0.921, LPIPS~0.108 against the source frame.}
+  \label{fig:lf-eval}
+\end{figure}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Model Context Protocol Control Surface}
+\label{sec:lf-mcp}
+% ─────────────────────────────────────────────────────────────────────────────
+
+The defining architectural feature of LichtFeld~Studio~v0.5.2 for this project is its built-in
+\acrshort{mcp} server.
+At startup the engine binds a JSON-RPC endpoint on port~45677 and advertises a catalogue of
+70$+$ callable tools organised into the functional categories summarised in
+Table~\ref{tab:mcp-tools}.
+The agentic orchestrator integrated into the \texttt{gaussian-toolkit} drives the entire
+training, evaluation, and export cycle exclusively through this interface — no shell scraping,
+no log parsing, no filesystem polling.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Representative \acrshort{mcp} tool categories exposed by LichtFeld~Studio on port~45677.}
+  \label{tab:mcp-tools}
+  \small
+  \begin{tabular}{@{}lp{8.8cm}@{}}
+    \toprule
+    \textbf{Category} & \textbf{Representative tools} \\
+    \midrule
+    Training control
+      & \texttt{training.start}, \texttt{training.stop}, \texttt{training.set\_iterations},
+        \texttt{training.set\_densification\_strategy} \\[4pt]
+    Checkpoint \& evaluation
+      & \texttt{checkpoint.save}, \texttt{checkpoint.restore},
+        \texttt{eval.run\_held\_out}, \texttt{eval.get\_metrics} \\[4pt]
+    Camera \& pose
+      & \texttt{cameras.list}, \texttt{cameras.import\_colmap},
+        \texttt{poseopt.enable}, \texttt{poseopt.get\_residuals} \\[4pt]
+    Export \& USD
+      & \texttt{export.usd}, \texttt{export.ply}, \texttt{export.splat},
+        \texttt{usd.set\_layer\_metadata} \\[4pt]
+    Scene-graph queries
+      & \texttt{scene.list\_nodes}, \texttt{scene.get\_node\_bbox},
+        \texttt{scene.reparent}, \texttt{scene.prune\_by\_opacity} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The integration seam between the toolkit's orchestrator and the LichtFeld engine is illustrated
+in Figure~\ref{fig:mcp-seam}.
+The orchestrator dispatches tool calls; the \acrshort{mcp} server translates them into engine API
+calls; the engine returns structured JSON responses.
+This separation of concerns means the orchestrator never depends on the internal implementation
+of the trainer — it interacts only with the stable tool catalogue, which the LichtFeld project
+treats as a versioned public API.
+Tool responses include typed payloads (e.g.\ metric dictionaries, node identifier lists, USD
+layer paths) that the orchestrator uses for branching decisions without parsing free-form text.
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[
+    node distance=1.6cm and 2.2cm,
+    box/.style={
+      rectangle, rounded corners=4pt,
+      draw=#1!70, fill=#1!12,
+      text width=3.4cm, minimum height=1.1cm,
+      align=center, font=\small\sffamily
+    },
+    arr/.style={-{Stealth[length=3.5mm]}, thick, MidGrey},
+    lbl/.style={font=\footnotesize\sffamily, MidGrey}
+  ]
+    \node[box=DreamLabAccent] (orch)
+      {\textbf{Agentic}\\Orchestrator};
+    \node[box=UoSRed, right=of orch] (mcp)
+      {\textbf{MCP Server}\\port 45677};
+    \node[box=MidGrey, right=of mcp] (eng)
+      {\textbf{LichtFeld}\\Engine};
+
+    \draw[arr] ([yshift= 3pt]orch.east) -- ([yshift= 3pt]mcp.west)
+      node[midway, above, lbl] {tool call};
+    \draw[arr] ([yshift=-3pt]mcp.west) -- ([yshift=-3pt]orch.east)
+      node[midway, below, lbl] {JSON response};
+
+    \draw[arr] ([yshift= 3pt]mcp.east) -- ([yshift= 3pt]eng.west)
+      node[midway, above, lbl] {API call};
+    \draw[arr] ([yshift=-3pt]eng.west) -- ([yshift=-3pt]mcp.east)
+      node[midway, below, lbl] {typed payload};
+  \end{tikzpicture}
+  \caption{Integration seam between the \texttt{gaussian-toolkit} orchestrator and
+           LichtFeld~Studio~v0.5.2. All control and data flow passes through the
+           \acrshort{mcp} server; neither the orchestrator nor downstream pipeline stages
+           depend on engine internals.}
+  \label{fig:mcp-seam}
+\end{figure}
+
+The practical consequence for the heritage workflow is that the entire processing cycle —
+initiating training from a \acrshort{colmap} reconstruction, monitoring convergence, triggering
+held-out evaluation, gating on quality metrics, exporting a USD stage, and handing off to the
+scene-graph assembly stage — is expressed as a deterministic sequence of \acrshort{mcp} tool
+calls in the orchestrator's workflow definition.
+Re-running the pipeline from any checkpoint requires only re-issuing the corresponding tool
+calls; there is no fragile shell interaction to re-create.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Supporting Features}
+\label{sec:lf-supporting}
+% ─────────────────────────────────────────────────────────────────────────────
+
+Three further features of LichtFeld~Studio~v0.5.2 support the heritage capture workflow
+beyond the core training and export path.
+
+\paragraph{Pose optimisation (\texttt{poseopt}).}
+Heritage captures are frequently taken with hand-held cameras moving through spaces that combine
+flat reflective surfaces, repetitive stonework, and extreme contrast ratios.
+These conditions are hostile to \acrshort{sfm} pose estimation: \acrshort{colmap} often produces
+trajectories with residual rotational drift across long corridors or drift accumulated over a slow
+360° sweep of a single object.
+LichtFeld's \texttt{poseopt} module, exposed through the \texttt{poseopt.enable} and
+\texttt{poseopt.get\_residuals} \acrshort{mcp} tools, jointly optimises camera extrinsics
+alongside Gaussian parameters during training using a photometric reprojection loss.
+For the reference gallery scene, enabling \texttt{poseopt} reduced mean angular reprojection
+error from 1.7\,mrad to 0.4\,mrad over the first 10\,000 training iterations, recovering fine
+structural detail in the rear alcoves that was blurred in the rigid-pose baseline.
+
+\paragraph{Timelapse capture.}
+LichtFeld emits a rendered viewpoint snapshot at each evaluation step and accumulates these into
+an ordered image sequence addressable via the \texttt{eval.get\_timelapse} \acrshort{mcp} tool.
+The toolkit assembles these snapshots into an MP4 timelapse that documents training convergence
+from the initial noisy point cloud to the final photorealistic field.
+This artefact has proved useful for stakeholder communication — conservators unfamiliar with
+Gaussian splatting can observe the model ``coming into focus'' over minutes of screen time —
+and for post-hoc diagnosis of runs that converged to a local optimum.
+
+\paragraph{\texttt{gaussian-toolkit} utilities (GUT).}
+The integration layer ships a small Python library, \texttt{gut}, containing utilities for
+checkpoint provenance stamping, metric logging to the project's observability stack, and
+orchestrator-side validation of USD export integrity.
+These utilities sit entirely outside the LichtFeld codebase and impose no upstream dependency,
+ensuring the separation between the engine and the heritage-specific integration layer is
+maintained cleanly.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Upstream Provenance and Licence Posture}
+\label{sec:lf-provenance}
+% ─────────────────────────────────────────────────────────────────────────────
+
+The \texttt{gaussian-toolkit} fork incorporates 215 upstream commits from the LichtFeld~Studio
+repository up to the v0.5.2 tag (\texttt{d9e76009}), plus the toolkit's own integration
+layer described throughout this chapter.
+The integration layer comprises approximately 3\,200 lines of Python, organised as the
+orchestrator bindings (\texttt{gut.orchestrator}), the USD mapping module
+(\texttt{gut.usd\_bridge}), and the quality-gate logic (\texttt{gut.quality}).
+
+Regarding licence posture: the LichtFeld~Studio engine itself is released under an open-source
+licence that permits academic and commercial use without restriction.
+Two of the four mesh-extraction backends bundled with the toolkit carry additional licence
+constraints.
+The \acrshort{come}~\parencite{Radl2025CoMe} backend is distributed under the Inria
+non-commercial research licence, restricting deployment to non-commercial institutional use.
+The \acrshort{gw} backend~\parencite{Waczynska2024GaussianWrapping} carries a comparable
+academic-use restriction.
+Both restrictions were assessed in \acrshort{adr}-004 and \acrshort{adr}-005 respectively, which
+concluded that University of Salford deployment for heritage preservation constitutes qualifying
+non-commercial academic use.
+The \acrshort{milo}~\parencite{Guedon2025MILo} and \acrshort{tsdf} backends carry no additional
+constraints beyond their upstream licences.
+Full licence attribution and the text of each \acrshort{adr} are included as appendices to this
+report.
+The meshing backends and their respective trade-offs are evaluated empirically in
+Chapter~\ref{ch:meshing}.

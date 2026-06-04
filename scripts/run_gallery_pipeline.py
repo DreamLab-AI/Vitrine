@@ -12,13 +12,16 @@ from pathlib import Path
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("gallery_pipeline")
 
-# Paths
-BASE = Path("/home/devuser/workspace/gaussians/test-data/gallery_output")
+# Paths (override via TEST_DATA_DIR / LICHTFELD_BUILD env vars)
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+TEST_DATA_DIR = Path(os.environ.get("TEST_DATA_DIR", str(_REPO_ROOT.parent / "test-data")))
+LICHTFELD_BUILD = Path(os.environ.get("LICHTFELD_BUILD", str(_REPO_ROOT / "build")))
+BASE = TEST_DATA_DIR / "gallery_output"
 COLMAP_DIR = BASE / "colmap" / "undistorted"
 MODEL_DIR = BASE / "model"
 OBJECTS_DIR = BASE / "objects"
 SCENE_DIR = BASE / "scene"
-LICHTFELD = "/home/devuser/workspace/gaussians/LichtFeld-Studio/build/LichtFeld-Studio"
+LICHTFELD = str(LICHTFELD_BUILD / "LichtFeld-Studio")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
@@ -42,7 +45,7 @@ def stage_3_train():
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
     env = os.environ.copy()
-    env["LD_LIBRARY_PATH"] = f"/home/devuser/workspace/gaussians/LichtFeld-Studio/build:{env.get('LD_LIBRARY_PATH', '')}"
+    env["LD_LIBRARY_PATH"] = f"{LICHTFELD_BUILD}:{env.get('LD_LIBRARY_PATH', '')}"
 
     cmd = [
         LICHTFELD, "--headless",

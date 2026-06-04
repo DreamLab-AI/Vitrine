@@ -1,0 +1,316 @@
+% v2_ch8_delivery.tex — Chapter 8: Delivery: Browser, Engine, and Archive
+% Video-to-Gaussian: An Agentic Pipeline for Volumetric Cultural Heritage
+% Preservation (v2.0)
+% Dr John O'Hare, DreamLab AI Consulting Ltd
+
+\chapter{Delivery: Browser, Engine, and Archive}
+\label{ch:delivery}
+
+The reconstruction pipeline described in Chapters~\ref{ch:pipeline}--\ref{ch:scenegraph}
+produces a single hierarchical \acrshort{usd} scene graph that encodes the full scene:
+the trained Gaussian splat, the environment mesh, thirty-one per-object generative
+meshes emplaced at surveyed positions, and associated catalogue metadata. From that
+single artefact the \texttt{gaussian-toolkit} supports three distinct delivery paths
+simultaneously---a compressed splat for real-time browser viewing, a mesh hierarchy
+for game-engine and immersive workflows, and a preservation-grade \acrshort{usd}
+archive for long-term custody. This chapter documents each path and justifies the
+design decision to maintain all three from one master representation.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Compressed Splat Delivery (\texttt{.ksplat})}
+\label{sec:delivery-ksplat}
+% ─────────────────────────────────────────────────────────────────────────────
+
+Raw \acrshort{3dgs} training produces a \texttt{.ply} point cloud in which each
+Gaussian is stored as a 59-float record covering position, covariance, colour
+harmonics, and opacity. For the gallery test scene this amounted to 1.18 million
+Gaussians occupying approximately 267\,MB on disk---too large for low-latency
+progressive streaming over a typical institution's public-facing web connection.
+
+The \texttt{splat\_optimizer.py} module addresses this by wrapping the PlayCanvas
+\texttt{splat-transform} tool \parencite{SplatTransform2025} in a Python driver
+that applies four sequential operations before producing the final \acrshort{ksplat}
+container.
+
+\paragraph{Region-of-interest crop.}
+Gaussians outside an axis-aligned bounding box defined either interactively through
+the web \acrshort{usd} interface or by the scene-graph bounding volumes are
+discarded. For the gallery scene this removed approximately 7\,\% of Gaussians
+corresponding to floater artefacts above the ceiling plane and behind the capture
+boundary.
+
+\paragraph{Opacity and scale filtering.}
+Gaussians with opacity below a configurable threshold (default 0.05) contribute
+negligible visual energy and are pruned. Gaussians with scale in any principal axis
+exceeding a configurable maximum (default 2\,m) are artefacts of under-constrained
+geometry and are likewise removed. Together these two filters account for an
+additional 6\,\% reduction.
+
+\paragraph{Morton-order spatial sort.}
+The surviving Gaussians are reordered according to their Morton (Z-order) curve
+index computed from their quantised 3-D position. Morton ordering interleaves the
+bits of the three spatial coordinates to produce a one-dimensional index that
+preserves spatial locality: Gaussians that are near one another in 3-D space appear
+consecutively in the sorted sequence. When the browser loads the file progressively,
+each kilobyte of data decoded corresponds to a spatially coherent region of the
+scene rather than a globally scattered sample. The practical effect is that the
+viewer renders a coarse-but-complete version of the whole scene in the first few
+hundred milliseconds of loading, then refines it as subsequent data arrives,
+rather than revealing the scene piecemeal from one side to the other.
+
+\begin{technote}
+Morton ordering does not reduce file size; it redistributes data for streaming
+locality. Compression of the quantised attributes is handled by the
+\texttt{splat-transform} codec, which applies per-attribute range quantisation
+followed by entropy coding. The two steps are independent and complementary.
+\end{technote}
+
+\paragraph{Compression.}
+After sorting, \texttt{splat-transform} quantises positions to 16-bit integers
+within the scene bounding box, reduces spherical-harmonic degree from three to
+one (retaining the dominant view-dependent colour component), and encodes the
+resulting attributes using a compact binary format. The resulting \acrshort{ksplat}
+file for the 1.18-million-Gaussian gallery scene is 18\,MB---a 14.8$\times$ reduction
+relative to the raw \texttt{.ply}.
+
+The bandwidth-quality trade is straightforward: harmonic truncation introduces
+minor view-dependent artefacts on highly specular surfaces (notably polished display
+case glass) that are imperceptible on matte painted walls and organic sculptural
+forms. For cultural heritage preview delivery this trade is almost always
+favourable; institutions that require full spectral fidelity for technical
+examination can serve the uncompressed \texttt{.ply} to specialist users on request.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Browser Viewing}
+\label{sec:delivery-browser}
+% ─────────────────────────────────────────────────────────────────────────────
+
+The \acrshort{ksplat} file is served by the toolkit's built-in static file handler
+and rendered in the browser via a \acrshort{webgl}/\acrshort{webgpu} Gaussian
+splat renderer \parencite{Antimatter15Splat,Khronos2024WebGPU}. No plugin, extension,
+or application installation is required; a visitor with a contemporary browser on
+any operating system can view the full photorealistic scene interactively on
+consumer hardware. The gallery reconstruction ran at 160\,FPS at 1080p on a
+mid-range desktop \acrshort{gpu} and at a comfortable 45--55\,FPS on an integrated-graphics
+laptop.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.85\textwidth]{v2/webui.png}
+  \caption{The \texttt{gaussian-toolkit} delivery and control web interface. The left
+    panel provides scene controls and export triggers; the main viewport renders the
+    \acrshort{ksplat} scene in real time. The info overlay at lower right displays
+    the catalogue metadata associated with the currently selected object prim.}
+  \label{fig:webui}
+\end{figure}
+
+\subsection{Object Picking and Metadata Surfacing}
+
+The viewer is integrated with the \acrshort{usd} scene graph described in
+Chapter~\ref{ch:scenegraph}. When a visitor clicks on the rendered scene the viewer
+resolves the screen-space pick through a secondary depth-sorted instancing pass and
+maps the hit back to the originating scene-graph prim. The prim carries the object's
+catalogue metadata---accession number, artist, title, medium, date, condition
+notes---as \acrshort{usd} custom attributes. On a successful pick the viewer's
+overlay panel populates with this information without a round-trip to any external
+database, since the \acrshort{usd} scene graph is self-contained and fully loaded
+in the browser session.
+
+This integration means that a visitor can click on an artwork in the
+reconstruction and immediately receive its curatorial record, replicating the
+experience of a digital label without requiring separate data services. The
+picking resolution operates at prim granularity; future work could extend it to
+Gaussian cluster granularity for sub-object selection.
+
+\subsection{Viewer Option Comparison}
+
+Two deployment configurations are supported: self-hosted \texttt{gsplat.js} and
+the toolkit's integrated viewer. Table~\ref{tab:viewer-comparison} summarises
+the relevant characteristics for an institution choosing between them.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Browser splat viewer options for institutional deployment.}
+  \label{tab:viewer-comparison}
+  \begin{tabular}{@{}L{3.2cm}L{2.8cm}L{3.8cm}@{}}
+    \toprule
+    \textbf{Feature}      & \textbf{Self-hosted gsplat.js} & \textbf{Toolkit integrated viewer} \\
+    \midrule
+    Max Gaussians tested  & $\sim$5\,M                     & $\sim$2\,M (\acrshort{ksplat} compressed) \\
+    \acrshort{webgpu} support & Yes (fallback to \acrshort{webgl}) & Yes (\acrshort{webgl} primary) \\
+    Mobile support        & Limited (iOS Safari constrained) & Reduced quality, functional \\
+    USD prim picking      & Not included                   & Integrated (Chapter~\ref{ch:scenegraph}) \\
+    Catalogue metadata overlay & Not included              & Integrated \\
+    Licence               & MIT                            & MIT (DreamLab) \\
+    Deployment complexity & Low (single JS bundle)         & Moderate (Docker service) \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Self-hosted \texttt{gsplat.js} is appropriate when the institution already manages
+its own web infrastructure and wishes to embed viewing within an existing collection
+management system. The toolkit viewer is appropriate when the institution requires
+integrated metadata surfacing and object picking without additional bespoke
+development. Both paths serve the same \acrshort{ksplat} file.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Engine and Immersive Delivery}
+\label{sec:delivery-engine}
+% ─────────────────────────────────────────────────────────────────────────────
+
+The \acrshort{usd} scene graph exported by the pipeline is directly importable into
+Unreal Engine 5.4 and later via Epic's native \acrshort{usd} importer and a
+Gaussian splat rendering plugin \parencite{Pixar2019}. This import path preserves
+full reconstruction fidelity: the 1.18-million-Gaussian splat is rendered natively
+by the \acrshort{gpu} without conversion to a polygonal proxy, retaining all
+view-dependent colour variation and sub-pixel surface detail.
+
+\subsection{Variant-Set Architecture}
+
+Within the exported \acrshort{usd} file each object prim carries a variant set with
+two named variants: \texttt{Gaussian} and \texttt{Mesh}. Switching the variant set
+at the \acrshort{usd} level substitutes the Gaussian representation with the
+corresponding generative polygonal mesh for every object in the scene simultaneously.
+
+This architecture has a practical consequence that simplifies immersive production
+workflows considerably: a single asset pipeline serves both a photoreal splat viewer
+for public browser access and a fully interactive \acrshort{pbr}-lit polygon scene
+for \acrshort{vr} experiences and large-format display, without maintaining separate
+files or repeating the reconstruction. A \acrshort{vr} developer activates the
+\texttt{Mesh} variant to obtain collision geometry, physically-based material
+assignment, and rigid-body physics; a web publisher activates the
+\texttt{Gaussian} variant for photoreal browser delivery. The surveyed object
+positions, catalogue metadata, and scene hierarchy are identical in both variants
+because they are inherited from the common prim structure rather than stored per
+variant.
+
+\begin{keyfinding}
+The \acrshort{usd} variant-set pattern resolves the central tension between splat
+fidelity and mesh utility by delivering both from a single capture and a single
+scene-graph artefact. Downstream consumers select the representation appropriate to
+their application without any reprocessing.
+\end{keyfinding}
+
+\subsection{Mesh Variant for Collision and Large-Format Use}
+
+The mesh variant is particularly important for three use cases that the Gaussian
+variant cannot satisfy: collision detection in \acrshort{vr} locomotion systems,
+where ray casting against Gaussian primitives is not yet standardised in any engine;
+large-format physical installation, where tiled LED walls or projection mapping
+require explicit polygon geometry for edge blending; and 3D printing of individual
+objects, where watertight mesh topology is a hard requirement. In all three cases the
+generative per-object meshes produced by the pipeline (Chapter~\ref{ch:objects})
+provide an immediately usable foundation.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Archival Preservation}
+\label{sec:delivery-archive}
+% ─────────────────────────────────────────────────────────────────────────────
+
+The canonical preservation artefact produced by the \texttt{gaussian-toolkit} is
+the \acrshort{usd} scene graph itself. This single file encodes:
+
+\begin{itemize}
+  \item the full-resolution Gaussian splat (\texttt{.ply} referenced as a sublayer);
+  \item the environment mesh produced by the selected extraction backend
+        (\acrshort{tsdf} or \acrshort{milo});
+  \item thirty-one per-object generative meshes at surveyed positions;
+  \item camera poses from the \acrshort{sfm} reconstruction (for future
+        re-training or quality audit);
+  \item per-object catalogue metadata as custom prim attributes; and
+  \item a \texttt{variant\_info} metadata block recording the software versions,
+        training parameters, and extraction backend used.
+\end{itemize}
+
+The format is open and vendor-neutral, standardised by Pixar and adopted across the
+visual effects, games, and automotive industries \parencite{Pixar2019}. Files written
+today will remain readable by any compliant \acrshort{usd} implementation regardless
+of whether the originating pipeline software continues to exist.
+
+\subsection{Splat-as-Artefact Argument}
+
+A recurring debate in digital preservation practice concerns whether a derived
+representation---a mesh, a render, a downsampled image---is an adequate archival
+substitute for the source data. For Gaussian splatting the answer is unambiguous:
+the splat is the most information-rich representation produced by the pipeline.
+Every mesh extracted from it is a lossy derivative that discards view-dependent
+colour, opacity, and the fine-scale structure of surfaces that resisted meshing.
+Once that information is absent from the archive it cannot be recovered.
+
+Preserving the splat as the primary artefact therefore follows the same logic as
+preserving camera RAW files alongside processed JPEGs: future operators will benefit
+from improved meshing algorithms, improved compression schemes, and improved
+rendering hardware that did not exist at capture time, but only if the source data
+from which those improvements can be applied has been retained. A \acrshort{usd}
+archive containing the full-resolution splat costs approximately 270\,MB per
+scene---well within the storage economics of any institutional digital repository.
+
+\begin{recommendation}
+Adopt browser-based \acrshort{ksplat} delivery as the default public-access channel
+for digitised cultural heritage reconstructions. Retain the full-resolution
+\acrshort{usd} scene graph---including the uncompressed splat sublayer---as the
+archival master. Derive compressed and mesh variants from this master on demand;
+never treat a derivative as the sole preserved copy.
+\end{recommendation}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Performance and Footprint}
+\label{sec:delivery-performance}
+% ─────────────────────────────────────────────────────────────────────────────
+
+Table~\ref{tab:delivery-summary} summarises the key quantitative characteristics
+of the delivery outputs for the gallery test scene.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Delivery output summary for the gallery test scene.}
+  \label{tab:delivery-summary}
+  \begin{tabular}{@{}L{5.5cm}R{4.5cm}@{}}
+    \toprule
+    \textbf{Metric}                           & \textbf{Value} \\
+    \midrule
+    Scene Gaussians (post-training)           & 1,180,000 \\
+    Compressed \texttt{.ksplat} file size     & 18\,MB \\
+    Browser render rate (1080p, mid-range \acrshort{gpu}) & 160\,FPS \\
+    Browser render rate (1080p, integrated graphics) & 45--55\,FPS \\
+    Environment mesh faces (\acrshort{tsdf} backend)  & $\approx$4.9\,M \\
+    Environment mesh faces (\acrshort{milo} backend)  & $\approx$7.8\,M \\
+    Per-object generative meshes              & 31 \\
+    Archival \acrshort{usd} scene graph (with splat sublayer) & $\approx$270\,MB \\
+    \midrule
+    \multicolumn{2}{@{}l@{}}{\textit{Total pipeline wall-clock time (video to delivered scene)}} \\
+    \quad\acrshort{tsdf} fast path            & $\approx$35\,min \\
+    \quad \acrshort{milo} backend             & 1.5--2.5\,h (backend-dependent) \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The total wall-clock time from video ingest to a fully delivered scene---including
+\acrshort{sfm}, Gaussian training, mesh extraction, per-object reconstruction, scene
+graph assembly, and \acrshort{ksplat} compression---ranges from approximately
+35~minutes on the \acrshort{tsdf} fast path to 1.5--2.5~hours when \acrshort{milo}
+is selected as the extraction backend. The \acrshort{milo} range is explained by
+the mesh-in-the-loop training overhead, which is sensitive to scene complexity and
+the number of segmented objects.
+
+For most cultural heritage digitisation workflows, where capture happens on a single
+afternoon and processing overnight, even the upper bound of 2.5~hours represents a
+negligible turnaround. The \acrshort{tsdf} fast path is appropriate when a same-day
+preview delivery is required; the \acrshort{milo} path is preferred when the highest
+mesh quality is needed for the engine delivery variant.
+
+The \acrshort{gpu} processing throughout is dominated by \acrshort{3dgs} training
+(approximately 23--28~minutes depending on variant, Section~\ref{sec:res-training}),
+with mesh extraction and per-object reconstruction contributing the remaining time.
+\acrshort{colmap} is the principal \acrshort{cpu}-bound stage at approximately
+43~minutes, though it runs concurrently with early training initialisation in the
+pipeline's asynchronous stage graph, reducing its contribution to the critical path.
+
+\begin{keyfinding}
+The three delivery paths---\acrshort{ksplat} browser streaming, \acrshort{usd}
+engine import, and \acrshort{usd} archival master---are all produced from a single
+processing run with no additional capture, no reprocessing, and no bespoke
+per-channel optimisation. The incremental cost of supporting all three delivery
+channels simultaneously is negligible relative to the cost of the reconstruction
+itself.
+\end{keyfinding}

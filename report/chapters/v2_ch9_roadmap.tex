@@ -1,0 +1,46 @@
+\chapter{Roadmap and Conclusion}
+\label{ch:roadmap}
+
+\section{Summary of Achievement}
+\label{sec:road-summary}
+
+This report has documented a system that meets, in full, the design goals set for it. From a single hand-held 4K video of a gallery interior, the \texttt{gaussian-toolkit} produces a photoreal Gaussian field (Chapter~\ref{ch:reconstruction}), a watertight polygonal mesh of the environment via four interchangeable backends (Chapter~\ref{ch:meshing}), an automatic \acrshort{sam}2 decomposition of the scene into 31 individually-addressable objects, an independently reconstructed and fully-textured 360\textdegree\ mesh for each, and a single hierarchical \acrshort{usd} scene graph that emplaces every object at its surveyed position (Chapter~\ref{ch:scenegraph}). The same artefact is delivered to browser, game engine, and archive without re-processing (Chapter~\ref{ch:delivery}).
+
+The pilot asked whether the technology was viable. This report establishes that it is not merely viable but \emph{operational}: an automated pipeline, runnable by a non-specialist, that turns a phone video into a structured, curatable, interactive preservation artefact in a single working session of compute.
+
+\section{Deployment at the University of Salford}
+\label{sec:road-deploy}
+
+The path from demonstrated capability to institutional service is now a matter of deployment rather than research. We propose three phases.
+
+\begin{description}
+  \item[Phase 1 --- Foundation (Q3--Q4 2026).] Stand up the three-container stack on a University-managed dual-\acrshort{gpu} workstation or equivalent cloud instance. Run 3--5 further captures across diverse venue types to characterise generalisation. Train 5--10 cultural-heritage practitioners in the capture methodology, since capture quality remains the dominant determinant of output quality. Integrate the browser splat viewer with the University's collection-management interface as a proof of concept.
+
+  \item[Phase 2 --- Service (Q1--Q3 2027).] Establish a standing capture-and-reconstruction service for University departments and partner institutions, with documented workflows and quality gates driven by the in-application evaluation of Chapter~\ref{ch:lichtfeld}. Publish a public-facing portal backed by the \acrshort{usd} archive. Exercise the licence-gated mesh backends (CoMe, Gaussian wrapping) under appropriate agreements for collections where thin-structure fidelity or archival geometry justifies them.
+
+  \item[Phase 3 --- Scale (Q4 2027 onwards).] Deploy multi-venue throughput on cloud \acrshort{gpu} infrastructure. Formalise a data-governance framework for long-term \acrshort{usd} archive preservation. Develop high-fidelity immersive experiences in Unreal Engine for flagship collections. Contribute the methodology to the AI Knowledge Exchange Community of Practice and pursue consortium research funding.
+\end{description}
+
+\section{Capability Roadmap}
+\label{sec:road-capability}
+
+Several extensions are already in view and align naturally with the system's architecture:
+
+\begin{itemize}
+  \item \textbf{Next-generation segmentation.} The decomposition stage is model-agnostic; integrating SAM3-class segmentation as it matures will sharpen object boundaries on reflective and translucent surfaces, where view consensus is currently weakest.
+
+  \item \textbf{Additional mesh backends.} The pluggable backend interface (Chapter~\ref{ch:meshing}) admits new extraction methods without pipeline changes, tracking the rapid pace of splat-to-mesh research \parencite{Guedon2025MILo,Radl2025CoMe}.
+
+  \item \textbf{Larger and outdoor scenes.} Hierarchical level-of-detail splatting \parencite{Kerbl2024Hierarchical} extends the approach from single rooms to building-scale and site-scale captures.
+
+  \item \textbf{Temporal capture.} Dynamic Gaussian methods \parencite{Luiten2024Dynamic} open a path to preserving \emph{performance} and time-based works, not only static spaces---the original motivation for targeting intangible heritage.
+
+  \item \textbf{Metric calibration.} Incorporating a known-dimension scale reference at capture time would tighten the metric frame that drives emplacement, improving cross-object measurement fidelity.
+\end{itemize}
+
+\section{Conclusion}
+\label{sec:road-conclusion}
+
+The central tension identified in the v1.0 pilot was that the photoreal fidelity of a Gaussian splat and the editability of a polygonal mesh appeared mutually exclusive: one had to choose between an immersive but opaque field and a tractable but degraded surface. The v2.0 system dissolves that tension. By maintaining both representations as co-registered variants of a single hierarchical scene graph, and by reconstructing each object independently in full 360\textdegree, it delivers fidelity and editability together, from one consumer capture.
+
+For the University of Salford this is a position of advantage. The intersection of AI reconstruction, three-dimensional scene understanding, and cultural-heritage preservation is a fast-growing field with strong funding prospects and few institutions yet operating at this level of integration. The technological foundations documented here are sound, the workflow is practical, and the results are compelling. The University has the opportunity to move from a successful pilot to an operational service to a recognised centre of practice---and the system to do so already exists.

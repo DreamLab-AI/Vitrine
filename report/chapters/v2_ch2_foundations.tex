@@ -1,0 +1,419 @@
+% ════════════════════════════════════════════════════════════
+% Chapter 2 — Technology Foundations
+% Video-to-Gaussian: An Agentic Pipeline for Volumetric
+% Cultural Heritage Preservation (v2.0)
+%
+% Dr John O'Hare, DreamLab AI Consulting Ltd
+% For: University of Salford, June 2026
+% ════════════════════════════════════════════════════════════
+
+\chapter{Technology Foundations}\label{ch:foundations}
+
+This chapter establishes the theoretical and algorithmic bedrock on which the
+\texttt{gaussian-toolkit} pipeline is constructed. The six sections below
+progress from classical photogrammetric scene recovery to the explicit volumetric
+primitives, surface-extraction families, video-consistent segmentation, generative
+completion, and scene-description standards that together enable a single 4K
+gallery walkthrough to become a hierarchical, editable, \acrshort{usd}-encoded
+volumetric record.
+
+% ────────────────────────────────────────────────────────────
+\section{From Photogrammetry to Radiance Fields}\label{sec:sfm-to-nerf}
+% ────────────────────────────────────────────────────────────
+
+Classical multi-view reconstruction decomposes into two sequentially coupled
+problems: recovering camera geometry, and then recovering scene geometry.
+
+\paragraph{Feature matching and Structure from Motion.}
+\textcite{Lowe2004} demonstrated that scale-invariant feature keypoints can be
+matched reliably across wide-baseline image pairs despite changes in illumination
+and viewpoint. \acrshort{sfm} solves the camera-recovery problem by jointly
+estimating intrinsic and extrinsic parameters from such matches through
+incremental bundle adjustment. \textcite{Schoenberger2016sfm} systematised this
+into \acrshort{colmap}, the de-facto reference implementation that
+\texttt{gaussian-toolkit} invokes for pose estimation. Given $N$ frames, \acrshort{sfm}
+yields a sparse point cloud and a set of calibrated cameras---sufficient to
+anchor further reconstruction, but too sparse to serve as a visual medium.
+
+\paragraph{Multi-View Stereo.}
+Dense scene geometry is recovered by \acrlong{mvs}
+\parencite{Schoenberger2016mvs}, which sweeps depth hypotheses per pixel and
+aggregates photoconsistency evidence across views. The result is a dense point
+cloud or depth map per image from which a fused mesh or volume can be derived.
+\acrshort{mvs} reaches geometric fidelity adequate for survey applications, but
+its outputs require manual clean-up for experiential rendering, and its Lambertian
+assumptions break on specular, transparent, or fine-structured surfaces---all of
+which occur in gallery collections.
+
+\paragraph{Neural Radiance Fields.}
+\textcite{Mildenhall2020} introduced Neural Radiance Fields (\acrshort{nerf}),
+representing a scene as a continuous, differentiable function
+$f_\theta(\mathbf{x}, \mathbf{d}) \to (\mathbf{c}, \sigma)$ mapping a 3D position
+$\mathbf{x}$ and view direction $\mathbf{d}$ to emitted colour $\mathbf{c}$ and
+volumetric density $\sigma$, parameterised by a multi-layer perceptron. Novel views
+are rendered by integrating colour along rays via classical volume rendering, and
+the network is optimised end-to-end against a set of posed photographs.
+\acrshort{nerf} surpassed classical methods on view-synthesis quality, particularly
+for reflective and translucent materials, and its implicit representation implicitly
+handles the occlusion ambiguities that degrade \acrshort{mvs} dense-depth estimation.
+
+\textcite{Barron2022MipNeRF360} extended the formulation to unbounded outdoor and
+indoor scenes via a contracted coordinate system and an integrated positional
+encoding that resolves the aliasing artefacts present in the original model.
+Mip-\acrshort{nerf}~360 remains the quality reference against which splatting
+methods are benchmarked on indoor scenes comparable to those encountered in
+gallery preservation.
+
+\paragraph{Why neural volumetric representations win for experiential interiors.}
+Gallery interiors present a combination of continuous smooth wall surfaces, fine
+decorative detail, mixed artificial and natural illumination, and objects whose
+rear faces are never directly observed during a linear walkthrough. Classical
+photogrammetry either fails on textureless or specular surfaces, or requires
+controlled multi-direction captures incompatible with public-facing collection
+environments. Neural volumetric methods, trained entirely from an uncontrolled
+monocular video, produce renderings that preserve perceptual continuity of
+illumination and material across novel viewpoints. This experiential continuity
+is the primary preservation goal---the scene must be \emph{inhabitable}, not merely
+measurable.
+
+% ────────────────────────────────────────────────────────────
+\section{3D Gaussian Splatting}\label{sec:3dgs}
+% ────────────────────────────────────────────────────────────
+
+\acrlong{3dgs} (\acrshort{3dgs}) \parencite{Kerbl2023} replaces the implicit neural
+representation of \acrshort{nerf} with a collection of explicit, anisotropic
+Gaussian primitives that can be rasterised in real time without ray marching.
+
+\paragraph{The Gaussian primitive.}
+Each primitive is characterised by a mean position $\boldsymbol{\mu} \in \mathbb{R}^3$,
+an opacity $\alpha \in [0,1]$, a set of spherical-harmonic coefficients encoding
+view-dependent colour, and a full covariance matrix $\boldsymbol{\Sigma}$. The
+spatial contribution of a primitive at position $\mathbf{x}$ is:
+
+\begin{equation}
+  G(\mathbf{x}) = \exp\!\left(-\tfrac{1}{2}(\mathbf{x} - \boldsymbol{\mu})^\top
+  \boldsymbol{\Sigma}^{-1}(\mathbf{x} - \boldsymbol{\mu})\right).
+  \label{eq:gaussian}
+\end{equation}
+
+To guarantee that $\boldsymbol{\Sigma}$ is symmetric positive semi-definite throughout
+optimisation, it is factored as
+
+\begin{equation}
+  \boldsymbol{\Sigma} = \mathbf{R}\,\mathbf{S}\,\mathbf{S}^\top\mathbf{R}^\top,
+  \label{eq:covariance}
+\end{equation}
+
+where $\mathbf{R}$ is the rotation matrix derived from a learnt unit quaternion and
+$\mathbf{S} = \mathrm{diag}(s_x, s_y, s_z)$ encodes the three principal-axis
+scales. Gradients with respect to $\mathbf{R}$ and $\mathbf{S}$ are propagated
+through this factorisation during back-propagation, ensuring the covariance
+remains valid.
+
+\paragraph{Differentiable rasterisation.}
+Rendering follows the splatting paradigm of \textcite{Zwicker2001}: each primitive
+is projected into screen space as a 2D Gaussian via an affine approximation of
+the projective transformation, sorted by depth, and composited front-to-back.
+The accumulated colour at a pixel is:
+
+\begin{equation}
+  C = \sum_{i=1}^{N} \mathbf{c}_i\,\alpha_i
+  \prod_{j=1}^{i-1}\!\left(1 - \alpha_j\right),
+  \label{eq:blending}
+\end{equation}
+
+where $\mathbf{c}_i$ is the view-dependent colour of the $i$-th primitive and the
+product term models accumulated transmittance. This closed-form alpha-blending is
+differentiable end-to-end, enabling photometric loss to be back-propagated through
+rasterisation to all primitive parameters. The \acrshort{gpu} tile-based rasteriser
+delivers interactive frame rates (typically $>$60\,fps at 1080p) without neural
+network inference at render time---a decisive advantage over \acrshort{nerf} for
+web delivery.
+
+\paragraph{Densification and optimisation.}
+The canonical Kerbl et al.\ optimiser employs adaptive density control: under-
+reconstructed regions where the view-space positional gradient exceeds a threshold
+are addressed by cloning or splitting Gaussians, while near-transparent primitives
+are periodically pruned. This heuristic works well on static, well-sampled scenes
+but can over-densify cluttered regions and under-densify large homogeneous surfaces.
+
+\paragraph{Refinements in use.}
+\textcite{Yu2024MipSplatting} identify a mismatch between 3D Gaussian extent and
+2D rasterised footprint at different scales, introducing a 3D smoothing filter
+and a 2D Mip filter that together eliminate the floaters and high-frequency
+aliasing visible at oblique or close viewpoints. Mip-Splatting is the default
+rendering path in \texttt{gaussian-toolkit}'s viewer module.
+
+\textcite{Kheradmand2024} reframe densification as Markov Chain Monte Carlo
+(\acrshort{mcmc}) sampling of a stochastic process over the Gaussian population:
+relocation moves teleport low-utility primitives to high-gradient regions, while
+birth--death moves control scene capacity. This eliminates the hand-tuned
+gradient-threshold heuristics of the original densifier and produces more
+uniform coverage of challenging surfaces.
+
+\textcite{Kerbl2024Hierarchical} extend the representation to arbitrarily large
+scenes by organising primitives into a spatial hierarchy of levels of detail, with
+coarser levels used for distant geometry and finer levels loaded progressively as
+the viewer approaches. The hierarchical formulation is directly relevant to gallery
+sequences where a single video may span dozens of metres of corridor.
+
+\paragraph{MRNF densification.}
+The default densification strategy in \texttt{gaussian-toolkit} is \acrlong{mrnf}
+(\acrshort{mrnf}), which combines Mini-Splatting constrained-count primitives
+\parencite{Fang2024} with the \acrshort{mcmc} relocation scheme \parencite{Kheradmand2024}
+and a normal-consistency regulariser that penalises primitives whose major axes
+deviate from the local surface normal estimated from the sparse \acrshort{sfm}
+point cloud. The normal filter suppresses the needle-shaped floating Gaussians that
+tend to proliferate in poorly textured regions of gallery walls and prevents
+spurious primitives from contaminating the depth maps later consumed by mesh
+extractors. The net effect is a reconstruction that is both compact---typically
+30--50\% fewer primitives than the canonical densifier at comparable \acrshort{psnr}---and
+better conditioned for downstream meshing.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.85\textwidth]{v2/gsplat_mesh.png}
+  \caption{Co-registered Gaussian splat (left) and extracted polygonal mesh (right)
+    of a gallery interior captured with \texttt{gaussian-toolkit}.  The splat
+    preserves specular highlights and fine texture detail; the mesh provides
+    watertight geometry suitable for physics simulation, UV unwrapping, and
+    engine import. Both representations are stored as \acrshort{usd} variants of
+    the same scene prim and can be toggled without reloading scene metadata.}
+  \label{fig:found-splat-mesh}
+\end{figure}
+
+% ────────────────────────────────────────────────────────────
+\section{Surfaces from Splats}\label{sec:splats-to-surfaces}
+% ────────────────────────────────────────────────────────────
+
+A trained \acrshort{3dgs} scene is a point process of oriented ellipsoids, not a
+surface. Primitives may overlap, interpenetrate, or float in empty space. Standard
+mesh operations---UV unwrapping, Boolean difference, physics collision, real-time
+\acrlong{pbr} shading---require a manifold surface representation. The extraction
+of such a surface from a Gaussian splat field is an active research problem, and
+the \texttt{gaussian-toolkit} exposes four distinct extraction backends to allow
+trade-offs between geometric fidelity, computational cost, and output topology to
+be made per-project.
+
+\paragraph{The fundamental challenge.}
+A Gaussian primitive contributes density continuously through space. Unlike a
+neural \acrshort{tsdf} or an occupancy network, there is no obvious iso-surface.
+Na\"{i}ve density thresholding produces ragged, topologically inconsistent meshes.
+Extracting geometry that faithfully captures both large smooth walls and sub-centimetre
+decorative relief from the same primitive set requires principled coupling between
+the volumetric representation and the surface prior.
+
+\paragraph{Surface-aligned methods.}
+\textcite{Guedon2024Sugar} introduce SuGaR, which adds a regularisation term that
+encourages each Gaussian to align its flattest axis with the nearest mesh surface
+during training. A refined mesh is extracted by applying the Poisson surface
+reconstruction algorithm to the aligned normals. SuGaR produces clean, manifold
+meshes but requires a modified training loop; it is not applicable post-hoc to a
+pre-trained splat.
+
+\textcite{Guedon2025MILo} subsequently developed \acrlong{milo} (\acrshort{milo}),
+which maintains a deformable mesh in the loop during splatting optimisation. The
+mesh and the Gaussians are jointly optimised: the mesh constrains the positional
+prior of nearby primitives while the photometric loss drives both simultaneously.
+\acrshort{milo} achieves the highest surface quality in the benchmark comparison
+presented in Chapter~\ref{ch:meshing} but doubles optimisation time relative to
+standard training.
+
+\paragraph{Post-hoc confidence-based extraction.}
+\textcite{Radl2025CoMe} present \acrlong{come} (\acrshort{come}), which extracts
+a mesh from a \emph{trained} splat without retraining by computing a per-primitive
+confidence score derived from the accumulated photometric residual. High-confidence
+primitives contribute surface normals to a spatially adaptive iso-surface;
+low-confidence primitives are suppressed. \acrshort{come} is well-suited to the
+\texttt{gaussian-toolkit} workflow because it operates as a post-processing step,
+decoupling mesh quality from the choice of training configuration.
+
+\paragraph{Gaussian wrapping.}
+\textcite{Waczynska2024GaussianWrapping} approach the problem from the inverse
+direction: rather than deriving a surface from density, they initialise a proxy
+mesh and bind Gaussians to its faces, constraining primitive positions and
+orientations to remain coherent with the mesh throughout optimisation. The
+resulting \acrlong{gw} (\acrshort{gw}) representation is geometrically exact by
+construction but requires a reasonable initial mesh---practically sourced from a
+classical \acrshort{tsdf} reconstruction or an \acrshort{mvs} output.
+
+\paragraph{Classical TSDF and marching cubes.}
+The \acrlong{tsdf} \parencite{Curless1996} integrates per-view depth maps into a
+volumetric signed-distance field on a voxel grid. The iso-surface at zero crossing
+is extracted via the marching cubes algorithm \parencite{Lorensen1987}, producing
+a triangle mesh whose resolution is determined by voxel spacing. In the
+\texttt{gaussian-toolkit}, the \acrshort{tsdf} backend consumes depth maps rendered
+from the trained splat rather than from a physical depth sensor, giving it access
+to the fully optimised scene representation. Classical \acrshort{tsdf}+marching
+cubes remains a competitively efficient baseline, especially for room-scale scenes
+where the Gaussian normal field is sufficiently dense to produce artefact-free
+depth renders.
+
+A systematic empirical comparison of all four backends across geometry, run-time,
+and perceptual quality metrics is deferred to Chapter~\ref{ch:meshing}.
+
+% ────────────────────────────────────────────────────────────
+\section{Promptable Segmentation}\label{sec:sam}
+% ────────────────────────────────────────────────────────────
+
+Scene decomposition into individually addressable objects is a prerequisite for
+constructing a meaningful scene graph: a monolithic scene primitive cannot carry
+per-object metadata, cannot be independently replaced with a generatively completed
+mesh, and cannot be selected by a curator examining the scene in a browser viewer.
+
+\paragraph{Segment Anything Model.}
+\textcite{Kirillov2023} introduced \acrlong{sam} (\acrshort{sam}), a promptable
+image segmentation foundation model trained on a dataset of over one billion masks.
+Given a prompt in the form of a point, bounding box, or free-form mask, \acrshort{sam}
+returns a segmentation of the corresponding object at interactive speed. The
+promptable interface maps naturally onto the \texttt{gaussian-toolkit}'s interactive
+web \acrshort{usd} viewer, where a curator can click an exhibit to trigger object
+isolation.
+
+\paragraph{SAM 2 for video-consistent decomposition.}
+Image-level segmentation applied to individual video frames produces inconsistent
+masks: the same object receives different segmentation boundaries in adjacent frames
+due to motion blur, partial occlusion, and lighting change. \textcite{Ravi2024SAM2}
+extend \acrshort{sam} to video with a streaming memory architecture that propagates
+object-level mask tokens across frames. Given a prompt in a single frame,
+\acrshort{sam}~2 tracks the corresponding object mask through the entire video
+sequence, producing temporally consistent per-frame masks at up to 44 frames per
+second on a single \acrshort{gpu}.
+
+\paragraph{Lifting 2D masks to 3D consistency.}
+The \texttt{gaussian-toolkit}'s segmentation module (\texttt{segment\_scene})
+projects the per-frame \acrshort{sam}~2 masks back onto the trained Gaussian
+primitive set via the calibrated cameras. Each primitive is assigned to the object
+whose mask covers its projected centroid in the majority of frames in which it
+is visible. This voting-based assignment is robust to single-frame mask failures
+and produces 3D-consistent object labels without requiring any 3D supervision.
+The labelled primitive subsets form the basis of the scene-graph decomposition
+described in Chapter~\ref{ch:pipeline}, with each object's Gaussians isolated,
+independently meshed, and associated with a distinct \acrshort{usd} prim.
+
+% ────────────────────────────────────────────────────────────
+\section{Generative 3D Reconstruction}\label{sec:generative}
+% ────────────────────────────────────────────────────────────
+
+A hand-held camera walkthrough systematically fails to observe the posterior
+surface of any forward-facing exhibit. A showcase item presented against a wall
+will have its back face entirely occluded throughout the capture; a sculpture on
+a plinth may have its base inaccessible. Photogrammetric methods cannot reconstruct
+surfaces they have never observed. The resulting holes in the mesh are either
+filled by aggressive interpolation, which introduces geometrically incorrect
+surface, or left open, which disqualifies the mesh from physical simulation and
+game-engine import. For cultural heritage purposes, a complete object mesh---even
+one whose occluded regions are generatively inferred---is of substantially greater
+archival and display value than a fragment.
+
+\paragraph{Multi-view diffusion.}
+Multi-view diffusion models learn the joint distribution of object appearance
+across a canonical set of viewpoints, conditioned on one or more observed views.
+They encode strong shape priors from training on large 3D asset datasets and can
+hallucinate plausible geometry for unobserved surfaces while remaining consistent
+with the photographic evidence on the visible faces.
+
+\textcite{Zhao2025Hunyuan} present Hunyuan3D~2.0, a two-stage system comprising
+a multi-view diffusion model that synthesises consistent views at 24 canonical
+camera positions and a reconstruction model that converts those views into a
+textured mesh via differentiable rasterisation. Hunyuan3D~2.0 achieves state-of-the-art
+quality on object-level reconstruction from a single image and scales to
+high-resolution textures (up to $2048^2$ per chart).
+
+\paragraph{ComfyUI orchestration.}
+\texttt{gaussian-toolkit} executes Hunyuan3D~2.0 through \textcite{ComfyUI2024},
+a modular, node-graph execution engine for diffusion pipelines. The \texttt{generate\_object\_mesh}
+module constructs a \texttt{ComfyUI} workflow graph programmatically, submitting
+each isolated object's best-observed view as a conditioning image and retrieving
+the resulting textured mesh via the \texttt{ComfyUI} HTTP API. Using
+\texttt{ComfyUI} as the execution layer decouples the \texttt{gaussian-toolkit}
+from any specific model version: as Hunyuan3D or successor models are updated,
+only the workflow JSON changes.
+
+\paragraph{Background inpainting.}
+Isolating an object for generative reconstruction exposes the background behind
+it. Where the object partially occludes a wall or floor, the Gaussian splat
+background shows a hole at those pixels. \texttt{gaussian-toolkit} employs
+FLUX.1 \parencite{FLUX2024}---a rectified flow transformer trained for
+high-fidelity text-conditioned image synthesis---as an inpainting model to fill
+disoccluded background regions before they are incorporated into the scene's
+background mesh. FLUX.1 is conditioned on the surrounding context pixels and a
+brief natural-language description of the venue, generating texture-consistent
+infill that avoids the conspicuous seams produced by classical patch-based methods.
+
+\paragraph{Why generative completion is architecturally necessary.}
+The decision to adopt generative completion rather than accept incomplete meshes
+follows directly from the project's archival brief. A \acrshort{usd} scene intended
+for long-term deposit must contain complete, watertight geometry for each registered
+object. In the absence of completion, the pipeline would require a secondary capture
+pass for every non-trivial exhibit---negating the single-capture design goal.
+Generative completion introduces epistemic uncertainty on unseen faces, which is
+acknowledged in the per-object metadata schema via a \texttt{completionConfidence}
+field; downstream consumers can filter on this field if measured geometry is
+preferred.
+
+% ────────────────────────────────────────────────────────────
+\section{Scene Description}\label{sec:usd}
+% ────────────────────────────────────────────────────────────
+
+The final output of \texttt{gaussian-toolkit} is not a single mesh or splat file
+but a structured, hierarchical \emph{scene}---an environment mesh, a collection
+of individually completed object meshes with metadata, and the original Gaussian
+splat, all co-registered and jointly deliverable.
+
+\paragraph{Universal Scene Description.}
+\acrlong{usd} (\acrshort{usd}) \parencite{Pixar2019} is an open interchange
+framework developed by Pixar Animation Studios and subsequently adopted across the
+visual effects, games, and digital twin industries. Its core data model is a
+hierarchy of typed \emph{prims} (primitives) that can carry geometry, material
+bindings, camera definitions, light sources, and arbitrary user-defined metadata
+attributes. Crucially, \acrshort{usd} supports \emph{composition arcs}---mechanisms
+for layering, referencing, and instancing that allow large scenes to be assembled
+from independently maintained asset files. For the \texttt{gaussian-toolkit}, the
+relevant composition features are:
+
+\begin{itemize}
+  \item \textbf{Variant sets}: a named collection of alternative representations
+    for a prim. Each scene object carries a \texttt{representation} variant set
+    with two variants---\texttt{splat} (a reference to the Gaussian primitive
+    subset) and \texttt{mesh} (a reference to the extracted or generatively
+    completed polygonal mesh)---enabling renderer-appropriate view switching
+    without duplicating scene topology.
+
+  \item \textbf{Layer stacking}: the environment mesh, per-object assets, and
+    splat data are authored in separate \texttt{.usda} or \texttt{.usdz} files
+    and composed at the root stage level, so any layer can be updated in isolation
+    without invalidating the others.
+
+  \item \textbf{Custom schemas}: the \texttt{gaussian-toolkit} registers a
+    lightweight \texttt{CulturalHeritageAPI} applied schema carrying fields for
+    accession number, capture date, completionConfidence, and licensing, making
+    the metadata intrinsically part of the geometry asset rather than a sidecar file.
+\end{itemize}
+
+\paragraph{Browser delivery.}
+The \acrshort{usd} scene is the authoritative master format; browser delivery uses
+derived representations. The Gaussian splat subset is exported as a \texttt{.ksplat}
+file (the compressed container supported by \texttt{ksplat}, \acrshort{ksplat})
+and streamed to a \acrlong{webgl} (\acrshort{webgl}) viewer based on the
+open-source renderer of \textcite{Antimatter15Splat}. The emerging \acrlong{webgpu}
+(\acrshort{webgpu}) standard \parencite{Khronos2024WebGPU}, which exposes
+compute shaders in the browser, enables a more efficient tiled rasterisation path
+that the \texttt{gaussian-toolkit} viewer activates automatically when the browser
+reports \acrshort{webgpu} availability, falling back to \acrshort{webgl} otherwise.
+Polygon meshes are served as compressed \texttt{glTF~2.0} with Draco-encoded
+geometry, enabling the same delivery infrastructure used for standard web 3D
+content.
+
+\paragraph{Summary.}
+The six technology strata described in this chapter---\acrshort{sfm}/\acrshort{mvs}
+pose recovery, \acrshort{3dgs} volumetric representation, post-hoc mesh extraction,
+\acrshort{sam}~2 video segmentation, multi-view generative completion, and
+\acrshort{usd} scene composition---form an engineering stack in which each layer
+consumes the output of its predecessor. No layer has a fundamental dependency on
+the specific implementation choice of any other: the meshing backends are
+interchangeable, the generative model is invoked through an abstracted
+\texttt{ComfyUI} graph, and the \acrshort{usd} representation is independent of
+the delivery target. This composability is the architectural principle that allows
+\texttt{gaussian-toolkit} to accommodate methodological advances in any single
+layer without redesigning the pipeline as a whole.

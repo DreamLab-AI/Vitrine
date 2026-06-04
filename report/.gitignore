@@ -1,0 +1,24 @@
+# LaTeX build artifacts
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.glo
+*.gls
+*.glg
+*.acn
+*.acr
+*.alg
+*.ist
+*.idx
+*.ilg
+*.ind
+*.lof
+*.lot
+*.toc
+*.out
+*.log
+*.run.xml
+*.synctex.gz

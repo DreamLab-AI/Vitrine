@@ -1,0 +1,342 @@
+\chapter{Module 3: Viewing and Distribution}
+\label{ch:module-viewing}
+
+\begin{tcolorbox}[
+  enhanced,
+  colback=LightGrey,
+  colframe=MidGrey,
+  fonttitle=\bfseries\sffamily,
+  title={Module Information},
+  sharp corners=south,
+  boxrule=0.6pt
+]
+\begin{description}[font=\sffamily\bfseries, leftmargin=4cm, style=sameline]
+  \item[Prerequisites] Module~2 (Chapter~\ref{ch:module-processing}); basic HTML/web knowledge helpful but not required
+  \item[Duration] 3--4 hours (half day)
+  \item[Hardware] Any computer with a modern web browser (Chrome 113+, Firefox 114+, Edge 113+)
+  \item[Software] Text editor; optionally Blender 4.0+ or Unreal Engine 5.4+
+  \item[Budget tier] Free
+\end{description}
+\end{tcolorbox}
+
+\medskip
+
+\noindent\textbf{Learning Objectives.} Upon completing this module, participants will be able to:
+\begin{enumerate}
+  \item Load and navigate a Gaussian splat scene in two or more browser-based viewers.
+  \item Embed a splat viewer within an existing web page using an \texttt{<iframe>} element.
+  \item Explain the trade-offs between WebGL and WebGPU rendering paths for splat viewers.
+  \item Import Gaussian splat and mesh outputs into Unreal Engine~5.4+ for immersive experiences.
+  \item Identify appropriate archival formats and implement a basic preservation strategy for 3D captures.
+  \item Embed descriptive metadata within a \acrshort{usd} scene file.
+\end{enumerate}
+
+\section{Browser-Based Splat Viewers}
+\label{sec:view-browser}
+
+Browser-based viewing is the primary delivery mechanism recommended by this report (Chapter~\ref{ch:recommendations}). It requires no software installation, no specialised hardware, and no technical expertise from the audience. A Gaussian splat scene viewed in a browser is as accessible as a YouTube video---and considerably more interactive.
+
+Several open-source viewer implementations are available, each with different capabilities and trade-offs. Table~\ref{tab:viewer-detail} extends the comparison introduced in Chapter~\ref{ch:recommendations} with implementation detail relevant to deployment decisions.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Browser-based splat viewer comparison (extended).}
+  \label{tab:viewer-detail}
+  \begin{tabular}{@{}L{2.5cm}L{3cm}L{3cm}L{4cm}@{}}
+    \toprule
+    \textbf{Viewer} & \textbf{Rendering} & \textbf{Input Format} & \textbf{Key Characteristics} \\
+    \midrule
+    gsplat.js
+      & WebGL2 + WebGPU
+      & \texttt{.ply}, \texttt{.splat}
+      & Most feature-rich open-source option. Supports progressive loading, level-of-detail, and custom shading. Active development. MIT licence. \\
+    \addlinespace
+    antimatter15/splat
+      & WebGL2
+      & \texttt{.splat}
+      & Lightweight, minimal dependencies. Excellent mobile performance. Good choice for embedding where simplicity is prioritised. MIT licence. \\
+    \addlinespace
+    gaussian-toolkit viewer
+      & WebGL2
+      & \texttt{.ply}, \texttt{.splat}
+      & Integrated with the processing pipeline. Includes metadata overlay, quality comparison mode, and measurement tools. MIT licence. \\
+    \addlinespace
+    Luma AI viewer
+      & WebGPU
+      & Proprietary
+      & Highest rendering quality. Requires uploading data to Luma's servers. Not self-hostable. Free tier available. \\
+    \addlinespace
+    PlayCanvas
+      & WebGL2 + WebGPU
+      & \texttt{.ply}
+      & Full 3D engine with splat support. Suitable when splats need to be integrated with other 3D content (annotations, UI overlays). MIT licence. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{recommendation}
+For institutional deployment where data sovereignty and long-term availability are requirements, use a self-hosted viewer (gsplat.js, antimatter15/splat, or the \texttt{gaussian-toolkit} viewer). Cloud-hosted viewers may change their terms of service, introduce paywalls, or discontinue service. Cultural heritage artefacts must be accessible on timescales measured in decades, not product cycles.
+\end{recommendation}
+
+\subsection{Loading a Scene in gsplat.js}
+
+The gsplat.js viewer can be deployed as a static web page with no server-side components. The minimal deployment requires three files:
+
+\begin{lstlisting}[language=HTML, caption={Minimal gsplat.js viewer deployment.}, label={lst:gsplat-viewer}]
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Cultural Heritage Viewer</title>
+  <style>
+    body { margin: 0; overflow: hidden; }
+    canvas { width: 100vw; height: 100vh; }
+  </style>
+</head>
+<body>
+  <canvas id="viewer"></canvas>
+  <script type="module">
+    import { Viewer } from 'https://cdn.jsdelivr.net/npm/gsplat@latest';
+
+    const viewer = new Viewer({
+      canvas: document.getElementById('viewer'),
+      url: './scene.splat'
+    });
+  </script>
+</body>
+</html>
+\end{lstlisting}
+
+\begin{technote}
+The \texttt{.splat} file format used by browser viewers is a sorted, compressed binary encoding of the Gaussian parameters optimised for progressive loading. The viewer begins rendering as soon as the first chunk of data arrives, providing a coarse representation that progressively refines as more Gaussians load. A 100\,MB splat file typically begins rendering within 2--3 seconds on a standard broadband connection.
+\end{technote}
+
+\subsection{Loading a Scene in antimatter15/splat}
+
+The antimatter15 viewer is even more minimal, consisting of a single HTML file:
+
+\begin{lstlisting}[language=bash, caption={Deploying the antimatter15 splat viewer.}, label={lst:antimatter-deploy}]
+# Clone the viewer
+git clone https://github.com/antimatter15/splat.git
+cd splat
+
+# Copy your .splat file to the viewer directory
+cp /path/to/scene.splat ./
+
+# Serve locally (any HTTP server works)
+python3 -m http.server 8000
+
+# Open http://localhost:8000 in browser
+# Drag and drop scene.splat onto the page
+\end{lstlisting}
+
+\section{Embedding in Websites}
+\label{sec:view-embed}
+
+For institutional deployment, Gaussian splat viewers are most commonly embedded within existing web pages---collection catalogue entries, exhibition documentation pages, or standalone heritage portals---using HTML \texttt{<iframe>} elements.
+
+\subsection{Basic Embedding}
+
+\begin{lstlisting}[language=HTML, caption={Embedding a splat viewer in an existing web page.}, label={lst:embed-iframe}]
+<div class="heritage-viewer" style="width:100%; max-width:1200px;">
+  <iframe
+    src="https://heritage.salford.ac.uk/viewer/north-gallery-2026"
+    width="100%"
+    height="600"
+    frameborder="0"
+    allow="fullscreen; xr-spatial-tracking"
+    loading="lazy"
+    title="3D reconstruction of North Gallery, April 2026">
+  </iframe>
+  <p class="caption">
+    <strong>North Gallery Installation</strong> by Artist Name,
+    captured 1 April 2026.
+    <a href="/catalogue/NG-2026-001">View catalogue record</a>.
+  </p>
+</div>
+\end{lstlisting}
+
+Key attributes for accessibility and performance:
+
+\begin{description}
+  \item[\texttt{loading="lazy"}] Defers loading the viewer until it scrolls into the viewport, preventing heavy 3D scenes from blocking page load.
+  \item[\texttt{title}] Provides an accessible description for screen readers. Since splat viewers are inherently visual, the title should describe the content for users who cannot see the 3D scene.
+  \item[\texttt{allow="fullscreen; xr-spatial-tracking"}] Enables fullscreen mode and, where supported, WebXR passthrough for AR viewing on compatible devices.
+\end{description}
+
+\subsection{Integration with Collection Management Systems}
+
+Most institutional collection management systems (CMS) support custom content types or embed blocks. The specific integration depends on the CMS in use:
+
+\begin{description}
+  \item[CollectiveAccess] Add a custom media representation type for Gaussian splats. Configure the ``3D viewer'' display to embed the viewer iframe using the splat file URL stored as a media field.
+  \item[Omeka S] Use the Omeka ``iframe embed'' module or a custom block layout to embed the viewer. Associate the splat file and its metadata JSON as media items on the catalogue record.
+  \item[WordPress (institutional sites)] Use the standard HTML block or a custom shortcode to embed the iframe. Store the \texttt{.splat} file in the media library or on a CDN.
+  \item[Custom systems] Expose the viewer as a standalone page (one per capture) behind the institution's authentication and serve the iframe URL as a field in the catalogue database.
+\end{description}
+
+\section{Unreal Engine Import}
+\label{sec:view-unreal}
+
+For high-fidelity immersive experiences---VR installations, exhibition kiosks, and research visualisation---Unreal Engine~5.4 and later provides native Gaussian splat rendering through community and commercial plugins.
+
+\subsection{Plugin Options}
+
+\begin{description}
+  \item[3D Gaussian Splatting for UE5 (Luma AI)] Free plugin supporting direct import of \texttt{.ply} Gaussian splat files. Renders using the engine's deferred rendering pipeline with support for shadows, post-processing, and VR stereo rendering.
+  \item[GaussianSplattingUE (community)] Open-source plugin with editor integration, allowing splats to be placed, scaled, and lit within standard Unreal scenes alongside conventional meshes and materials.
+  \item[Cesium for Unreal + 3D Tiles] For geospatially-referenced captures (outdoor heritage sites, building exteriors), the Cesium plugin can stream splat data as 3D Tiles, enabling integration with geospatial datasets, satellite imagery, and other site data.
+\end{description}
+
+\subsection{Import Workflow}
+
+\begin{enumerate}
+  \item Install the chosen plugin from the Unreal Marketplace or GitHub.
+  \item Import the \texttt{scene.ply} file into the Unreal content browser. The plugin converts it to an internal Gaussian splat asset.
+  \item Drag the asset into the level viewport. Position and scale it using the standard transform gizmo.
+  \item Configure rendering parameters: splat size multiplier, near/far clip planes, maximum Gaussian count for performance budget.
+  \item For VR deployment, enable stereo rendering in the plugin settings and test with a connected headset.
+\end{enumerate}
+
+\begin{technote}
+Unreal Engine renders Gaussian splats using a custom render pass that integrates with the engine's depth buffer but not its material system. This means splats receive post-processing effects (bloom, tone mapping, ambient occlusion) but cannot have Unreal materials applied to them. For scenes that mix splats with conventional meshes, careful attention to lighting and colour grading is needed to maintain visual consistency.
+\end{technote}
+
+\section{VR and AR Viewing Options}
+\label{sec:view-xr}
+
+Volumetric cultural heritage content is particularly compelling in virtual and augmented reality, where the spatial qualities of the original work can be experienced with natural head movement and stereo depth perception.
+
+\begin{description}
+  \item[VR headsets (Meta Quest 3, Apple Vision Pro, PCVR)] Unreal Engine with a Gaussian splat plugin provides the highest-quality VR experience. For standalone headsets (Quest 3), WebXR-enabled browser viewers offer a zero-install pathway, though at lower quality and frame rate than native rendering.
+
+  \item[AR on mobile devices] WebXR-capable browsers (Chrome for Android, Safari for iOS 17+) can overlay Gaussian splat scenes onto the real world using the device camera. This enables compelling ``window into the past'' experiences where users point their phone at a site and see the preserved cultural content overlaid on the current environment.
+
+  \item[Mixed reality (passthrough headsets)] The Meta Quest 3's colour passthrough and Apple Vision Pro's high-resolution passthrough enable mixed-reality experiences where Gaussian splat heritage content coexists with the user's physical environment. This is a nascent but rapidly maturing delivery pathway.
+\end{description}
+
+\begin{recommendation}
+Invest initial effort in browser-based viewing, which serves the widest audience. Add Unreal Engine VR/AR experiences as a second-tier delivery option for high-value captures that justify the additional development effort. Monitor WebXR splat viewer maturity, which may eventually eliminate the need for native engine integration for most VR/AR use cases.
+\end{recommendation}
+
+\section{Archival Formats and Long-Term Preservation}
+\label{sec:view-archival}
+
+The digital preservation of 3D content requires careful consideration of format longevity, self-description, and redundancy. Unlike 2D images (where TIFF and JPEG have proven durable over decades), the 3D format landscape is still consolidating.
+
+\subsection{Recommended Archival Strategy}
+
+Preserve each capture as a package containing multiple representations at different levels of abstraction:
+
+\begin{enumerate}
+  \item \textbf{Original video file} (MP4 H.264). The raw source material, from which the reconstruction can be re-run as algorithms improve. This is the most future-proof artefact.
+
+  \item \textbf{Gaussian splat PLY file} (\texttt{scene.ply}). The primary preservation artefact, as recommended in Chapter~\ref{ch:recommendations}. The PLY format is a simple, well-documented point cloud format that has been in use since 1994 and is unlikely to become unreadable.
+
+  \item \textbf{Mesh in glTF Binary} (\texttt{scene.glb}). If mesh extraction was performed, the glTF format is the emerging standard for 3D content interchange, backed by the Khronos Group and supported by every major 3D application. It is the closest thing the 3D world has to a JPEG.
+
+  \item \textbf{USD scene file} (\texttt{scene.usda}). The \acrlong{usd} format provides a rich scene graph with support for metadata, layered composition, and time-varying data. It is increasingly adopted by film, games, and simulation industries and is well-suited to complex multi-object heritage scenes.
+
+  \item \textbf{Metadata JSON} (\texttt{metadata.json}). The complete capture and processing metadata record, as defined in Module~5 (Chapter~\ref{ch:module-metadata}).
+
+  \item \textbf{Camera parameters} (\texttt{cameras.json}). The \acrshort{colmap} camera positions and intrinsics, enabling future re-processing or registration of additional captures.
+\end{enumerate}
+
+\begin{keyfinding}
+Preserving the original video alongside the Gaussian splat representation is critical. The video contains all the information from which the reconstruction was derived. As reconstruction algorithms improve---and they improve rapidly---future re-processing of today's video with tomorrow's algorithms will produce superior results. Discarding the source video after processing is an irreversible loss of preservation potential.
+\end{keyfinding}
+
+\subsection{Metadata Embedding in USD}
+
+The \acrlong{usd} format supports arbitrary metadata on any element in the scene graph, making it an excellent carrier for cultural heritage provenance information:
+
+\begin{lstlisting}[language={}, caption={Embedding cultural heritage metadata in a USD scene.}, label={lst:usd-metadata}]
+#usda 1.0
+(
+    doc = "Cultural Heritage Capture - North Gallery Installation"
+    customLayerData = {
+        string capture_id = "b7e4f2a1-3c89-4d56-a012-7890abcdef12"
+        string title = "North Gallery, Wire Mesh Installation"
+        string creator = "Artist Name"
+        string date = "2026-04-01"
+        string rights = "CC BY-SA 4.0"
+        string institution = "University of Salford"
+        string pipeline_version = "gaussian-toolkit v2.1"
+    }
+)
+
+def Xform "Scene" (
+    doc = "Reconstructed scene from 3DGS pipeline"
+)
+{
+    def Mesh "gallery_mesh"
+    {
+        # Mesh geometry data...
+    }
+}
+\end{lstlisting}
+
+This embedded metadata travels with the scene file, ensuring that provenance information is never separated from the 3D content it describes---a persistent risk when metadata is stored only in external sidecar files.
+
+\section{Practical Exercise: Publish a Splat to a Website}
+\label{sec:view-exercise}
+
+\begin{tcolorbox}[
+  enhanced,
+  colback=SuccessGreen!8,
+  colframe=SuccessGreen,
+  fonttitle=\bfseries\sffamily,
+  title={Exercise 3.1: Web Publication},
+  sharp corners=south,
+  boxrule=0.6pt
+]
+\textbf{Objective:} Publish the Gaussian splat produced in Exercise~2.1 to a web page that could be shared with a public audience.
+
+\textbf{Time:} 45--60 minutes
+
+\textbf{Equipment:} Computer with a text editor and a web browser
+
+\textbf{Steps:}
+\begin{enumerate}
+  \item Create a new directory on your computer for the web deployment:
+    \begin{lstlisting}[language=bash, numbers=none]
+mkdir heritage-viewer && cd heritage-viewer
+    \end{lstlisting}
+  \item Copy the \texttt{.splat} file from the pipeline output into this directory.
+  \item Create an \texttt{index.html} file using the gsplat.js template from Listing~\ref{lst:gsplat-viewer}. Modify the \texttt{url} parameter to point to your \texttt{.splat} file.
+  \item Start a local web server:
+    \begin{lstlisting}[language=bash, numbers=none]
+python3 -m http.server 8000
+    \end{lstlisting}
+  \item Open \texttt{http://localhost:8000} in your browser. Navigate the scene. Verify it loads and renders correctly.
+  \item Add a title, caption, and link to a (hypothetical) catalogue record beneath the viewer canvas.
+  \item Test on a second device (phone, tablet) connected to the same network by navigating to your computer's local IP address.
+\end{enumerate}
+
+\textbf{Expected outcome:} A functioning web page serving an interactive Gaussian splat viewer, accessible from any device on the local network. Participants should be able to share the URL with a colleague and have them view the reconstructed scene in their browser.
+\end{tcolorbox}
+
+\begin{tcolorbox}[
+  enhanced,
+  colback=SuccessGreen!8,
+  colframe=SuccessGreen,
+  fonttitle=\bfseries\sffamily,
+  title={Exercise 3.2: Archival Package},
+  sharp corners=south,
+  boxrule=0.6pt
+]
+\textbf{Objective:} Assemble a complete archival package for the capture, following the preservation strategy from Section~\ref{sec:view-archival}.
+
+\textbf{Time:} 30 minutes
+
+\textbf{Steps:}
+\begin{enumerate}
+  \item Create a directory named with the capture ID (from the metadata form).
+  \item Copy into it: the original video, the \texttt{.ply} file, the \texttt{.splat} file, the \texttt{cameras.json}, and the metadata JSON.
+  \item If mesh extraction was performed, include the \texttt{.glb} file.
+  \item Create a \texttt{README.txt} describing the contents, creation date, and any viewing instructions.
+  \item Calculate checksums (\texttt{sha256sum *}) and save them in a \texttt{checksums.sha256} file.
+  \item Archive the directory as a \texttt{.tar.gz} file.
+\end{enumerate}
+
+\textbf{Expected outcome:} A self-contained, checksummed archival package that could be deposited in an institutional repository, sent to a digital preservation service, or stored on long-term media.
+\end{tcolorbox}

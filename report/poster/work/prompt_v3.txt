@@ -1,0 +1,9 @@
+Using the attached draft poster as the content reference, redesign it as a CLEAN, SPACIOUS, modern A0 PORTRAIT infographic poster in the "Better Poster" style — one dominant takeaway, lots of white space, large icons, minimal text density.
+
+Layout:
+- Top: prominent University of Salford lion-crest shield logo + "University of Salford" wordmark at top-left; small discrete "DreamLab AI Consulting Ltd" mark at top-right; title "Video-to-Gaussian" with subtitle "An Agentic Pipeline for Volumetric Cultural-Heritage Preservation".
+- A bold central takeaway banner in Salford red across the upper body: "ONE 4K VIDEO -> A PHOTOREAL, OBJECT-STRUCTURED 3D SCENE".
+- A single large horizontal pipeline spine as the visual centre: Capture 4K video -> COLMAP -> 3D Gaussian Splatting -> SAM2 decomposition -> per-object 360 generative mesh (Hunyuan3D + FLUX) -> USD scene graph, each step a big clean icon with one short label.
+- Supporting panels below, kept short: Hierarchical Scene Graph ({Gaussian | Mesh} variants, 31 object prims, 98.3% coverage); Four Mesh Backends (TSDF / MILo / CoMe / GaussianWrapping); a row of big number callouts (29.6 dB PSNR, 0.921 SSIM, 1.18M gaussians, 160 FPS, sub-cm registration); Deployment at the University of Salford.
+
+Style: generous white space, crisp modern sans-serif, Salford crimson red as the primary accent with teal and navy secondaries, large friendly flat-vector icons, high contrast, readable from across a room. Elegant, minimal, confident — not a wall of text. Prominent Salford branding, discrete DreamLab.
