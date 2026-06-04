@@ -247,3 +247,87 @@ The v0.5.3 Vulkan migration is explicitly deferred. Trigger conditions for revis
 5. Python API audit complete
 
 No v0.5.3-dev commits are merged until all five conditions are met. The `upstream/master-watch` branch tracks upstream progress monthly.
+
+---
+
+## v3 Upgrade — 2026-06-04
+
+### Overview
+
+The v3 increment converts the pipeline from a single-host, hardcoded-IP research
+script into a manifest-driven, service-meshed, agent-overseen system targeting
+2026 SOTA models. The work was built as a six-agent mesh swarm with disjoint file
+ownership and reconciled against ADR-011 through ADR-015 and the v3 work-order
+(items 0–9). FR-40 (the `video2gaussian` / `gaussian-toolkit` → `Vitrine` codebase
+rename) remains explicitly deferred for blast-radius reasons; GPU-host validation,
+live weight staging, and live pin resolution are out of band on the .48 host.
+
+### Single Pre-Run Manifest (ADR-013 / D-013.1)
+
+Replaced ad-hoc CLI flags with one human-authored `exhibit.toml`. `pipeline/manifest.py`
+parses it, resolves `env:NAME` secret indirection at load time (a missing referenced
+env var is a hard, named failure — exit 2), and materialises a runtime `PipelineConfig`.
+Secrets (`hf_token`, `gcloud_credentials`) reject inline literals and are stripped before
+the redacted JSON run-record is written. The loader maps objects → `decompose.sam3_concepts`,
+`mesh_backend` → `training.mesh_method`, `matcher` → `reconstruct.matcher`, and the
+endpoint/oversight overlays onto their config sub-objects. `exhibit.example.toml` documents
+the schema. CLI: `python -m pipeline.manifest exhibit.toml [-o run.json]`.
+
+### SOTA Idiot-Check Wired Into Preflight
+
+`pipeline/sota_registry.check_environment()` is now invoked from `preflight.check_all()`
+and `print_report()`. It is advisory by default — it logs a registry report (checkpoints
+staged, VRAM fit, licence posture, pinning, caveats) and never raises — but escalates a
+`FAIL` overall to a hard `RuntimeError` when `SOTA_STRICT` is set. Default posture remains
+RESEARCH / non-commercial.
+
+### Serial VRAM Lifecycle + Service-DNS Endpoints (D-013.2, D-013.3)
+
+`pipeline/model_lifecycle.py` introduces `ModelLifecycleManager.stage()`, a context manager
+that asserts VRAM headroom before a stage and unloads serially afterwards (soft = POST /free
++ `torch.cuda.empty_cache()`; hard = container stop), so peak VRAM is `max(stage)` rather than
+the sum. `pipeline/endpoints.py` replaces hardcoded `192.168.2.48` IPs with an `Endpoints`
+dataclass reading `V2G_*` env vars over a docker service-DNS mesh (`comfyui:8188`,
+control-plane `:3001`, `agent-vlm:8080`, `milo:8090`, `come:8091`); the legacy single-host IPs
+are retained only as named fallback constants.
+
+### Agent-Controlled ComfyUI (ADR-014)
+
+`pipeline/comfyui_control.py` gives the oversight agent direct probe/download/run/free control
+over the .48 ComfyUI instance and Salad control-plane (health, `probe_models`, `ensure_model`,
+`submit_workflow`, `wait`, `download_outputs`, `free_vram`), with a `requests`→`urllib` fallback
+so it runs in a dependency-thin container.
+
+### Web Onboarding (ADR-015)
+
+`onboarding/` is a Rust/Axum service (`:8088`) serving a six-step vanilla-JS wizard that
+round-trips `exhibit.toml`. `POST /api/manifest` writes the manifest with `env:` references only;
+raw tokens are diverted to a `chmod 0600` `.secrets.env` and never echoed back. `cargo check`
+clean.
+
+### SOTA Model Modernisation (work-order items 0, 2, 4, 8)
+
+- **Inpainting**: `comfyui_inpainter.py` adds a FLUX.2 path (`flux2_inpaint.json`, 15-node API
+  graph) selected when FLUX.2 weights are present, otherwise falling through unchanged to the
+  proven FLUX.1-Fill path.
+- **3D recovery**: `hunyuan3d_client.py` adds Hunyuan3D-2.1 textured-PBR multiview
+  (`hunyuan3d21_multiview.json`, 16-node graph) with graceful degradation 2.1 → 2.0-mv →
+  single-view, and a SAM3D fallback when multi/single-view both fail.
+- **Defaults**: `config.py` moves the training strategy default to `igs+`, mesh backend to
+  `come`, the inpaint model to `flux2`, and Hunyuan to `2.1`; adds `EndpointsConfig` and
+  `OversightConfig` with `validate()` coverage. Matching is ready for ALIKED + LightGlue via
+  `reconstruct.matcher`.
+
+### Version Pinning (work-order item 7)
+
+`pins.lock.toml` records 12 upstream components (11 git, 1 pip) with repo / kind / ref /
+host-path / clone-site, leaving `resolved_commit` empty rather than fabricating SHAs.
+`scripts/resolve_pins.sh` performs a read-only `git rev-parse HEAD` per component on the host
+and writes `pins.resolved.toml`. Resolution itself is a host-side step.
+
+### What Was Deferred
+
+FR-40 codebase rename (high blast radius, mechanical, scheduled separately); GPU smoke and
+weight staging (host-only); live pin resolution (requires the .48 checkouts); pytest execution
+(no pytest in the build container — the two new suites, `test_model_lifecycle.py` and
+`test_comfyui_control.py`, are AST-clean and run in CI / on the host).
