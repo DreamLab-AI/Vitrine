@@ -8,6 +8,56 @@ inspect results between steps, and decide what to do next.
 Do NOT stop after training. The full pipeline is:
 ingest -> select_frames -> reconstruct -> train -> segment -> extract_objects -> mesh_objects -> assemble_usd -> validate**
 
+## Standing Directives (READ FIRST — apply to every job and every change)
+
+These supersede convenience shortcuts elsewhere in this file.
+
+1. **Prefer LichtFeld Studio native capabilities + its plugins/tools.** Before
+   writing or calling custom Python, check the LichtFeld MCP surface (`AGENTS.md`;
+   bridge at `http://localhost:45677/mcp`) and the installed plugins. USD export,
+   training, pose-opt, densification and scene export are now **native** — use
+   them instead of reimplementing in `src/pipeline`. Fall back to the custom
+   Python path only when a native equivalent is missing or lacks a required
+   feature (e.g. per-object USD hierarchy + `v2g:*` metadata).
+2. **Always run clean SOTA.** Use the newest stable models/tools, never a stale
+   default. SOTA weights are already staged — do NOT re-download. They live on
+   the **host** (`~/comfyui-models-staging`, `~/comfyui-api-data/ComfyUI`); if
+   `/models-staging` in this container is empty, the first task is to get those
+   mounted/copied in (bind mount or set `MODELS_STAGING_DIR`).
+3. **Always version-check before use, then pin.** For every model/tool, verify
+   the current latest (MCP catalog, ComfyUI `/object_info`, HF, upstream repo),
+   update if behind, then pin the exact tag/commit/checkpoint. No HEAD clones,
+   no floating `latest`.
+
+**Mesh backend = CoMe (project pivot, 2026-06-04).** The config default is now
+`come` (~3x faster than MILo at comparable F1). To honour the pivot the image
+MUST be built with `INSTALL_COME=1`, the `come` sidecar MUST be running, and you
+MUST **verify `come_extractor.py`'s CLI flags against the released CoMe repo**
+(they were inferred). Otherwise every run silently degrades to the TSDF fallback.
+
+## SOTA Modernization Mandate (research → implement → validate → pin → report)
+
+You own these upgrades. Work one item at a time on a real test job; gate each
+behind a capability probe so an upgrade never hard-breaks a run. Canonical
+detail + traceability: `research/decisions/work-order-sota-modernisation.md`
+(ADR-012 SOTA tooling + the v3 closure PRD).
+
+| # | Upgrade | Current (file:line) | Target | Notes |
+|---|---------|---------------------|--------|-------|
+| 1 | Inpaint model | `comfyui_inpainter.py:88` flux1-fill-dev | **FLUX.2-dev** | staged `flux2_dev_fp8mixed.safetensors` (+ `flux2-vae`, `mistral_3_small_flux2_fp8`, Turbo LoRAs); add `workflows/flux2_inpaint.json`; probe→fallback FLUX.1-Fill |
+| 2 | Image-to-3D hull | `hunyuan3d_client.py:61,77` Hunyuan3D-2.0 | **Hunyuan3D-2.1** | local `comfy/ldm/hunyuan3dv2_1` + `comfyui-sam3dobjects`; probe→fallback 2.0 |
+| 3 | SAM3D fallback | `sam3d_client.py` orphaned (unimported) | **wire as Hunyuan fallback** | `config.hunyuan3d.fallback_sam3d` already True; node + weights present |
+| 4 | COLMAP features | SIFT + exhaustive matcher | **ALIKED+LightGlue** | prefer the LichtFeld COLMAP plugin if present; SIFT fallback |
+| 5 | USD assembly | subprocess `scripts/assemble_usd_scene.py` | **native LichtFeld USD export** (MCP `scene.export`) | keep custom path only if native lacks per-object hierarchy + `v2g:*` metadata |
+| 6 | Plugins | `splat_ready` referenced (`stages.py`) but not installed | **install + enable** splat_ready, PPISP, bilateral-grid, 3DGUT, pose-opt, ImprovedGS+ | wire native flags in `train` |
+| 7 | Version pins | Dockerfiles clone ComfyUI/Hunyuan/COLMAP/MILo/CoMe/GW/SAM3/gsplat at HEAD | **pin all** to tag/commit | write a lock manifest |
+| 8 | Endpoints | hardcoded `192.168.2.48:8189/:3001` (~11 sites) + in-container :8188 | **single source via config/manifest** | reconcile Salad(:3001) vs local ComfyUI(:8188) |
+
+For each item: (a) RESEARCH the current latest + whether LichtFeld-native/plugin
+already covers it; (b) IMPLEMENT against the staged weights / local ComfyUI,
+behind a capability probe; (c) VALIDATE on a test job against the Quality
+Targets below; (d) PIN the exact version; (e) REPORT via the REST API.
+
 ## Available Tools
 
 - LichtFeld Studio: `/opt/gaussian-toolkit/build/LichtFeld-Studio`
