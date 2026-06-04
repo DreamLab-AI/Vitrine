@@ -93,6 +93,8 @@ data/scratch/
 *.png
 !src/**/assets/**/*.png
 !docs/renders/*.jpg
+!report/figures/**/*.png
+!report/figures/**/*.jpg
 
 # ---------------------------------------------------------------------------
 # Profiling
