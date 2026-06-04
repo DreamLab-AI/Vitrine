@@ -1,0 +1,159 @@
+/* Vitrine Onboarding — DreamLab-flavoured tokens, frameworkless. */
+:root {
+  --bg: #0f1115;
+  --panel: #171a21;
+  --panel-2: #1d212b;
+  --ink: #e7e9ee;
+  --muted: #9aa3b2;
+  --accent: #5b8cff;
+  --accent-ink: #ffffff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --err: #f85149;
+  --border: #2a2f3a;
+  --radius: 10px;
+  --gap: 1rem;
+  font-synthesis: none;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+}
+
+.topbar {
+  padding: 1.5rem 2rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+.topbar h1 { margin: 0; font-size: 1.6rem; letter-spacing: 0.5px; }
+.subtitle { margin: 0.25rem 0 0; color: var(--muted); }
+code { background: var(--panel-2); padding: 0.1em 0.35em; border-radius: 4px; font-size: 0.9em; }
+
+.wizard {
+  max-width: 760px;
+  margin: 1.5rem auto;
+  padding: 0 1rem;
+}
+
+.steps ol {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  list-style: none;
+  padding: 0;
+  margin: 0 0 1.25rem;
+}
+.steps li {
+  flex: 1 1 auto;
+  text-align: center;
+  padding: 0.5rem 0.4rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--muted);
+  font-size: 0.85rem;
+  cursor: pointer;
+  user-select: none;
+}
+.steps li.active { color: var(--accent-ink); background: var(--accent); border-color: var(--accent); }
+.steps li.done { color: var(--ok); border-color: var(--ok); }
+
+.step {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.25rem 1.25rem 1.5rem;
+}
+.step h2 { margin-top: 0; font-size: 1.15rem; }
+
+.field { margin-bottom: var(--gap); display: flex; flex-direction: column; }
+.field.two-col { flex-direction: row; gap: var(--gap); }
+.field.two-col label { flex: 1; display: flex; flex-direction: column; }
+.field.checkbox { flex-direction: row; align-items: center; gap: 0.5rem; }
+.field.checkbox input { width: auto; }
+
+label { font-weight: 600; margin-bottom: 0.3rem; font-size: 0.92rem; }
+.req { color: var(--err); }
+.hint { margin: 0.3rem 0 0; color: var(--muted); font-size: 0.82rem; }
+
+input, textarea, select {
+  background: var(--panel-2);
+  color: var(--ink);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.55rem 0.7rem;
+  font: inherit;
+  width: 100%;
+}
+input:focus, textarea:focus, select:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+input.invalid { border-color: var(--err); }
+
+.object-row {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem;
+  margin-bottom: 1rem;
+  background: var(--panel-2);
+}
+.object-row legend { padding: 0 0.4rem; color: var(--muted); font-size: 0.85rem; }
+.object-row .field label { display: flex; flex-direction: column; }
+
+button {
+  font: inherit;
+  border-radius: 8px;
+  padding: 0.6rem 1.1rem;
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+button.primary:disabled { opacity: 0.6; cursor: progress; }
+button.ghost { background: transparent; color: var(--ink); }
+button.ghost.danger { color: var(--err); border-color: var(--err); }
+button:hover { filter: brightness(1.08); }
+
+.nav-buttons {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 1.25rem;
+}
+
+.warn {
+  background: rgba(210, 153, 34, 0.12);
+  border: 1px solid var(--warn);
+  border-radius: 8px;
+  padding: 0.75rem 0.9rem;
+  color: var(--ink);
+  font-size: 0.9rem;
+}
+
+.review {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+  overflow: auto;
+  max-height: 360px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+  white-space: pre;
+}
+
+.result {
+  margin-top: 1rem;
+  padding: 0.8rem 1rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  font-size: 0.9rem;
+  word-break: break-word;
+}
+.result.pending { color: var(--muted); }
+.result.success { color: var(--ok); border-color: var(--ok); background: rgba(63, 185, 80, 0.1); }
+.result.error { color: var(--err); border-color: var(--err); background: rgba(248, 81, 73, 0.1); }

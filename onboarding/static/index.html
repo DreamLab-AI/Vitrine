@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Vitrine Onboarding</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>Vitrine&nbsp;Onboarding</h1>
+    <p class="subtitle">Author an <code>exhibit.toml</code> manifest for a volumetric-heritage capture run.</p>
+  </header>
+
+  <main class="wizard" aria-live="polite">
+    <nav class="steps" aria-label="Wizard progress">
+      <ol id="step-indicator">
+        <li data-step="1" class="active">Exhibit</li>
+        <li data-step="2">Drive</li>
+        <li data-step="3">Objects</li>
+        <li data-step="4">Secrets</li>
+        <li data-step="5">Pipeline</li>
+        <li data-step="6">Review</li>
+      </ol>
+    </nav>
+
+    <form id="wizard-form" novalidate>
+      <!-- Step 1: exhibit identity -->
+      <section class="step" data-step="1" hidden>
+        <h2>Step 1 — Exhibit identity</h2>
+        <div class="field">
+          <label for="ex-id">Exhibit ID <span class="req">*</span></label>
+          <input id="ex-id" name="ex-id" type="text" required placeholder="tate-2026-bronze" autocomplete="off" />
+          <p class="hint">Stable slug; lowercase, hyphenated.</p>
+        </div>
+        <div class="field">
+          <label for="ex-name">Name <span class="req">*</span></label>
+          <input id="ex-name" name="ex-name" type="text" required placeholder="Bronze Forms — Tate Modern" />
+        </div>
+        <div class="field">
+          <label for="ex-venue">Venue</label>
+          <input id="ex-venue" name="ex-venue" type="text" placeholder="Tate Modern, London" />
+        </div>
+        <div class="field">
+          <label for="ex-date">Date</label>
+          <input id="ex-date" name="ex-date" type="date" />
+        </div>
+        <div class="field">
+          <label for="ex-curator">Curator</label>
+          <input id="ex-curator" name="ex-curator" type="text" placeholder="A. Curator" />
+        </div>
+        <div class="field">
+          <label for="ex-description">Description</label>
+          <textarea id="ex-description" name="ex-description" rows="3"
+            placeholder="Single-room bronze sculpture exhibit, mixed natural/spot lighting."></textarea>
+        </div>
+      </section>
+
+      <!-- Step 2: drive source -->
+      <section class="step" data-step="2" hidden>
+        <h2>Step 2 — Source footage (Google Drive)</h2>
+        <div class="field">
+          <label for="dr-url">Drive folder URL</label>
+          <input id="dr-url" name="dr-url" type="url" placeholder="https://drive.google.com/drive/folders/&lt;id&gt;" />
+        </div>
+        <div class="field">
+          <label for="dr-remote">rclone remote</label>
+          <input id="dr-remote" name="dr-remote" type="text" value="gdrive" />
+          <p class="hint">Reuses the existing rclone_conf secret.</p>
+        </div>
+        <div class="field checkbox">
+          <input id="dr-recursive" name="dr-recursive" type="checkbox" checked />
+          <label for="dr-recursive">Recurse into subfolders</label>
+        </div>
+      </section>
+
+      <!-- Step 3: objects -->
+      <section class="step" data-step="3" hidden>
+        <h2>Step 3 — Objects of interest</h2>
+        <p class="hint">Each object becomes a SAM3 concept with stable identity.
+          <code>priority = "key"</code> triggers the hull-recon + per-object recovery path.</p>
+        <div id="objects-list"></div>
+        <button type="button" id="add-object" class="ghost">+ Add object</button>
+      </section>
+
+      <!-- Step 4: secrets -->
+      <section class="step" data-step="4" hidden>
+        <h2>Step 4 — Secrets</h2>
+        <p class="warn" role="note">
+          The manifest stores only <strong>env-var references</strong> (<code>env:NAME</code>), never raw tokens.
+          If you paste a token below it is sent once to this local server, written to a <code>0600</code>
+          <code>.secrets.env</code> file, and <strong>never returned to the browser</strong>.
+        </p>
+        <div class="field">
+          <label for="se-hf-env">HF token env-var name</label>
+          <input id="se-hf-env" name="se-hf-env" type="text" value="HF_TOKEN" />
+        </div>
+        <div class="field">
+          <label for="se-hf-value">HF token value (optional — server-contained)</label>
+          <input id="se-hf-value" name="se-hf-value" type="password" autocomplete="off"
+            placeholder="hf_… (stays server-side, never echoed)" />
+          <p class="hint">Leave blank if the env-var is already exported on the host.</p>
+        </div>
+        <div class="field">
+          <label for="se-gc-env">Google credentials env-var name</label>
+          <input id="se-gc-env" name="se-gc-env" type="text" value="GOOGLE_APPLICATION_CREDENTIALS" />
+        </div>
+        <div class="field">
+          <label for="se-gc-project">gcloud project</label>
+          <input id="se-gc-project" name="se-gc-project" type="text" placeholder="dreamlab-v2g" />
+        </div>
+      </section>
+
+      <!-- Step 5: pipeline + oversight -->
+      <section class="step" data-step="5" hidden>
+        <h2>Step 5 — Pipeline &amp; oversight</h2>
+        <div class="field">
+          <label for="pi-mesh">Mesh backend</label>
+          <select id="pi-mesh" name="pi-mesh">
+            <option value="auto" selected>auto</option>
+            <option value="tsdf">tsdf</option>
+            <option value="milo">milo</option>
+            <option value="come">come</option>
+            <option value="gaussianwrapping">gaussianwrapping</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="pi-matcher">Matcher</label>
+          <select id="pi-matcher" name="pi-matcher">
+            <option value="aliked_lightglue" selected>aliked_lightglue</option>
+            <option value="exhaustive">exhaustive</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="ov-backend">Oversight backend</label>
+          <select id="ov-backend" name="ov-backend">
+            <option value="claude_code" selected>claude_code</option>
+            <option value="gemma_local">gemma_local</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="ov-vlm">Artifact VLM</label>
+          <select id="ov-vlm" name="ov-vlm">
+            <option value="gemma_local" selected>gemma_local</option>
+            <option value="claude_code">claude_code</option>
+          </select>
+        </div>
+      </section>
+
+      <!-- Step 6: review -->
+      <section class="step" data-step="6" hidden>
+        <h2>Step 6 — Review &amp; generate</h2>
+        <p class="hint">Confirm the summary, then generate the manifest. Pasted token values are not shown.</p>
+        <pre id="review" class="review" aria-label="Manifest summary"></pre>
+        <button type="button" id="generate" class="primary">Generate exhibit.toml</button>
+        <div id="result" class="result" hidden></div>
+      </section>
+
+      <div class="nav-buttons">
+        <button type="button" id="prev" class="ghost" hidden>&larr; Back</button>
+        <button type="button" id="next" class="primary">Next &rarr;</button>
+      </div>
+    </form>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
