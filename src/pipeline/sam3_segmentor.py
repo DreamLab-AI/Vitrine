@@ -56,6 +56,39 @@ except ImportError:
     logger.warning("sam3 package not available; SAM3Segmentor will fall back to SAM2")
 
 
+def _patch_sam3_addmm_dtype() -> None:
+    """Work around facebookresearch/sam3 issue #507 (a SAM 3.1 regression).
+
+    The fused ``addmm_act`` (``sam3/perflib/fused.py``) unconditionally casts its
+    operands to bfloat16 and never restores, cascading a "mat1 and mat2 must have
+    the same dtype (BFloat16 vs Float)" error through the model when the image
+    processor feeds float32 pixels. Wrap it to cast the result back to the input
+    dtype. Idempotent; a no-op if the layout differs (e.g. a pre-3.1 sam3 pin).
+    """
+    try:
+        from sam3.perflib import fused as _fused
+    except Exception:
+        return
+    if getattr(_fused.addmm_act, "_vitrine_dtype_patched", False):
+        return
+    _orig = _fused.addmm_act
+
+    def addmm_act(activation, linear, mat1):
+        out = _orig(activation, linear, mat1)
+        return out.to(mat1.dtype) if out.dtype != mat1.dtype else out
+
+    addmm_act._vitrine_dtype_patched = True
+    _fused.addmm_act = addmm_act
+    # vitdet imports the symbol by name, so patch that binding too.
+    try:
+        from sam3.model import vitdet as _vitdet
+        if hasattr(_vitdet, "addmm_act"):
+            _vitdet.addmm_act = addmm_act
+    except Exception:
+        pass
+    logger.info("Applied SAM3 addmm_act bf16 dtype-regression patch (sam3 #507).")
+
+
 @dataclass(frozen=True, slots=True)
 class ConceptSegmentationResult:
     """Per-concept segmentation output from text-prompted SAM3.
@@ -138,6 +171,7 @@ class SAM3Segmentor:
                     "SAM3 is not installed. Install with: pip install sam3"
                 )
             logger.info("Loading SAM3 image model (facebook/sam3)...")
+            _patch_sam3_addmm_dtype()
             self._sam3_model = build_sam3_image_model(
                 device=self.device,
                 eval_mode=True,
@@ -219,12 +253,9 @@ class SAM3Segmentor:
             processor.confidence_threshold = confidence_threshold
 
         try:
-            # NOTE: SAM3 (the external `sam3` package) hardcodes a bfloat16 cast
-            # internally while the processor feeds float32 pixels — this raises a
-            # dtype mismatch in the model's matmuls. Neither model.float() nor a
-            # bfloat16 autocast cleanly resolves it (autocast moves the error to a
-            # bf16-unsupported op). Tracked as a sam3-package-level fix; until then
-            # stages.segment() degrades to full-scene segmentation.
+            # The fused addmm_act bf16 regression (sam3 #507) is patched at model
+            # load by _patch_sam3_addmm_dtype(); this forward runs in the image's
+            # native (float32) dtype.
             state = processor.set_image(image)
             state = processor.set_text_prompt(concept_text, state)
         finally:
