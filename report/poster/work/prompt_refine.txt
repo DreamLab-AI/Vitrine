@@ -1,9 +1,0 @@
-This image is ONE QUADRANT cropped from a larger printed A0 scientific poster. Upscale and sharpen it to razor-crisp 4K for large-format print.
-
-ABSOLUTE RULES:
-- Preserve EXACTLY every letter, number, word, icon, chart, colour and pixel position. Do NOT add, remove, reword, translate, re-layout, or invent anything.
-- Keep all four cropped edges precisely as they are — content that is cut off at an edge must stay cut off in the same place, so this quadrant tiles seamlessly with its neighbours. Do not add borders, margins, frames, or background padding.
-- Only increase fidelity: cleaner anti-aliased text, smoother flat-vector icons, sharper photographic regions, crisper edges. Same composition, same crop, same aspect ratio.
-- Keep the white background pure white and the University of Salford crimson red, dark teal and navy accents exactly as shown.
-
-Output the refined quadrant only.

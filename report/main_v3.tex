@@ -1,6 +1,6 @@
-% main_v3.tex — Vitrine v3 Architecture & Validation Report
-% Renamed from "Video-to-Gaussian" (ADR-015). Self-contained: no biber/glossaries/index,
-% so it compiles cleanly with `latexmk -pdf main_v3` or two `pdflatex` passes.
+% main.tex — Vitrine: v3 Architecture & Implementation-Status Report
+% Self-contained: no biber/glossaries/index, so it compiles cleanly with
+% `latexmk -pdf main` or two `pdflatex` passes.
 %
 % Dr John O'Hare, DreamLab AI Consulting Ltd — June 2026
 
@@ -45,7 +45,7 @@
 \usepackage[colorlinks=true,linkcolor=UoSRed,citecolor=DreamLabAccent,urlcolor=DreamLabAccent,
   bookmarks=true,bookmarksnumbered=true,
   pdfauthor={Dr John O'Hare},
-  pdftitle={Vitrine: v3 End-to-End Architecture and Validation Report},
+  pdftitle={Vitrine: v3 Architecture and Implementation-Status Report},
   pdfsubject={Agentic volumetric capture, 3D Gaussian Splatting, USD, Cultural Heritage}]{hyperref}
 \usepackage{bookmark}
 
@@ -89,8 +89,12 @@
 \newcommand{\chip}[2]{\textcolor{#1}{\textbf{#2}}}
 \newcommand{\code}[1]{\texttt{#1}}
 \newcommand{\pass}{\textcolor{SuccessGreen}{\textbf{GREEN}}}
+\newcommand{\amber}{\textcolor{WarningAmber}{\textbf{AMBER}}}
+\newcommand{\built}{\chip{SuccessGreen}{built}}
+\newcommand{\wip}{\chip{WarningAmber}{in progress}}
+\newcommand{\designed}{\chip{MidGrey}{designed}}
 
-\title{Vitrine: v3 End-to-End Architecture and Validation Report}
+\title{Vitrine: v3 Architecture and Implementation-Status Report}
 \author{Dr John O'Hare \\ DreamLab AI Consulting Ltd}
 \date{June 2026}
 
@@ -111,12 +115,12 @@
   \fill[DreamLabAccent] ($(current page.west) + (0,1.9)$) rectangle ($(current page.east) + (0,1.94)$);
   \node[anchor=north west, text=UoSRed, font=\footnotesize\sffamily\bfseries, text width=13cm]
     at ($(current page.north west) + (3,-2)$)
-    {ARCHITECTURE \& VALIDATION REPORT \textcolor{MidGrey}{|} v3 END-TO-END DELIVERY};
+    {ARCHITECTURE \& IMPLEMENTATION-STATUS REPORT \textcolor{MidGrey}{|} v3 END-TO-END};
   \node[anchor=west, text=white, font=\fontsize{40}{44}\selectfont\bfseries\sffamily, text width=15cm]
     at ($(current page.west) + (3,5.6)$) {Vitrine};
   \node[anchor=west, text=white, font=\fontsize{15}{19}\selectfont\sffamily, text width=14cm]
     at ($(current page.west) + (3,2.9)$)
-    {An Agentic Pipeline for Volumetric\\ Cultural-Heritage Preservation\\ \textcolor{MidGrey}{\small(formerly ``Video-to-Gaussian'', renamed per ADR-015)}};
+    {An Agentic Pipeline for Volumetric\\ Cultural-Heritage Preservation};
   \node[anchor=west, text=MidGrey, font=\normalsize\sffamily, text width=13cm]
     at ($(current page.west) + (3,-0.2)$)
     {\code{exhibit.toml} manifest \textbullet\ serial model lifecycle \textbullet\ \code{v2g-net}\\
@@ -129,7 +133,7 @@
     at ($(current page.west) + (3,-5.4)$) {June 2026};
   \node[anchor=south east, text=MidGrey, font=\tiny\sffamily]
     at ($(current page.south east) + (-3,1)$)
-    {v3.0 \textcolor{MidGrey}{|} IMPLEMENTED \& VALIDATED \textcolor{MidGrey}{|} SUPERSEDES v2.0};
+    {v3.0 \textcolor{MidGrey}{|} ARCHITECTURE \& IMPLEMENTATION STATUS};
 \end{tikzpicture}
 \end{titlepage}
 
@@ -140,38 +144,43 @@
 \addcontentsline{toc}{chapter}{Executive Summary}
 \markboth{Executive Summary}{Executive Summary}
 
-This report documents the \textbf{delivered v3 system}, now named \textbf{Vitrine}: an agentic pipeline
-that turns a single hand-held walkthrough video of a museum or heritage exhibit into a structured,
-object-resolved 3D scene. One run produces a photoreal Gaussian-splat field, a textured polygonal
-environment, per-object reconstructed hulls placed at their measured pose, and a single
-richly-annotated Universal Scene Description (USD) scene graph carrying full source-video provenance.
+This report documents the \textbf{v3 architecture and its implementation status} for \textbf{Vitrine}:
+an agentic pipeline that turns a hand-held walkthrough video of a museum or heritage exhibit into a
+structured, object-resolved 3D scene — a photoreal Gaussian-splat field, a textured polygonal
+environment, per-object reconstructed hulls placed at their measured pose, and a single richly-annotated
+Universal Scene Description (USD) scene graph carrying source-video provenance.
 
-v3 closes the gap between a working reconstruction core and the workflow an operator actually runs.
-The heavy science (COLMAP / 3D Gaussian Splatting / SAM3 segmentation / Hunyuan3D-2.1 hull recovery /
-USD assembly) already worked at v2; v3 adds the \emph{shape} of the workflow and the operational
-scaffolding to run it reproducibly, and that scaffolding is now built: a single human-authored
-\code{exhibit.toml} manifest with secret indirection; a VRAM-bounded serial model lifecycle; a Docker
-service mesh (\code{v2g-net}); an agent-controlled generative-recovery loop on the existing ComfyUI
-host; and a web onboarding tool that lets a non-technical curator author the manifest, select models
-by hardware, log in by browser, provision the run, and write results back to Google Drive. The work is
-specified across seven decision records (ADR-009 through ADR-015), forty functional requirements
-(PRD-v3), and an additive domain model, and is realised in the shipping code.
+The reconstruction core (COLMAP, 3D Gaussian Splatting, SAM3 segmentation, image-to-3D hull recovery,
+USD assembly) is production-working. The v3 layer adds the \emph{shape} of the workflow and the
+operational scaffolding that lets an operator run it reproducibly. That scaffolding is specified across
+seven decision records (ADR-009 through
+ADR-015), forty functional requirements (PRD-v3), and an additive domain model, and \textbf{its core is
+now built and host-validated}: a single human-authored \code{exhibit.toml} manifest with \code{env:}
+secret indirection and pre-snapshot stripping; a VRAM-bounded serial model lifecycle; a Docker service
+mesh (\code{v2g-net}) with service-DNS endpoints; an agent-controlled ComfyUI client; a state-of-the-art
+model registry with a host ``idiot-check'' wired into preflight; native LichtFeld USD export; and a
+Rust/Axum web onboarding tool whose secret-containment is verified end-to-end. The full SOTA model set
+(FLUX.2-dev, gemma-4-26B-A4B, TRELLIS.2, Hunyuan3D-2.1, SAM3D) is staged and verified on the reference
+host. \textbf{In progress}, and reported as such: the fully-agentic generative-recovery loop, the local
+gemma VLM serving, the hull custom-node builds, automated acceptance-gate coverage with a golden test
+fixture, and end-to-end validation on real capture data.
 
-The report has two parts. \textbf{Part~I} presents the v3 architecture as built: the manifest,
-lifecycle and mesh foundations (ADR-013), the agent-controlled ComfyUI recovery loop (ADR-014), and
-the Vitrine Onboarding web tool (ADR-015), with the rename behind them. A recurring theme is the clean
-separation between the \emph{in-container Claude Code orchestrator} (which decides what to run) and the
-\emph{unified multimodal gemma-4 agent} (a vision-and-reasoning \emph{tool} it calls): there is no
-hidden state machine.
+The report has two parts. \textbf{Part~I} presents the v3 architecture and what is built of it: the
+manifest, lifecycle and service-mesh foundations (ADR-013), the agent-controlled ComfyUI recovery
+design (ADR-014), and the Vitrine Onboarding web tool (ADR-015). A
+recurring theme is the clean separation between the \emph{in-container Claude Code orchestrator} (which
+decides what to run) and the \emph{unified multimodal gemma-4 agent} (a vision-and-reasoning \emph{tool}
+it calls): there is no hidden state machine.
 
-\textbf{Part~II} reports an independent four-agent \textbf{quality-engineering fleet validation} of the
-delivered system. The verdict is \pass{}: all forty functional requirements are implemented, the
-twenty-seven acceptance gates execute and pass, and the prior plaintext-secrets regression
-(FINDING-006) is closed in the running code by the manifest loader's \code{env:} indirection and
-pre-snapshot secret stripping. Measured reconstruction quality holds at PSNR~29.6~dB, SSIM~0.921,
-LPIPS~0.108 on a 1.18M-Gaussian field rendering at 160~FPS, with 98.3\% scene coverage and 31 object
-prims emplaced from a 37-object survey. The report closes with delivered outcomes and the next-phase
-roadmap (multi-room scaling and WebXR delivery).
+\textbf{Part~II} reports an \textbf{implementation-status review} against the plan (ADR-009--015, PRD-v3,
+the DDD extension) and the code. The architecture is coherent (clean ADR DAG, additive domain model);
+the core operational infrastructure is built and unit-tested (the \code{model\_lifecycle} and
+\code{comfyui\_control} suites pass 31/31; the manifest loader and idiot-check are host-validated); and
+the prior plaintext-secrets regression (FINDING-006) is \emph{closed in the running code} by the
+manifest loader's \code{env:} indirection and \code{PipelineConfig.save()} secret stripping. Automated
+acceptance-gate coverage and full end-to-end validation on real data remain to be built. Reconstruction
+quality figures quoted are the v2 measured baseline; per-object emplacement metrics are design targets,
+not yet measured at scale. The report closes with the honest status and the path to completion.
 
 \tableofcontents
 
@@ -182,15 +191,13 @@ roadmap (multi-room scaling and WebXR delivery).
 \part{Vitrine v3 Architecture}
 
 % ====================================================================
-\chapter{From Video-to-Gaussian to Vitrine}
+\chapter{The Vitrine Pipeline}
 
-\section{Why the rename}
-``Video-to-Gaussian'' described a mechanism, not a product. ADR-015 (D-015.1) renames the project to
-\textbf{Vitrine}. A \emph{vitrine} is a museum display case (the word is shared across English, French
-and German). The name pairs naturally with the upstream reconstruction engine, \textbf{LichtFeld
-Studio}, and names the product rather than the transform: agentic volumetric capture that turns a
-handheld walkthrough of an exhibit into a structured, object-resolved 3D scene. The CLI and package
-identifier is \code{vitrine}; the web setup tool is \textbf{Vitrine Onboarding}.
+\section{One walkthrough, one structured scene}
+\textbf{Vitrine} is agentic volumetric capture: a hand-held walkthrough of an exhibit becomes a
+structured, object-resolved 3D scene. A \emph{vitrine} is a museum display case, and the system pairs
+with the LichtFeld Studio reconstruction engine. The CLI and package identifier is \code{vitrine}; the
+web setup tool is \textbf{Vitrine Onboarding}.
 
 \begin{figure}[ht]
 \centering
@@ -206,20 +213,22 @@ identifier is \code{vitrine}; the web setup tool is \textbf{Vitrine Onboarding}.
 field, then an object-resolved USD scene. Frames are genuine pipeline output.}\label{fig:hero}
 \end{figure}
 
-\section{Four shape gaps, now closed}
+\section{Four shape gaps}
 The v3 closure is organised around four ``shape gaps'' from the gap analysis, decomposed into fourteen
-deltas (D1--D14) and a set of tooling gaps (T1--T8). All four are closed in the shipping code:
+deltas (D1--D14) and a set of tooling gaps (T1--T8). Their current status:
 
 \begin{enumerate}
-  \item \textbf{Granularity:} ingestion is now per-video \emph{looped}, with a per-video unit of work,
-  deletion and resume, replacing the old per-session pool. (D1, D2)
-  \item \textbf{Provenance:} every image carries metadata, and the
-  image\,$\rightarrow$\,source-video\,$\rightarrow$\,object lineage chain is written through to USD.
-  (D3, D14)
-  \item \textbf{Selection \& recovery:} SAM3 detections are ranked for key items; the local FLUX.2
-  inpainter is wired into the hull-recovery loop; per-object pose is computed and persisted. (D6--D11)
-  \item \textbf{Annotation:} USD nodes carry full \code{v2g:*} metadata, and the environment is a
-  textured mesh rather than a bare dome light. (D4, D5, D12, D13)
+  \item \textbf{Granularity:} per-image metadata sidecars are written and key-item ranking with the
+  (previously dead) \code{min\_object\_gaussians} threshold is enforced; the per-video ingest \emph{loop}
+  and resume sit on the existing \code{drive\_ingestor} and are being wired in. (D1, D2, D3, D7) \built/\,\wip
+  \item \textbf{Provenance:} the sidecar is the lineage root; the
+  image\,$\rightarrow$\,source-video\,$\rightarrow$\,object chain is designed through to USD, with
+  population pending the native-USD \code{customData} probe. (D3, D14) \wip
+  \item \textbf{Selection \& recovery:} key-item ranking and per-object pose computation are in code;
+  wiring the FLUX.2 recovery loop into the per-object hull path is the active integration. (D6--D11)
+  \built/\,\wip
+  \item \textbf{Annotation:} native USD export is wired and the \code{v2g:*} schema and textured
+  environment mesh are designed; populating them is the next USD step. (D4, D5, D12, D13) \designed
 \end{enumerate}
 
 \section{Decision-record set}
@@ -227,24 +236,26 @@ Seven ADRs and one DDD extension realise the forty functional requirements of PR
 close the original four shape gaps; ADR-012 modernises the tooling (MILo mesh, ALIKED+LightGlue
 matching, Hunyuan3D-2.1, FLUX.2-dev inpainting, version pins); and the three records that are the
 subject of this report (ADR-013, ADR-014, ADR-015) supply the operational architecture. Table~%
-\ref{tab:adrset} summarises the set, all now realised in code.
+\ref{tab:adrset} summarises the set with honest per-record status.
 
 \begin{table}[h]
 \centering\small
-\caption{The v3 decision-record set (status: delivered).}\label{tab:adrset}
-\begin{tabularx}{\textwidth}{l L{0.64\textwidth} c}
+\caption{The v3 decision-record set and implementation status.}\label{tab:adrset}
+\begin{tabularx}{\textwidth}{l L{0.58\textwidth} c}
 \toprule
 \textbf{Record} & \textbf{Decides} & \textbf{Status} \\
 \midrule
-ADR-009 & Per-video ingest unit; per-image metadata sidecar; delete-on-verified-extraction. & \chip{SuccessGreen}{shipped} \\
-ADR-010 & Key-item ranking; FLUX-inpainted hull recovery; per-object pose persistence. & \chip{SuccessGreen}{shipped} \\
-ADR-011 & USD \code{v2g:*} metadata schema; textured environment mesh; lineage into USD. & \chip{SuccessGreen}{shipped} \\
-ADR-012 & SOTA tooling: MILo, ALIKED+LightGlue, Hunyuan3D-2.1, FLUX.2-dev, version pins. & \chip{SuccessGreen}{shipped} \\
-ADR-013 & \code{exhibit.toml} manifest; serial model lifecycle; \code{v2g-net}; unified gemma-4 agent. & \chip{SuccessGreen}{shipped} \\
-ADR-014 & Agent-controlled ComfyUI on the .48 host: update/pin, connect, VLM-in-the-loop recovery. & \chip{SuccessGreen}{shipped} \\
-ADR-015 & Vitrine rename; schema-driven web onboarding; hardware-aware selection; Drive write-back. & \chip{SuccessGreen}{shipped} \\
+ADR-009 & Per-video ingest unit; per-image metadata sidecar; delete-on-verified-extraction. & \wip{} \\
+ADR-010 & Key-item ranking; FLUX-inpainted hull recovery; per-object pose persistence. & \wip{} \\
+ADR-011 & USD \code{v2g:*} metadata schema; textured environment mesh; lineage into USD. & \designed{} \\
+ADR-012 & SOTA tooling: CoMe mesh, ALIKED+LightGlue, Hunyuan3D-2.1, FLUX.2-dev, version pins. & \wip{} \\
+ADR-013 & \code{exhibit.toml} manifest; serial model lifecycle; \code{v2g-net}; unified gemma-4 agent. & \built{} \\
+ADR-014 & Agent-controlled ComfyUI: update/pin, connect, VLM-in-the-loop recovery. & \wip{} \\
+ADR-015 & Schema-driven web onboarding; hardware-aware model selection; Drive write-back. & \built{} \\
 \bottomrule
 \end{tabularx}
+\centering\par\smallskip
+{\footnotesize\textcolor{MidGrey}{\built{} = built \& host-validated \quad \wip{} = core built, integration in progress \quad \designed{} = specified, build pending}}
 \end{table}
 
 % ====================================================================
@@ -292,10 +303,9 @@ A distinct VLM (Qwen2.5-VL / InternVL3) is retained only as an optional fallback
 probe.
 
 \begin{technote}
-An earlier draft assumed gemma-4 was text-only and mandated a separate Qwen2.5-VL. Inspecting the model
-\code{config.json} corrected that assumption; the unified-agent decision (D-013.5) follows. The
-planning corpus was reconciled to match the shipped code, and the QE validation (Part~II) confirms no
-residual drift.
+gemma-4's architecture (\code{Gemma4ForConditionalGeneration}) ships a SigLIP vision tower and an
+\code{mmproj} projector, so one model serves both the artifact-detection and reasoning roles. This is
+why a single \code{agent-vlm} covers what would otherwise require two models (D-013.5).
 \end{technote}
 
 The \code{[oversight].backend} is selectable. The default is \code{claude\_code}: the operator logs
@@ -312,11 +322,10 @@ FLUX.2\,$\leftrightarrow$\,Hunyuan3D transition. Peak VRAM is therefore bounded 
 single stage} rather than the sum of all models, which is what lets the system run the most-performant
 model per stage on a single GPU.
 
-\section{\texttt{v2g-net}: from hardcoded IPs to service DNS}
-The v2 code hardcoded \code{192.168.2.48} endpoints for ComfyUI and Hunyuan3D. ADR-013 replaces these
-with service-DNS names on a Docker mesh, \code{v2g-net}: \code{comfyui:8188} (graph API),
-\code{comfyui:3001} (the Salad control API), and \code{agent-vlm} for the unified model. The literal-IP
-form survives only as a manifest override for the pre-mesh single-host case. The lifecycle manager owns
+\section{\texttt{v2g-net}: service-DNS endpoints}
+Service endpoints resolve by DNS name on a Docker bridge, \code{v2g-net}: \code{comfyui:8188} (graph
+API), \code{comfyui:3001} (the Salad control API), and \code{agent-vlm} for the unified model. A
+literal-IP form is available as a manifest override for the single-host case. The lifecycle manager owns
 container start/stop on this network.
 
 \begin{figure}[h]
@@ -347,7 +356,7 @@ to ComfyUI, and drives model lifecycle through the in-container Salad control AP
 
 \section{Existing ComfyUI, made agentic}
 The generative models (FLUX.2-dev for inpainting, Hunyuan3D-2.1 for hulls) live on the existing
-\textbf{.48 GPU workstation}'s ComfyUI instance. ADR-014 does three things to it, and nothing more:
+\textbf{GPU workstation}'s ComfyUI instance. ADR-014 does three things to it, and nothing more:
 \emph{updates and pins} it to a known-good state, \emph{connects} it over \code{v2g-net}, and makes it
 \emph{agent-controlled}.
 
@@ -363,9 +372,9 @@ control API at \code{:3001} for model lifecycle (driving the hard-tier load/free
 lifecycle).
 
 \section{Verify-or-retry loop}
-The v2 one-shot \code{inpaint()} call (submit a graph, return the first result, never check it) was the
-exact failure mode that let a bad occluded-face recovery silently pass. ADR-014 promotes it into a
-\code{RecoveryController} the orchestrator invokes per recovery target:
+A one-shot \code{inpaint()} call (submit a graph, return the first result, never check it) lets a bad
+occluded-face recovery pass silently. The \code{RecoveryController} the orchestrator invokes per
+recovery target closes that hole:
 
 \begin{enumerate}
   \item \textbf{Plan:} the orchestrator composes the FLUX.2 inpaint or Hunyuan3D graph from a template,
@@ -441,7 +450,7 @@ CLI and the agent all speak one file.
   \item[Hardware-aware model selection.] A \code{/api/hardware} endpoint probes GPUs (count, per-GPU
   VRAM via \code{nvidia-smi}), RAM and disk, and \emph{recommends} the most-performant model and quant
   that fits per stage: e.g.\ on a 48~GB A6000, FLUX.2-dev fp8mixed + Hunyuan3D-2.1 + gemma-4
-  Q5\_K\_M; on 24~GB, smaller quants and hard-unload everywhere. The user may override; an over-budget
+  Q8\_0; on 24~GB, smaller quants and hard-unload everywhere. The user may override; an over-budget
   override is flagged, not silently accepted.
   \item[Browser login \& secret containment.] The HF token is pasted, posted to the backend, and
   stored as a host-keyring / Docker-secret entry; the manifest holds only \code{hf\_token =
@@ -477,109 +486,108 @@ judgement to the agent, consistent with the ``no hidden state machine'' architec
 % ====================================================================
 \part{Validation and Quality Engineering}
 
-\chapter{QE Fleet Validation}
+\chapter{Implementation-Status Review}
 
 \section{Method}
-A fleet of four parallel specialist agents validated the delivered system against the whole plan
-(ADR-009--015, PRD-v3, the DDD extension) and the shipping implementation (\code{src/pipeline/*}), each
-producing a standalone report: \textbf{plan coherence}, \textbf{implementation coverage}, \textbf{gate
-testability}, and \textbf{security}. This chapter synthesises their findings; the source reports live
-under \code{research/qe/}.
+This chapter assesses the plan (ADR-009--015, PRD-v3, the DDD extension) against the shipping
+implementation (\code{src/pipeline/*}, \code{onboarding/}) across four lenses: \textbf{plan coherence},
+\textbf{implementation coverage}, \textbf{gate testability}, and \textbf{security}. The detailed source
+analyses live under \code{research/qe/}; this synthesis reflects the state at the time of writing and is
+deliberately conservative — it reports what is built and tested, not what is planned.
 
-\section{Verdict}
+\section{Status by lens}
 \begin{table}[h]
 \centering\small
-\caption{QE fleet verdicts by lens (delivered system).}\label{tab:qe}
-\begin{tabularx}{\textwidth}{L{0.28\textwidth} l L{0.42\textwidth}}
+\caption{Implementation status by lens.}\label{tab:qe}
+\begin{tabularx}{\textwidth}{L{0.27\textwidth} l L{0.43\textwidth}}
 \toprule
-\textbf{Lens} & \textbf{Verdict} & \textbf{Headline} \\
+\textbf{Lens} & \textbf{Status} & \textbf{Headline} \\
 \midrule
-Plan coherence & \pass{} & Traceability spine intact; clean ADR DAG; docs reconciled to code. \\
-Implementation coverage & \pass{} & 40 FRs $\rightarrow$ 40 implemented; no orphan requirements. \\
-Gate testability & \pass{} & 27 / 27 gates execute; 20 / 20 blocking gates pass. \\
-Security & \pass{} & FINDING-006 closed in code; secret indirection + stripping verified. \\
+Plan coherence & \pass{} & Clean ADR DAG; additive DDD extension; corpus reconciled to code. \\
+Implementation coverage & \amber{} & Core infrastructure built; ingest/recovery/USD-annotation integration in progress. \\
+Gate testability & \amber{} & Unit suites pass (31/31); the 27 acceptance gates + golden fixture are not yet automated. \\
+Security & \pass{} & FINDING-006 closed in code: \code{env:} indirection + secret stripping verified. \\
 \midrule
-\textbf{Overall} & \pass{} & Delivered and validated; conforms to the v3 design. \\
+\textbf{Overall} & \amber{} & Architecture delivered and core operational layer built; e2e validation pending. \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
-\begin{figure}[ht]
-\centering
-\includegraphics[width=0.9\textwidth]{qe_validation_dashboard.png}
-\caption{v3 QE validation dashboard: all forty functional requirements implemented, all twenty-seven
-acceptance gates green, and the FINDING-006 secrets regression closed in the running code.}\label{fig:qe}
-\end{figure}
+The architecture itself is sound: the ADR dependency graph is an acyclic DAG, the DDD extension is
+purely additive (no existing aggregate is mutated), and the setup/agent hand-off boundary is clean. The
+\amber{} on coverage and gate testability is honest, not adverse: the load-bearing infrastructure
+(manifest, lifecycle, endpoints, idiot-check, onboarding) is built and unit-tested; what remains is
+wiring the per-object recovery loop and standing up the automated gate harness.
 
-The overall \pass{} reflects a delivered milestone: the ADR dependency graph is an acyclic DAG, the DDD
-extension is purely additive (no existing aggregate is mutated), the setup/agent hand-off is clean, and
-the serial-lifecycle\,$\leftrightarrow$\,hardware-aware-selection coupling holds under test.
-
-\section{Coverage: forty requirements, all implemented}
-The implementation-coverage audit classified all forty functional requirements as implemented and
-exercised. The five requirements that were the highest-risk wiring points at v2 are now closed, each
-verified against the golden test scene (Table~\ref{tab:topgaps}).
+\section{Coverage: what is built versus pending}
+The five requirements that were the highest-risk wiring points at v2 are the clearest progress markers
+(Table~\ref{tab:topgaps}): three are done in code, two are mid-integration.
 
 \begin{table}[h]
 \centering\small
-\caption{The five highest-risk requirements, now closed and verified.}\label{tab:topgaps}
-\begin{tabularx}{\textwidth}{l L{0.44\textwidth} L{0.30\textwidth}}
+\caption{The five highest-risk v2 requirements and their current state.}\label{tab:topgaps}
+\begin{tabularx}{\textwidth}{l L{0.40\textwidth} L{0.34\textwidth}}
 \toprule
 \textbf{FR} & \textbf{Was the risk} & \textbf{Now} \\
 \midrule
-FR-3  & \code{FrameQuality} computed but never written to disk. & Sidecar written; USD lineage chain closed. \\
-FR-9  & \code{min\_object\_gaussians} defined but never enforced. & Enforced; gates G6/G7 pass. \\
-FR-20 & Default mesh was \code{tsdf}; plan requires \code{milo}. & Default is \code{milo}; every run on-spec. \\
-FR-11 & FLUX inpainter not called from the hull loop. & Wired through \code{RecoveryController}; gate G8 passes. \\
-FR-12 & Per-object pose computed then discarded. & Persisted; hulls land at measured pose; gate G10 passes. \\
+FR-3  & \code{FrameQuality} computed but never written to disk. & \built{} sidecar written at frame selection. \\
+FR-9  & \code{min\_object\_gaussians} defined but never enforced. & \built{} enforced + keyness ranking. \\
+FR-20 & Default mesh weakest baseline (\code{tsdf}). & \built{} default flipped to \code{come} (the project mesh pivot). \\
+FR-11 & FLUX inpainter not called from the hull loop. & \wip{} client wired; per-object loop integration. \\
+FR-12 & Per-object pose computed then discarded. & \wip{} pose computed; USD persistence with native export. \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
-\section{The verification spine}
-All 27 PRD quality gates execute against a curated \textbf{golden test scene}: a 45-second walkthrough
-video plus a ground-truth object manifest and artifact annotations, stored in Git LFS. The two
-formerly-unverifiable gates (key-item precision and VLM artifact precision, both at $\geq 90\%$
-thresholds) are exercised against this fixture, which also calibrates the \code{min\_object\_gaussians}
-threshold. Of the 27 gates, 13 run as unit/integration tests, 3 run against the fixture, 8 run against
-live infrastructure (Docker mesh, GPU host, Drive), and the formerly under-specified gate is now
-pinned to a concrete criterion. Current executing coverage is \textbf{27\,/\,27}.
+\section{The verification spine (to be built)}
+PRD-v3 \S6 defines 27 acceptance gates. At present the \emph{unit} surfaces are green — the
+\code{model\_lifecycle} and \code{comfyui\_control} suites pass 31/31, and the manifest loader,
+preflight and SOTA idiot-check are exercised on the reference host. The full acceptance harness is
+\emph{not} yet built: it requires a curated \textbf{golden test scene} (a short walkthrough plus a
+ground-truth object manifest and artifact annotations) which does not yet exist, and which is the
+prerequisite for the two precision gates (key-item and VLM-artifact, both $\geq 90\%$) and for
+calibrating the \code{min\_object\_gaussians} threshold. Authoring that fixture and automating the gates
+against it is the single highest-leverage validation task remaining.
 
 \begin{keyfinding}
-The highest-leverage component identified during build, \code{manifest.py} with \code{env:} indirection
-and pre-snapshot secret stripping, unblocked twelve requirements \emph{and} closed the FINDING-006
-security regression at its source. Building it first compressed the critical path for the whole gate
-framework.
+The highest-leverage component, \code{manifest.py} with \code{env:} indirection and pre-snapshot secret
+stripping, was built first: it materialises the run config from one human-authored file \emph{and}
+closes the FINDING-006 security regression at its source. The SOTA idiot-check
+(\code{sota\_registry.py}, wired into preflight) is the second: it fails a run fast when a model is
+mis-staged, mis-licensed for the posture, or too large for the GPU.
 \end{keyfinding}
 
-\section{Security: design and code now agree}
-The prior audit's FINDING-006 (secrets exposed as plaintext environment variables) is closed in both
-the design and the running code. \code{HF\_TOKEN} and the Google service-account credential are
-resolved through \code{env:} indirection and never serialised into the JSON run snapshot;
-\code{PipelineConfig.save()} strips resolved secrets before write. The onboarding tool adds OAuth PKCE
-with a CSRF \code{state} parameter and an explicit URL allowlist on the server-side proxy. The Drive
-service-account Docker-secret mount remains correct. No plaintext credential is present in the
-container environment, the manifest, or git.
+\section{Security: design and code now agree on the critical finding}
+The prior audit's FINDING-006 (secrets exposed as plaintext environment variables) is closed in the
+running code. \code{HF\_TOKEN} and the Google service-account credential are resolved through
+\code{env:} indirection and never serialised into the JSON run snapshot; \code{PipelineConfig.save()}
+strips secret-named fields before write (verified). The onboarding tool contains a pasted token in a
+\code{0600} \code{.secrets.env} and never echoes it, emitting only \code{env:} references into the
+manifest (verified end-to-end). Remaining hardening, specified but not yet implemented: browser OAuth
+with PKCE + CSRF \code{state} and a URL allowlist on the server-side proxy for the Google Drive grant.
+The Drive service-account Docker-secret mount is already correct.
 
 \chapter{Delivered Outcomes and Roadmap}
 
-\section{Measured outcomes}
-Vitrine v3 holds the v2 reconstruction quality while adding the object-resolved workflow on top
-(Table~\ref{tab:outcomes}). Figure~\ref{fig:scenegraph} shows the delivered USD scene graph.
+\section{Outcomes and status}
+The reconstruction core holds its measured quality; the v3 layer adds the object-resolved workflow and
+the SOTA stack on top (Table~\ref{tab:outcomes}). Per-object emplacement figures are design targets
+pending end-to-end measurement on real capture data. Figure~\ref{fig:scenegraph} illustrates the target
+USD scene graph.
 
 \begin{table}[h]
 \centering\small
-\caption{Delivered v3 outcomes on the reference exhibit.}\label{tab:outcomes}
-\begin{tabularx}{\textwidth}{L{0.26\textwidth} L{0.34\textwidth} X}
+\caption{Reconstruction baseline (measured) and v3 stack (staged / verified).}\label{tab:outcomes}
+\begin{tabularx}{\textwidth}{L{0.26\textwidth} L{0.36\textwidth} X}
 \toprule
-\textbf{Metric} & \textbf{Value} & \textbf{Note} \\
+\textbf{Item} & \textbf{Value} & \textbf{Status} \\
 \midrule
-Radiance-field quality & PSNR 29.6 dB / SSIM 0.921 / LPIPS 0.108 & held-out views \\
-Gaussian field & 1.18M gaussians @ 160 FPS & 24-minute training \\
-Scene coverage & 98.3\% & SAM3 vs held-out survey \\
-Objects emplaced & 31 of 37 surveyed & key objects hull-recovered \\
-Default mesh backend & MILo (Chamfer 2.6 mm) & TSDF / CoMe / GaussianWrap available \\
-Deliverable & 18 MB ksplat + USD scene & written back to source Drive \\
+Radiance-field quality & PSNR $\approx$ 27--28 dB (indoor) & measured baseline \\
+Default mesh backend & CoMe; MILo / TSDF / GaussianWrap fallbacks & config default; CoMe non-commercial \\
+Inpaint / recovery & FLUX.2-dev fp8 & weights staged + verified \\
+Local VLM & gemma-4-26B-A4B Q8\_0 & staged; serving pending \\
+Hull generation & TRELLIS.2 / Hunyuan3D-2.1 & staged; ComfyUI node builds pending \\
+Deliverable & USD scene + ksplat & native USD export wired; \code{v2g:*} metadata pending \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -587,19 +595,20 @@ Deliverable & 18 MB ksplat + USD scene & written back to source Drive \\
 \begin{figure}[ht]
 \centering
 \includegraphics[width=0.62\textwidth]{usd_scenegraph.png}
-\caption{The delivered USD scene graph: \code{/World} resolves into an environment Gaussian field and
+\caption{Target USD scene graph (illustrative): \code{/World} resolves into an environment Gaussian field and
 an \code{Objects} subtree, each prim a variant set \{Gaussian\,$|$\,Mesh\} carrying \code{v2g:*}
 provenance back to the source video.}\label{fig:scenegraph}
 \end{figure}
 
-\section{What the validation confirms}
-The fleet confirms the architecture is delivered and conformant: forty requirements implemented,
-twenty-seven gates green, the one prior security regression closed in code, and the planning corpus
-reconciled to the shipping system. The project has moved from the strongest paper design in its history
-to a validated, reproducible spine.
+\section{What the review confirms}
+The architecture is coherent and the operational core is built: the manifest, lifecycle, endpoints,
+idiot-check, onboarding and native-USD layers are implemented and unit-tested; the SOTA model set is
+staged and verified; and the prior security regression is closed in code. The remaining work is
+integration and validation, not redesign — wiring the per-object recovery loop, standing up the gate
+harness against a golden fixture, and running end-to-end on real capture data.
 
 \section{Next-phase roadmap}
-Three workstreams follow delivery: (1) multi-room collections, generalising the single-exhibit manifest
+Three workstreams follow the integration above: (1) multi-room collections, generalising the single-exhibit manifest
 to a venue-level set of linked \code{exhibit.toml} files; (2) WebXR delivery of the ksplat + USD scene
 for in-gallery and remote viewing; and (3) a curated public capture programme across the University's
 heritage and teaching collections. Each reuses the v3 spine without changing the core contracts.
@@ -610,18 +619,19 @@ heritage and teaching collections. Each reuses the v3 spine without changing the
 \addcontentsline{toc}{part}{Appendices}
 
 \chapter{Requirement Coverage Snapshot}
-The implementation-coverage audit classified all forty functional requirements as
-\textbf{implemented}. Coverage by theme: ingest \& provenance (FR-1--14), selection \& recovery
-(FR-15--26), VLM \& reasoning (FR-27--28), infrastructure (FR-29--34), and onboarding (FR-35--40), all
-green. Each requirement maps to at least one executing acceptance gate; no requirement is orphaned and
-no gate is unmapped.
+PRD-v3 defines forty functional requirements across five themes: ingest \& provenance (FR-1--14),
+selection \& recovery (FR-15--26), VLM \& reasoning (FR-27--28), infrastructure (FR-29--34), and
+onboarding (FR-35--40). Infrastructure and onboarding are built and host-validated; the ingest,
+selection/recovery and annotation themes have their core in code with integration in progress; the VLM
+theme awaits local serving. Per-requirement status is tracked with the source analyses under
+\code{research/qe/}.
 
 \chapter{Quality-Gate Inventory}
 PRD-v3 \S6 defines 27 acceptance gates (17 workflow-shape, 6 tooling, 4 onboarding), of which 20 are
-blocking. Execution classes: 13 unit/integration, 3 fixture-based, 8 infrastructure, 1 newly pinned.
-Current executing coverage: \textbf{27\,/\,27}, all passing. The onboarding gates are schema round-trip
-stability (G-O1), VRAM-fit of recommendations (G-O2), secret containment (G-O3), and Drive write-back
-(G-O4).
+blocking. Unit-level surfaces pass today (31/31 across \code{model\_lifecycle} and
+\code{comfyui\_control}); the full acceptance harness is not yet automated and depends on the golden
+test fixture. The onboarding gates are schema round-trip stability (G-O1), VRAM-fit of recommendations
+(G-O2), secret containment (G-O3, verified end-to-end), and Drive write-back (G-O4).
 
 \vfill
 \noindent\textcolor{MidGrey}{\footnotesize\raggedright Source artefacts: \code{research/decisions/adr-009..015},

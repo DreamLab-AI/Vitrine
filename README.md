@@ -1,167 +1,105 @@
-# Gaussian Toolkit
+# Vitrine
 
-Video-to-3D-scene pipeline built on [LichtFeld Studio](https://github.com/MrNeRF/LichtFeld-Studio). Upload a video, get a textured polygonal mesh, a USD scene, and a compressed Gaussian splat for web delivery.
+Video-to-structured-3D-scene pipeline built on [LichtFeld Studio](https://github.com/MrNeRF/LichtFeld-Studio). Point it at a folder of videos and it produces a richly-annotated **USD scene graph** — a textured environment mesh plus individually-reconstructed, correctly-placed 3D hulls of the key objects in the scene — with full video→frame→object lineage, and a compressed Gaussian splat (`.ksplat`) for web delivery.
 
-Upstream sync is one-way pull only. We never push to or open PRs against the upstream repository.
+> This is an **isolated fork**. Upstream sync is one-way pull only; we never push to or open PRs against the upstream repository. See [BOUNDARIES.md](BOUNDARIES.md).
 
-## Architecture
+## Pipeline
 
 ```
-Video Upload → Frame Extraction (Fibonacci viewpoint scoring) →
-  → COLMAP SfM → 3DGS Training (MRNF densification) →
-  → Splat Optimisation (splat-transform → .ksplat) →
-  → Object Segmentation (SAM3) →
-  → Mesh Extraction (TSDF | MILo | CoMe | GaussianWrapping) →
-  → Blender Assembly + Texture Bake → USD Scene + .ksplat + Web Viewer
+Drive/video ingest  →  frame extraction + per-image metadata sidecar
+   →  COLMAP SfM (ALIKED+LightGlue, SIFT fallback)
+   →  3DGS training (LichtFeld: ImprovedGS+ / MRNF / MCMC)
+   →  .ksplat (splat-transform)              [web delivery]
+   →  SAM3 concept segmentation  →  key-item ranking (min_object_gaussians + keyness)
+   →  per-object hull: orbit render → FLUX.2 recovery → TRELLIS.2 / Hunyuan3D-2.1 (textured GLB)
+   →  environment mesh (CoMe; MILo / GaussianWrapping / TSDF fallbacks)
+   →  USD scene graph (native LichtFeld export; v2g:* metadata + lineage)  +  .ksplat
 ```
 
-Three-container Docker deployment:
+The pipeline is driven by a pre-run **`exhibit.toml` manifest** (exhibit identity, object list, Drive URL, `env:`-indirected secrets) and orchestrated by an in-container agent. A **SOTA idiot-check** (`pipeline/sota_registry.py`, wired into `preflight.py`) validates the host — staged weights, VRAM fit, version pins, licence posture — before any run.
 
-| Container | Base | GPU | Purpose |
-|-----------|------|-----|---------|
-| `gaussian-toolkit` | Ubuntu 24.04, CUDA 12.8, Python 3.12 | GPU 0 | COLMAP, LichtFeld 3DGS, web UI, Blender, SAM3 |
-| `milo` | Ubuntu 22.04, CUDA 11.8, Python 3.10 | GPU 1 | MILo + optional GaussianWrapping mesh extraction |
-| `come` | Ubuntu 22.04, CUDA 12.1, Python 3.10 | GPU 1 | CoMe mesh extraction (dev/opt-in; licence pending) |
+## SOTA stack (research/non-commercial posture)
 
-## Quick Start
+Web-verified mid-2026; weights staged + verified on the reference host. Run `python -m pipeline.sota_registry check` to validate.
+
+| Element | Model | Licence | VRAM | Notes |
+|---|---|---|---|---|
+| Inpaint / recovery | **FLUX.2-dev** | non-commercial | ~34 GB fp8 | masked recovery of unseen object faces |
+| Local VLM | **gemma-4-26B-A4B-it** (Q8_0) | Apache-2.0 | ~28 GB | artifact analysis + recovery oversight |
+| 3D hull (primary) | **TRELLIS.2-4B** | MIT | ~24 GB | single-image → textured PBR mesh |
+| 3D hull (fallback) | **Hunyuan3D-2.1** | Tencent-community | ~29 GB | multiview, matches the orbit renderer |
+| GS→surface mesh | **CoMe** (default) | CC BY-NC-ND | ~20 GB | best indoor F1; MILo / PGSR / TSDF fallbacks |
+| Training | **ImprovedGS+** (native) | — | — | −27% time vs MCMC; MRNF/MCMC also native |
+| SfM | **ALIKED+LightGlue** | — | — | via LichtFeld COLMAP plugin; SIFT fallback |
+| USD | **native `scene.export_usd`** | — | — | LichtFeld v0.5.1+; custom assembler fallback |
+
+Commercial deployment requires swapping the non-commercial models (CoMe→PGSR, FLUX.2→Qwen-Image-Edit); the idiot-check fails the run under `--commercial` if a non-commercial model is selected. See [research/decisions/work-order-sota-modernisation.md](research/decisions/work-order-sota-modernisation.md).
+
+## Deployment
 
 ```bash
-# Set HuggingFace token (needed for SAM3 segmentation models)
-export HF_TOKEN=hf_your_token_here
+# 1. Provision the exhibit manifest (web wizard or hand-edit exhibit.example.toml)
+cd onboarding && cargo build --release && ./target/release/vitrine-onboarding   # http://localhost:8088
 
-# Start both containers
+# 2. Bring up the pipeline containers
 docker compose -f docker-compose.consolidated.yml up -d
 
-# Open the web interface
+# 3. Bring up the canonical ComfyUI (owner install + staged model tree, over v2g-net)
+scripts/run_comfyui.sh                                                          # http://localhost:8200
+
+# 4. Web UI
 # http://localhost:7860
 ```
 
-Upload a video at the web UI. The pipeline runs autonomously via Claude Code inside the container.
+| Container | Base | GPU | Purpose |
+|---|---|---|---|
+| `gaussian-toolkit` | Ubuntu 24.04 / CUDA 12.8 / Py 3.12 | 0 | COLMAP, LichtFeld 3DGS, web UI, Blender, SAM3, pipeline |
+| `vitrine-comfyui` | — | 0 | FLUX.2 / TRELLIS.2 / Hunyuan / SAM3D ComfyUI (`scripts/run_comfyui.sh`) |
+| `milo` | Ubuntu 22.04 / CUDA 11.8 / Py 3.10 | 1 | MILo (+ optional GaussianWrapping) mesh extraction |
+| `come` | Ubuntu 22.04 / CUDA 12.1 / Py 3.10 | 1 | CoMe mesh extraction (gated: `INSTALL_COME=1`) |
 
-## Pipeline Stages
-
-| Stage | Tool | Output |
-|-------|------|--------|
-| Frame extraction | PyAV | JPEG frames |
-| Viewpoint scoring (optional) | `fibonacci_sampler.py` | Per-frame coverage scores |
-| Structure-from-Motion | COLMAP 4.1.0 | Camera poses + sparse point cloud |
-| 3DGS training | LichtFeld Studio (MCP, MRNF densification) | Trained gaussian PLY (~1M splats) |
-| Splat optimisation | `splat_optimizer.py` + splat-transform | Compressed `.ksplat` for web |
-| Object segmentation | SAM3 (4M concepts, text+visual) | Per-object 2D masks |
-| Mask projection | Custom (ray casting) | Per-object 3D gaussian labels |
-| Mesh extraction | TSDF / MILo / CoMe / GaussianWrapping | GLB meshes |
-| Scene assembly | Blender (Cycles GPU) | Texture-baked USD scene |
-| Web delivery | Flask + model-viewer | Preview carousel, download ZIP |
-
-### Mesh Extraction Backends
-
-Four backends are available. Set `config.training.mesh_method` to one of the values below, or use `"auto"` to let the pipeline apply the ADR-003 selection policy.
-
-| Backend | Value | Container | Speed | Best For |
-|---------|-------|-----------|-------|----------|
-| TSDF | `"tsdf"` | main | ~5 min | Previews, fast iteration |
-| MILo | `"milo"` | `milo` sidecar | ~69 min | General high-quality scenes |
-| CoMe | `"come"` | `come` sidecar | ~25 min | Speed + quality balance (dev/opt-in; licence pending) |
-| GaussianWrapping | `"gaussianwrapping"` | `milo` sidecar | ~30-50 min | Thin structures: bicycle spokes, wires, fences, railings |
-
-**Auto-selection policy** (`"auto"`): thin-structure hint → GaussianWrapping; CoMe available → CoMe; MILo available → MILo; fallback → TSDF.
-
-**Licensing note**: CoMe and GaussianWrapping have no formal LICENSE files as of 2026-05-26. Both are gated behind Docker build args (`INSTALL_COME=1`, `INSTALL_GAUSSIANWRAPPING=1`) and must not be included in commercial distribution images without legal review. See ADR-004 and ADR-005.
-Windows binaries are now available through the Lichtfeld Portal. To support ongoing development and access daily builds, please register and provide a donation at [portal.lichtfeld.io](https://portal.lichtfeld.io/). Once registered, you can download the latest archive, unzip it, and run the executable.
-
-**CLI flag notice**: CoMe and GaussianWrapping CLI flags are inferred from their upstream repositories and have not been verified against the released source. All script names and flag constants are defined as module-level constants in `come_extractor.py` and `gaussianwrapping_extractor.py` for easy correction once verified.
-
-See [docs/workflows/mesh-backends.md](docs/workflows/mesh-backends.md) for the full usage guide.
-
-## Web Interface
-
-The Flask app on port 7860 provides:
-
-- Video upload with drag-and-drop
-- Real-time pipeline progress (SSE log streaming)
-- 3D preview via `<model-viewer>` (Google)
-- Preview image carousel from Blender renders
-- Download ZIP of all outputs (mesh, USD, previews)
-- Anthropic API key management for Claude Code orchestration
-
-## Services
+Containers share a `v2g-net` bridge; the pipeline reaches ComfyUI as `V2G_COMFYUI_URL=http://vitrine-comfyui:8188`.
 
 | Port | Service |
-|------|---------|
+|---|---|
 | 7860 | Web UI (Flask) |
-| 7681 | Web terminal (ttyd / Claude Code) |
-| 8188 | ComfyUI |
+| 8088 | Onboarding wizard (Rust/Axum) |
+| 8200 | Canonical ComfyUI |
+| 7681 | Web terminal (ttyd / Claude Code orchestrator) |
 | 45677 | LichtFeld MCP server (70+ tools) |
 | 5901 | VNC (Blender remote desktop) |
 
-## Pipeline Modules
-
-32 Python modules in `src/pipeline/`:
+## Pipeline modules (`src/pipeline/`)
 
 | Category | Modules |
-|----------|---------|
-| Core | `stages.py`, `orchestrator.py`, `cli.py`, `config.py`, `preflight.py` |
-| Reconstruction | `colmap_parser.py`, `coordinate_transform.py`, `frame_selector.py`, `frame_quality.py` |
-| Ingestion | `fibonacci_sampler.py` (viewpoint coverage scoring — new v2) |
+|---|---|
+| Core | `stages.py`, `cli.py`, `config.py`, `preflight.py`, `sota_registry.py` |
+| Manifest / infra | `manifest.py` (exhibit.toml), `model_lifecycle.py` (serial VRAM), `endpoints.py` (v2g-net) |
+| Ingestion | `drive_ingestor.py`, `frame_selector.py`, `frame_quality.py`, `fibonacci_sampler.py` |
+| Reconstruction | `colmap_parser.py`, `coordinate_transform.py`, `mcp_client.py`, `gsplat_trainer.py` |
 | Segmentation | `sam2_segmentor.py`, `sam3_segmentor.py`, `sam3d_client.py`, `mask_projector.py` |
-| Mesh | `mesh_extractor.py` (TSDF), `milo_extractor.py` (MILo), `come_extractor.py` (CoMe — new v2), `gaussianwrapping_extractor.py` (GaussianWrapping — new v2), `mesh_cleaner.py` |
-| Delivery | `splat_optimizer.py` (splat-transform wrapper — new v2) |
-| Texturing | `texture_baker.py`, `material_assigner.py` |
-| Scene | `blender_assembler.py`, `usd_assembler.py` |
-| Rendering | `multiview_renderer.py`, `gsplat_trainer.py`, `hunyuan3d_client.py`, `comfyui_inpainter.py` |
-| Utilities | `mcp_client.py`, `quality_gates.py`, `person_remover.py` |
+| Hull / recovery | `multiview_renderer.py`, `comfyui_inpainter.py`, `comfyui_control.py`, `hunyuan3d_client.py` |
+| Mesh | `mesh_extractor.py` (TSDF), `milo_extractor.py`, `come_extractor.py`, `gaussianwrapping_extractor.py`, `mesh_cleaner.py` |
+| Delivery / scene | `splat_optimizer.py`, `texture_baker.py`, `material_assigner.py`, `blender_assembler.py`, `usd_assembler.py` |
+| Quality | `quality_gates.py`, `person_remover.py` |
 
-Web interface in `src/web/`: `app.py`, `job_manager.py`, `pipeline_runner.py`, templates, static assets.
+Web UI in `src/web/` (Flask :7860). Onboarding wizard in `onboarding/` (Rust/Axum).
 
 ## Hardware
 
-Tested on:
+Reference host: 2× NVIDIA RTX 6000 Ada (48 GB each), AMD Threadripper PRO, 256 GB RAM, NVMe. The serial model lifecycle keeps peak VRAM at `max(stage)`, not the sum, so a single 48 GB GPU is the practical floor for the full SOTA stack (TSDF-only mesh works on 12 GB).
 
-| Component | Spec |
-|-----------|------|
-| GPU | 2x NVIDIA RTX 6000 Ada (48 GB VRAM each, 96 GB total) |
-| CPU | AMD Threadripper PRO 48-core |
-| RAM | 251 GB |
-| Storage | NVMe SSD |
-<p>
-  <a href="https://www.core11.eu/">
-    <img src="docs/media/core11_multi.svg" alt="Core 11" height="60">
-  </a>
-</p>
+## Status
 
-<br>
+**Working end-to-end** (v2 core): video → COLMAP → 3DGS → SAM3 → mesh → Blender texture bake → USD → web viewer.
 
-<p>
-  <a href="https://web.volinga.ai/">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="docs/media/volinga-dark.svg">
-      <img src="docs/media/volinga.svg" alt="Volinga" height="108">
-    </picture>
-  </a>
-</p>
+**Built and host-validated** (v3): exhibit.toml manifest + loader, SOTA registry + idiot-check (wired into preflight), serial model lifecycle, v2g-net endpoints, agent-controlled ComfyUI client, native USD export wiring, key-item ranking, per-image metadata sidecar, secret-stripped config snapshots, the onboarding wizard (build + secret-containment verified), and the full SOTA weight set staged + verified (FLUX.2, gemma-4, TRELLIS.2, Hunyuan-2.1, SAM3D). Test suites for `model_lifecycle` + `comfyui_control` pass (31/31).
 
-Minimum: single GPU with 12 GB VRAM (TSDF only; MILo, CoMe, and GaussianWrapping sidecars require a second GPU or sequential scheduling).
+**In progress**: hull custom-node dependency builds (TRELLIS.2/Hunyuan ComfyUI nodes), gemma VLM serving (`agent-vlm`), end-to-end validation on real capture data, and the config-correctness items the idiot-check flags (switch training default to `igs+`, verify CoMe CLI flags, probe native-USD `v2g:*` customData parity). See [docs/engineering-log.md](docs/engineering-log.md) and the [report](report/main.pdf).
 
-## Project Boundaries
+> Source video quality is the dominant quality bottleneck: lossy/featureless/reflective footage breaks reconstruction regardless of downstream method. See [docs/capture-methodology.md](docs/capture-methodology.md).
 
-This is a fork of LichtFeld Studio. Upstream code (`src/core/`, `src/app/`, `src/mcp/`, `src/rendering/`, `src/training/`) is not modified. All pipeline additions live in `src/pipeline/`, `src/web/`, `docker/`, and `scripts/`. See [BOUNDARIES.md](BOUNDARIES.md) for the full separation policy.
+## Boundaries & license
 
-## Current Status
-
-The pipeline runs end-to-end: video upload through COLMAP, 3DGS training, mesh extraction (TSDF or MILo), Blender assembly, to a 3D web viewer. MILo produces 736K vertex meshes with learned SDF extraction.
-
-**Key finding**: Source video quality is the primary quality bottleneck. YouTube-compressed video of featureless/reflective scenes produces broken gaussian training regardless of mesh extraction method. See [docs/capture-methodology.md](docs/capture-methodology.md) for filming guidelines that produce good reconstructions.
-
-| What works | What needs improvement |
-|------------|----------------------|
-| COLMAP SfM (100% registration) | Source video quality (YouTube too lossy) |
-| MILo mesh extraction (736K verts) | Gaussian training on reflective/featureless scenes |
-| Web 3D viewer + preview carousel | SAM3 per-object segmentation (dtype fix needed) |
-| Blender Cycles texture bake (0.5s) | Per-object Hunyuan MV pipeline (not yet wired) |
-| Docker two-container deployment | Automated MILo dispatch from web UI |
-
-See [docs/engineering-log.md](docs/engineering-log.md) for the full development history.
-
-## License
-
-Upstream LichtFeld Studio: GPL-3.0. Pipeline additions: GPL-3.0 (derivative work).
+Fork of LichtFeld Studio (GPL-3.0). Upstream directories (`src/core/`, `src/app/`, `src/mcp/`, `src/rendering/`, `src/training/`, `src/geometry/`, `src/io/`, …) are not modified; all additions live in `src/pipeline/`, `src/web/`, `onboarding/`, `docker/`, and `scripts/`. Pipeline additions: GPL-3.0 (derivative work). See [BOUNDARIES.md](BOUNDARIES.md).
