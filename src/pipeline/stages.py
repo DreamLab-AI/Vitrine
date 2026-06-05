@@ -829,10 +829,23 @@ class PipelineStages:
         logger.info("Training: %s", " ".join(train_cmd))
 
         try:
+            # The prebuilt LichtFeld binary links the host's CUDA runtime (e.g.
+            # libcudart.so.13, absent from the container toolkit) and the vcpkg
+            # OpenUSD libs (libusd_*.so). The compose mounts host CUDA libs at
+            # /opt/host-cuda-libs; the USD libs sit under the build's
+            # vcpkg_installed tree. Add all of them to LD_LIBRARY_PATH.
+            _blib = Path(lfs_binary).parent
+            _ld = ":".join(p for p in [
+                str(_blib),
+                str(_blib / "vcpkg_installed" / "x64-linux" / "debug" / "lib"),
+                str(_blib / "vcpkg_installed" / "x64-linux" / "lib"),
+                "/opt/host-cuda-libs",
+                os.environ.get("LD_LIBRARY_PATH", ""),
+            ] if p)
             proc = subprocess.run(
                 train_cmd, capture_output=True, text=True,
                 timeout=3600,
-                env={**os.environ, "LD_LIBRARY_PATH": f"{Path(lfs_binary).parent}:{os.environ.get('LD_LIBRARY_PATH', '')}"},
+                env={**os.environ, "LD_LIBRARY_PATH": _ld},
             )
             if proc.returncode != 0:
                 logger.warning("Training stderr: %s", proc.stderr[-500:] if proc.stderr else "none")
