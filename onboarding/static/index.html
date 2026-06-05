@@ -72,6 +72,19 @@
           <input id="dr-recursive" name="dr-recursive" type="checkbox" checked />
           <label for="dr-recursive">Recurse into subfolders</label>
         </div>
+        <details class="howto">
+          <summary>How to prepare the Google&nbsp;Drive folder</summary>
+          <ol>
+            <li>Put the capture videos in a single Drive folder (one sub-folder per session is fine).</li>
+            <li>Copy the folder URL from the browser address bar
+              (<code>https://drive.google.com/drive/folders/&lt;id&gt;</code>) and paste it above.</li>
+            <li>Vitrine reads — and, with write-back enabled, writes — the folder through a Google
+              <strong>service account</strong> (created in Step&nbsp;4). After creating it,
+              <strong>share this folder with the service-account email</strong>
+              (<code>…@&lt;project&gt;.iam.gserviceaccount.com</code>): grant <em>Viewer</em> for
+              read-only, or <em>Editor</em> if finished outputs are written back to the same folder.</li>
+          </ol>
+        </details>
       </section>
 
       <!-- Step 3: objects -->
@@ -101,6 +114,26 @@
             placeholder="hf_… (stays server-side, never echoed)" />
           <p class="hint">Leave blank if the env-var is already exported on the host.</p>
         </div>
+        <details class="howto">
+          <summary>How to get your Hugging&nbsp;Face token</summary>
+          <ol>
+            <li>Sign in at <a href="https://huggingface.co/join" target="_blank" rel="noopener">huggingface.co</a> (a free account is enough).</li>
+            <li>Open <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noopener">Settings → Access&nbsp;Tokens</a> and click <strong>Create new token</strong>.</li>
+            <li>Choose type <strong>Read</strong> (or a fine-grained token with read access to gated repos), name it <code>vitrine</code>, and create it.</li>
+            <li>Copy the value (it starts <code>hf_…</code>) into the field above, or export it on the host as <code>HF_TOKEN</code>.</li>
+            <li><strong>Accept the model licences</strong> below — gated downloads fail without acceptance, even with a valid token.</li>
+          </ol>
+        </details>
+        <details class="howto">
+          <summary>Model licences to accept (open each page, click “Agree and access”)</summary>
+          <ul>
+            <li><a href="https://huggingface.co/black-forest-labs/FLUX.2-dev" target="_blank" rel="noopener">FLUX.2-dev</a> — inpainting / recovery (<strong>non-commercial</strong> licence).</li>
+            <li><a href="https://huggingface.co/tencent/Hunyuan3D-2.1" target="_blank" rel="noopener">Hunyuan3D-2.1</a> — fallback hull generator.</li>
+            <li><a href="https://huggingface.co/facebook/sam-3d-objects" target="_blank" rel="noopener">SAM&nbsp;3D&nbsp;Objects</a> — optional hull fallback (<strong>non-commercial</strong>).</li>
+            <li>gemma-4 and TRELLIS.2 are ungated — no acceptance needed.</li>
+          </ul>
+          <p class="hint">Non-commercial models are flagged by the pre-run idiot-check; a commercial run must swap them (CoMe→PGSR, FLUX.2→Qwen-Image-Edit).</p>
+        </details>
         <div class="field">
           <label for="se-gc-env">Google credentials env-var name</label>
           <input id="se-gc-env" name="se-gc-env" type="text" value="GOOGLE_APPLICATION_CREDENTIALS" />
@@ -109,6 +142,18 @@
           <label for="se-gc-project">gcloud project</label>
           <input id="se-gc-project" name="se-gc-project" type="text" placeholder="dreamlab-v2g" />
         </div>
+        <details class="howto">
+          <summary>How to get Google&nbsp;Drive credentials (service account)</summary>
+          <ol>
+            <li>Open the <a href="https://console.cloud.google.com/" target="_blank" rel="noopener">Google&nbsp;Cloud&nbsp;Console</a>; create or select a project and note its <strong>Project&nbsp;ID</strong> (paste it above).</li>
+            <li><a href="https://console.cloud.google.com/apis/library/drive.googleapis.com" target="_blank" rel="noopener">Enable the Google&nbsp;Drive API</a> for that project.</li>
+            <li>Go to <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">APIs &amp; Services → Credentials</a> → <strong>Create credentials → Service account</strong>; name it and create.</li>
+            <li>Open the service account → <strong>Keys → Add key → Create new key → JSON</strong>; download the key file.</li>
+            <li>Put the JSON on the host and point <code>GOOGLE_APPLICATION_CREDENTIALS</code> at its path. The same file is referenced by <code>secrets/rclone.conf</code> as <code>service_account_file</code> for the rclone <code>gdrive</code> remote.</li>
+            <li>In Drive, <strong>share the source folder with the service-account email</strong> (Step&nbsp;2) — <em>Editor</em> if outputs are written back, otherwise <em>Viewer</em>.</li>
+          </ol>
+          <p class="hint">The browser never sees the JSON: the manifest stores only <code>env:GOOGLE_APPLICATION_CREDENTIALS</code>.</p>
+        </details>
       </section>
 
       <!-- Step 5: pipeline + oversight -->

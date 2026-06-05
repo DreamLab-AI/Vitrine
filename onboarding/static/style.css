@@ -157,3 +157,26 @@ button:hover { filter: brightness(1.08); }
 .result.pending { color: var(--muted); }
 .result.success { color: var(--ok); border-color: var(--ok); background: rgba(63, 185, 80, 0.1); }
 .result.error { color: var(--err); border-color: var(--err); background: rgba(248, 81, 73, 0.1); }
+
+/* Credential / setup how-to blocks (collapsible). */
+.howto {
+  margin: 0.4rem 0 0.9rem;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 0.55rem 0.85rem;
+}
+.howto > summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--ink);
+  list-style: none;
+}
+.howto > summary::-webkit-details-marker { display: none; }
+.howto > summary::before { content: "\25B8\00A0"; color: var(--accent); }
+.howto[open] > summary::before { content: "\25BE\00A0"; }
+.howto ol, .howto ul { margin: 0.6rem 0 0.2rem; padding-left: 1.3rem; color: var(--muted); }
+.howto li { margin: 0.3rem 0; }
+.howto a { color: var(--accent); }
+.howto strong { color: var(--ink); }
