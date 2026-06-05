@@ -1440,7 +1440,8 @@ class PipelineStages:
                         mask = frame_result.masks[frame_result.object_ids == obj_id]
                         if concept not in all_masks:
                             all_masks[concept] = []
-                        all_masks[concept].append(mask[0] if mask.ndim == 3 else mask)
+                        all_masks[concept].append(
+                            (frame_path.name, mask[0] if mask.ndim == 3 else mask))
 
                 # Merge masks per concept: union across frames (resize to first frame's shape)
                 first_image = cv2.imread(str(frame_paths[0]))
@@ -1456,10 +1457,16 @@ class PipelineStages:
                 merged_ids: list[int] = []
                 next_id = 1
 
-                for concept, mask_list in all_masks.items():
-                    # Union all masks for this concept (resize if needed)
+                masks_dir = self.job_dir / "sam3_masks"
+                masks_dir.mkdir(parents=True, exist_ok=True)
+                perframe_root = masks_dir / "perframe"
+
+                for concept, frame_mask_list in all_masks.items():
+                    # Union across frames -> the legacy merged mask, AND keep the
+                    # per-frame masks for the depth-aware multi-view projection in
+                    # extract_objects (ADR-010 D10).
                     merged = np.zeros((ref_h, ref_w), dtype=bool)
-                    for m in mask_list:
+                    for _fname, m in frame_mask_list:
                         if m.shape != (ref_h, ref_w):
                             m_resized = cv2.resize(
                                 m.astype(np.uint8), (ref_w, ref_h),
@@ -1471,23 +1478,22 @@ class PipelineStages:
 
                     mask_pixels = int(merged.sum())
                     if mask_pixels > 0:
+                        oid = next_id
                         objects.append({
                             "label": concept,
-                            "object_id": next_id,
+                            "object_id": oid,
                             "mask_pixels": mask_pixels,
                         })
                         merged_masks.append(merged)
-                        merged_ids.append(next_id)
+                        merged_ids.append(oid)
+                        np.save(str(masks_dir / f"mask_{oid:04d}.npy"), merged)
+                        pf_dir = perframe_root / f"{oid:04d}"
+                        pf_dir.mkdir(parents=True, exist_ok=True)
+                        for fname, m in frame_mask_list:
+                            np.save(str(pf_dir / f"{Path(fname).stem}.npy"), m.astype(bool))
                         next_id += 1
 
                 id_to_concept = {obj["object_id"]: obj["label"] for obj in objects}
-
-                # Save merged masks
-                masks_dir = self.job_dir / "sam3_masks"
-                masks_dir.mkdir(parents=True, exist_ok=True)
-                for obj_id, mask in zip(merged_ids, merged_masks):
-                    mask_path = masks_dir / f"mask_{obj_id:04d}.npy"
-                    np.save(str(mask_path), mask)
 
                 seg.unload()
 
@@ -1557,6 +1563,11 @@ class PipelineStages:
 
         masks_dir = self.job_dir / "sam3_masks"
         has_masks = masks_dir.exists() and any(masks_dir.glob("*.npy"))
+        # ADR-010 D10: when COLMAP cameras + per-frame masks are available, use
+        # the depth-aware multi-view projection; otherwise fall back to the
+        # single-mask heuristic.
+        colmap_dir = self._find_colmap_dir()
+        perframe_avail = (masks_dir / "perframe").exists()
 
         # ADR-010 / FR-9: concept-priority weights for key-item ranking. Key
         # gallery items (artworks, furniture, fixtures) outrank structural
@@ -1588,7 +1599,11 @@ class PipelineStages:
             # Mask-based extraction returns the number of gaussians assigned.
             count = 0
             try:
-                count = self._extract_with_mask(obj, trained_ply, out_ply, masks_dir)
+                if colmap_dir is not None and perframe_avail:
+                    count = self._extract_with_mask_mv(
+                        obj, trained_ply, out_ply, masks_dir, colmap_dir)
+                if count <= 0:  # no colmap / mv found nothing -> XY fallback
+                    count = self._extract_with_mask(obj, trained_ply, out_ply, masks_dir)
             except Exception as exc:
                 logger.warning("Mask extraction failed for '%s': %s", label, exc)
                 count = 0
@@ -1641,6 +1656,129 @@ class PipelineStages:
                 **{f"ply:{e['label']}": e["ply"] for e in extracted},
             },
         )
+
+    def _find_colmap_dir(self) -> "Path | None":
+        """Locate a COLMAP sparse model (text format) in the job dir, for the
+        depth-aware mask projection. Returns None if none is found."""
+        for c in (
+            self.job_dir / "colmap" / "sparse" / "0",
+            self.job_dir / "colmap" / "sparse",
+            self.job_dir / "colmap" / "undistorted" / "sparse" / "0",
+            self.job_dir / "colmap",
+        ):
+            if (c / "images.txt").exists() and (c / "cameras.txt").exists():
+                return c
+        return None
+
+    def _extract_with_mask_mv(
+        self,
+        obj: dict[str, Any],
+        trained_ply: Path,
+        output_path: Path,
+        masks_dir: Path,
+        colmap_dir: Path,
+    ) -> int:
+        """Depth-aware multi-view mask projection (ADR-010 D10).
+
+        Projects every gaussian centre through each registered COLMAP camera that
+        has a per-frame mask for this object, votes inside/outside the mask across
+        views, and keeps gaussians seen inside the object in a majority of the
+        views where they are visible. Multi-view consistency + parallax filter the
+        occluded-background gaussians that a single-view projection would include.
+        Returns the gaussian count (0 to fall back to the single-mask heuristic).
+        """
+        import numpy as np
+        object_id = obj.get("object_id")
+        if object_id is None:
+            return 0
+        pf_dir = masks_dir / "perframe" / f"{int(object_id):04d}"
+        if not pf_dir.exists():
+            return 0
+        try:
+            from pipeline.colmap_parser import parse_cameras_txt, parse_images_txt
+        except Exception:
+            return 0
+        cams = parse_cameras_txt(colmap_dir / "cameras.txt")
+        images = parse_images_txt(colmap_dir / "images.txt")
+        by_stem = {Path(im.name).stem: im for im in images}
+
+        import trimesh
+        pcd = trimesh.load(str(trained_ply))
+        points = np.asarray(pcd.vertices) if hasattr(pcd, "vertices") else (
+            np.asarray(pcd.points) if hasattr(pcd, "points") else None)
+        if points is None or len(points) == 0:
+            return 0
+        P = points.astype(np.float64)
+        N = len(P)
+        votes_in = np.zeros(N, dtype=np.int32)
+        votes_vis = np.zeros(N, dtype=np.int32)
+
+        import cv2
+        used = 0
+        for mfile in sorted(pf_dir.glob("*.npy")):
+            im = by_stem.get(mfile.stem)
+            if im is None:
+                continue
+            cam = cams.get(im.camera_id)
+            if cam is None:
+                continue
+            mask = np.load(str(mfile))
+            mask = mask[0] if mask.ndim == 3 else mask
+            if not mask.any():
+                continue  # object not detected in this frame -> uninformative vote
+            H, W = int(cam.height), int(cam.width)
+            if mask.shape != (H, W):
+                mask = cv2.resize(mask.astype(np.uint8), (W, H),
+                                  interpolation=cv2.INTER_NEAREST)
+            mask = mask > 0
+            # world -> camera (COLMAP world-to-camera): p_cam = R @ P + t
+            qw, qx, qy, qz = im.quaternion
+            nrm = (qw * qw + qx * qx + qy * qy + qz * qz) ** 0.5
+            if nrm == 0:
+                continue
+            qw, qx, qy, qz = qw / nrm, qx / nrm, qy / nrm, qz / nrm
+            R = np.array([
+                [1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qw * qz), 2 * (qx * qz + qw * qy)],
+                [2 * (qx * qy + qw * qz), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qw * qx)],
+                [2 * (qx * qz - qw * qy), 2 * (qy * qz + qw * qx), 1 - 2 * (qx * qx + qy * qy)],
+            ], dtype=np.float64)
+            t = np.array(im.translation, dtype=np.float64)
+            pc = P @ R.T + t
+            z = pc[:, 2]
+            front = z > 1e-6
+            zsafe = np.where(front, z, 1.0)
+            u = (cam.focal_x * pc[:, 0] / zsafe + cam.center_x)
+            v = (cam.focal_y * pc[:, 1] / zsafe + cam.center_y)
+            ui = u.astype(np.int32)
+            vi = v.astype(np.int32)
+            vis = front & (ui >= 0) & (ui < W) & (vi >= 0) & (vi < H)
+            if not vis.any():
+                continue
+            used += 1
+            votes_vis[vis] += 1
+            idx = np.where(vis)[0]
+            inside = mask[vi[idx], ui[idx]]
+            votes_in[idx[inside]] += 1
+
+        if used == 0:
+            return 0
+        min_views = max(1, min(2, used))
+        sel = (votes_vis >= min_views) & (votes_in >= 0.5 * np.maximum(votes_vis, 1))
+        n_sel = int(sel.sum())
+        if n_sel == 0:
+            return 0
+        colors = None
+        if hasattr(pcd, "visual") and hasattr(pcd.visual, "vertex_colors"):
+            vc = np.asarray(pcd.visual.vertex_colors)
+            if vc.ndim == 2 and vc.shape[0] == N:  # 3DGS PLY colour is SH, often absent
+                colors = vc[sel]
+        out = trimesh.PointCloud(points[sel])
+        if colors is not None:
+            out.colors = colors
+        out.export(str(output_path))
+        logger.info("MV-projected %d/%d gaussians for '%s' across %d views",
+                    n_sel, N, obj.get("label", "?"), used)
+        return n_sel
 
     def _extract_with_mask(
         self,
