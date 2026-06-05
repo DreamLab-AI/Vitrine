@@ -2,7 +2,23 @@
 
 ## Status
 
-Accepted
+Accepted Amended 2026-06-05.
+
+## Amendment (2026-06-05) — CoMe is now the default mesh backend
+
+The project pivoted to CoMe as the **default** environment-mesh backend
+(`config.training.mesh_method = "come"`), superseding the original opt-in/gated
+positioning and ADR-012's earlier MILo-default. Rationale: CoMe is the verified best on
+indoor scenes (ScanNet++ F1 0.668) at ~3x MILo's speed.
+
+Operational notes:
+- The default routes directly to CoMe and **silently falls back to TSDF** unless the
+  image is built with `INSTALL_COME=1` and the `come` sidecar is running.
+- **Licence (confirmed): CC BY-NC-ND 4.0** — non-commercial *and* no-derivatives. The
+  strictest licence in the stack; fine under the research/non-commercial posture, a hard
+  blocker for a product (swap to PGSR).
+- `come_extractor.py`'s CLI flags are still inferred and must be verified against the
+  released CoMe repo before the default is trusted in production.
 
 ## Context
 

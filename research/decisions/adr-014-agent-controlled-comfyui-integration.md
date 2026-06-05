@@ -2,7 +2,18 @@
 
 ## Status
 
-Proposed (2026-06-04). Depends on ADR-013 (`v2g-net` mesh, serial lifecycle, unified gemma-4 agent).
+Proposed (2026-06-04). Depends on ADR-013 (`v2g-net` mesh, serial lifecycle, unified gemma-4 agent). Amended 2026-06-05.
+
+## Amendment (2026-06-05) — canonical ComfyUI + client built
+
+The "`.48` host" framing is replaced by a **canonical ComfyUI** launched via
+`scripts/run_comfyui.sh`: it reuses the gaussian-toolkit image as a CUDA runtime, mounts
+the owner's ComfyUI install (its custom nodes: TRELLIS2 / Hunyuan-2.1 / SAM3D) and the host
+model-staging tree, serves on `:8200`, and joins `v2g-net` as `vitrine-comfyui:8188`. The
+agent client `comfyui_control.py` is built and validated (health, 663 nodes, model probe;
+FLUX.2 visible in `UNETLoader`). Still to build: the Salad model-lifecycle control surface,
+the fully-agentic verify-or-retry `RecoveryController` loop, and the TRELLIS.2 / Hunyuan
+ComfyUI custom-node dependency builds.
 
 ## Context
 

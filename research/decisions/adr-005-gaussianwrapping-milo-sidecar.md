@@ -2,7 +2,14 @@
 
 ## Status
 
-Accepted
+Accepted Amended 2026-06-05.
+
+## Amendment (2026-06-05) — optional thin-structure fallback only
+
+GaussianWrapping remains an **optional** backend selected only for thin structures (via
+`LICHTFELD_THIN_STRUCTURE=1` / the ADR-003 `auto` policy); the default is CoMe (ADR-004).
+It loses to CoMe/PGSR on standard Tanks&Temples sampling. No LICENSE file as of writing —
+treat as non-commercial. CLI flags remain inferred (verify post-build).
 
 ## Context
 

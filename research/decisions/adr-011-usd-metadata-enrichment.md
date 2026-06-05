@@ -2,7 +2,17 @@
 
 ## Status
 
-Proposed
+Proposed Amended 2026-06-05.
+
+## Amendment (2026-06-05) — native USD export wired
+
+LichtFeld's native USD export (`scene.export_usd`, v0.5.1+) is now reachable and used:
+`mcp_client.export_usd()`, `ExportConfig.prefer_native_usd=True`, and
+`stages._export_native_usd()` produce a native scene USD best-effort, with the custom
+`assemble_usd_scene.py` retained as fallback and as the `v2g:*` metadata + multi-object
+composition layer. Open: the native-`customData` parity probe (can native export carry
+the `v2g:*` per-object metadata? if yes, retire the custom assembler). The per-image
+metadata sidecar (the lineage root) is built (ADR-009 / FR-3).
 
 ## Context
 

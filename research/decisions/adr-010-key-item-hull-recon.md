@@ -2,7 +2,19 @@
 
 ## Status
 
-Proposed
+Proposed Amended 2026-06-05.
+
+## Amendment (2026-06-05) — current hull stack + build status
+
+- **Hull generator:** TRELLIS.2-4B (MIT, single-image, PBR) is now the **primary**;
+  Hunyuan3D-2.1 (multiview, matches the orbit renderer) is the fallback; SAM3D is a
+  last-resort, non-commercial fallback. This supersedes the ADR-012 "Hunyuan3D-2.1"
+  primary.
+- **Recovery model:** FLUX.2-dev (not FLUX.1-Fill).
+- **Build status:** key-item ranking + the (previously dead) `min_object_gaussians`
+  threshold are enforced in `extract_objects` (FR-9, built). Wiring the FLUX.2 recovery
+  loop into the per-object hull path and persisting per-object pose to USD are the active
+  integration (FR-11 / FR-12, in progress).
 
 ## Context
 

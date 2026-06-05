@@ -5,7 +5,17 @@
 Proposed — Open Questions resolved 2026-06-04. **Target host: 192.168.2.48** (develop scaffolding on
 `agentbox`, deploy to .48). Oversight backend selectable (`[oversight].backend`, **default
 `claude_code`** — user logs in inside the container; `gemma_local` optional with GPU-contention
-tradeoff, D-013.6). gemma-4-26B-A4B is the multimodal artifact-VLM tool. ComfyUI agent control → ADR-014.
+tradeoff, D-013.6). gemma-4-26B-A4B is the multimodal artifact-VLM tool. ComfyUI agent control → ADR-014. Amended 2026-06-05.
+
+## Amendment (2026-06-05) — built + host-validated
+
+`manifest.py` (exhibit.toml loader, `env:` indirection, pre-snapshot secret stripping),
+`model_lifecycle.py` (serial VRAM lifecycle) and `endpoints.py` (`v2g-net` service-DNS)
+are built and host-validated; the `model_lifecycle` + `comfyui_control` suites pass 31/31.
+The **SOTA idiot-check** (`sota_registry.py`) is wired into `preflight.py` as the
+config-validation gate (staged weights, VRAM fit, version pins, licence posture). The
+canonical ComfyUI endpoint is `V2G_COMFYUI_URL=http://vitrine-comfyui:8188` over `v2g-net`
+(ADR-014 amendment). The unified VLM is gemma-4-26B-A4B **Q8_0**.
 
 ## Context
 

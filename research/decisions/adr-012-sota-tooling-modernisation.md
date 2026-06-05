@@ -2,7 +2,29 @@
 
 ## Status
 
-Proposed
+Proposed Amended 2026-06-05.
+
+## Amendment (2026-06-05) — current SOTA stack (folds the live decisions in)
+
+The model selections in this ADR have evolved; the live choices, now staged and verified
+on the reference host and enforced by the `sota_registry.py` idiot-check:
+
+| Element | Decision | Note |
+|---|---|---|
+| Env mesh | **CoMe** default | supersedes MILo-default (ADR-004) |
+| 3D hull | **TRELLIS.2-4B** primary, Hunyuan3D-2.1 fallback | supersedes Hunyuan-2.1-only (ADR-010) |
+| Inpaint | **FLUX.2-dev** (fp8) | supersedes FLUX.1-Kontext/Fill |
+| VLM | **gemma-4-26B-A4B Q8_0** | Q5_K_M not published; ~28 GB, fits 48 GB serial |
+| SfM | **ALIKED+LightGlue** via LichtFeld COLMAP plugin | SIFT fallback |
+| Training | **ImprovedGS+** (native) | switch default from MRNF (config change pending) |
+| Pins | `pins.lock.toml` + `scripts/resolve_pins.sh` -> `pins.resolved.toml` | T6 |
+
+**Licence posture (research / non-commercial) is the governing default**, enforced by the
+idiot-check: CoMe (CC BY-NC-ND), FLUX.2-dev and SAM3D (non-commercial) are allowed under
+it and FAIL a `--commercial` check. A commercial build swaps CoMe->PGSR and
+FLUX.2->Qwen-Image-Edit (both permissive). The detailed, executable registry is
+`src/pipeline/sota_registry.py`; the work plan is
+`research/decisions/work-order-sota-modernisation.md`.
 
 ## Context
 

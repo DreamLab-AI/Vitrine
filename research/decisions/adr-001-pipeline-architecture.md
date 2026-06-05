@@ -2,103 +2,74 @@
 
 ## Status
 
-Proposed
+Accepted. Amended 2026-06-05 to record the **current** architecture.
+
+> **Supersedes the original v1 proposal.** The first version of this ADR adopted a
+> Gaussian-Grouping co-training + SuGaR-meshing + FLUX-background-inpaint pipeline.
+> None of those three is used: **Gaussian Grouping** was replaced by post-hoc
+> **SAM3** concept segmentation; **SuGaR** by the pluggable mesh backends (ADR-003:
+> TSDF / MILo / CoMe / GaussianWrapping) plus image-to-3D hulls for key objects; and
+> background-inpaint-and-retrain by per-object generative *recovery* of unseen faces.
+> This record now documents what the pipeline actually is.
 
 ## Context
 
-We need to convert video recordings into structured USD scenes with individually addressable 3D mesh objects. The field offers multiple approaches:
-
-1. **Segment-first**: Segment objects in 2D frames, inpaint backgrounds, reconstruct separately
-2. **Reconstruct-then-segment**: Build monolithic Gaussian scene, segment in 3D, extract per-object
-3. **Co-training**: Joint reconstruction and segmentation during training
-4. **Direct meshing**: Skip Gaussians entirely, train meshes from images (MeshSplatting)
-5. **SLAM-based**: Real-time simultaneous reconstruction and decomposition
-
-We have an existing stack: LichtFeld Studio (3DGS training, 70+ MCP tools, USD export), COLMAP (SfM), SplatReady (video-to-COLMAP), ComfyUI (diffusion models), Blender (3D editing).
+We convert a hand-held walkthrough video of an exhibit into a structured USD scene
+with individually addressable, correctly-placed 3D objects. The existing stack:
+LichtFeld Studio (3DGS training, native USD export, 70+ MCP tools), COLMAP (SfM),
+ComfyUI (FLUX.2 / image-to-3D models), SAM3 (concept segmentation), Blender.
 
 ## Decision
 
-**We adopt a hybrid co-training + post-hoc approach** using Gaussian Grouping for joint reconstruction and segmentation, SuGaR for mesh extraction, and ComfyUI FLUX for background inpainting.
-
-The pipeline is:
+**Reconstruct-then-decompose**, orchestrated by the in-container agent over the
+LichtFeld MCP surface (no hidden state machine — see ADR-013). One run is:
 
 ```
-Video → SplatReady → COLMAP → Gaussian Grouping → Per-Object Extraction
-    → SuGaR Meshing → Background Inpainting → Background Retrain → USD Assembly
+Drive/video ingest → frame extraction + per-image metadata sidecar (ADR-009)
+  → COLMAP SfM (ALIKED+LightGlue; SIFT fallback)              (ADR-012)
+  → 3DGS training (LichtFeld: ImprovedGS+ / MRNF / MCMC)
+  → .ksplat web delivery (splat-transform)                    (ADR-006)
+  → SAM3 concept segmentation → key-item ranking              (ADR-010)
+  → per-object hull: orbit render → FLUX.2 recovery → TRELLIS.2 / Hunyuan3D-2.1 (ADR-010/012/014)
+  → environment mesh (CoMe default; MILo / GaussianWrapping / TSDF) (ADR-003/004/005)
+  → USD scene graph (native LichtFeld export; v2g:* metadata)  (ADR-011)
 ```
 
-Orchestrated by an agent swarm communicating via LichtFeld's MCP server.
+Driven by a pre-run `exhibit.toml` manifest with `env:`-indirected secrets (ADR-013)
+and validated by a SOTA model "idiot-check" before any run (ADR-012/013).
 
 ## Rationale
 
-### Why co-training (Gaussian Grouping) over post-hoc (SAGA)?
-
-- Co-training produces cleaner object boundaries because the segmentation regulariser influences Gaussian placement during optimisation
-- Post-hoc methods inherit any boundary ambiguity from the original training
-- Gaussian Grouping (Apache-2.0) is production-safe and the most mature co-training approach
-- SAGA serves as a refinement tool for difficult cases, not the primary path
-
-### Why SuGaR over SOF/GOF for meshing?
-
-- SuGaR is the only method producing UV-mapped textured meshes (OBJ + MTL + diffuse PNG)
-- SOF/GOF produce vertex-coloured geometry requiring separate texture baking
-- SuGaR's output is directly compatible with USD `UsdPreviewSurface` materials
-- SOF is retained as a fallback for scenes where geometric accuracy matters more than textures
-
-### Why background inpainting via ComfyUI?
-
-- We already have ComfyUI infrastructure in the Docker stack
-- FLUX inpainting produces photorealistic fill
-- The Gaussian Splats Repair LoRA is specifically trained for Gaussian render artefacts
-- Agent orchestration of ComfyUI workflows is straightforward via HTTP API
-
-### Why not segment-first (Pipeline A)?
-
-- Requires inpainting BEFORE reconstruction, which means any inpainting artefact propagates through the entire pipeline
-- Object pose recovery is harder without a full scene reconstruction as reference
-- Lower mesh quality from single-image-to-3D vs. multi-view Gaussian extraction
-
-### Why not direct meshing (MeshSplatting)?
-
-- Too new (2025), limited community testing
-- Produces PLY with vertex colours (no UV maps)
-- Requires specific training setup incompatible with LichtFeld's existing pipeline
-- Retained as future direction for Phase 7+
-
-### Why agentic orchestration?
-
-- Each stage has quality decisions that benefit from adaptive control
-- The pipeline is not deterministic — different videos require different parameters
-- Quality gates prevent poor-quality intermediates from propagating
-- Agent retries with adjusted parameters handle edge cases automatically
-- LichtFeld's 70+ MCP tools provide complete programmatic control
+- **Reconstruct-then-decompose, not co-train.** A full Gaussian reconstruction is the
+  shared reference for per-object pose, mask projection and recovery; it reuses the
+  unmodified LichtFeld training path rather than a bespoke co-training fork.
+- **SAM3 concept segmentation.** Text/visual concept prompts (4M concepts) identify
+  exhibit objects directly; key-item ranking (`min_object_gaussians` + keyness) selects
+  which enter the per-object path.
+- **Image-to-3D hulls for key objects.** Orbiting a segmented object, recovering its
+  unseen faces with FLUX.2, and lifting it to a watertight textured hull (TRELLIS.2
+  primary, Hunyuan3D-2.1 fallback) gives a clean, placeable mesh — preferable to
+  surface-extracting a partially-observed object subset.
+- **CoMe as the default environment-mesh backend** (best indoor F1, ~3× faster than
+  MILo); the ADR-003 interface keeps MILo / GaussianWrapping / TSDF interchangeable.
+- **Native USD assembly.** LichtFeld's native `scene.export_usd` (v0.5.1+) is the base
+  exporter; the custom assembler remains only for the `v2g:*` metadata / multi-object
+  composition not yet covered natively (ADR-011).
 
 ## Consequences
 
-### Positive
-- Clean architecture with well-defined stage boundaries
-- All critical-path dependencies are Apache-2.0 licensed
-- Leverages existing LichtFeld infrastructure (no new rendering engine)
-- Dual representation (Gaussian + Mesh) per object in USD output
-- Agentic control enables fully automated processing
-
-### Negative
-- Gaussian Grouping requires retraining (cannot reuse existing trained models for segmentation)
-- SuGaR license is unspecified (risk for commercial use)
-- Background inpainting adds ~15 min per scene + ComfyUI dependency
-- Multiple Python dependencies alongside C++ core (mixed runtime)
-
-### Risks
-- If Gaussian Grouping quality is insufficient, fallback to SAGA + manual refinement
-- If SuGaR mesh quality is insufficient, fallback to SOF + xatlas texture baking
-- If ComfyUI is unavailable, fallback to LaMa inpainting (lower quality, no GPU model)
-
-## Alternatives Considered
-
-See [[alternative-pipelines]] for full analysis of 5 alternative approaches.
+- Dual representation (Gaussian | Mesh variant set) per object in the USD output.
+- Mixed runtime (C++ core + Python pipeline + sidecar containers per CUDA ABI).
+- Several SOTA models carry non-commercial licences (CoMe, FLUX.2-dev, SAM3D); the
+  research/non-commercial posture is the default and is enforced by the idiot-check.
+  A commercial build must swap them (CoMe→PGSR, FLUX.2→Qwen-Image-Edit).
 
 ## Related Decisions
 
-- ADR-002 (pending): Coordinate transform chain specification
-- ADR-003 (pending): USD scene graph schema and variant set design
-- ADR-004 (pending): Agent communication protocol and state machine design
+- ADR-002: Upstream sync strategy (v0.5.2, one-way pull).
+- ADR-003: Pluggable mesh-extraction backend interface.
+- ADR-004 / ADR-005: CoMe (default) and GaussianWrapping mesh backends.
+- ADR-006 / ADR-007: `.ksplat` web delivery; Fibonacci frame selection.
+- ADR-009–ADR-011: Per-video ingest + provenance; key-item ranking + hull recovery; USD metadata.
+- ADR-012: SOTA tooling (mesh/SfM/hull/inpaint models, version pins, licence posture).
+- ADR-013–ADR-015: Manifest + serial lifecycle + `v2g-net`; agent-controlled ComfyUI; Vitrine onboarding.

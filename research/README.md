@@ -105,9 +105,10 @@ End-to-end test with a 90-second museum tour video on the consolidated Docker (d
 ## Target Pipeline
 
 ```
-Video -> Frames -> COLMAP SfM -> 3DGS Training -> SAM3 Concept Segmentation
-    -> Per-Object Gaussian Extraction -> Hunyuan3D 2.0 Mesh Creation
-    -> Background Inpainting (FLUX) -> USD Scene Assembly (variant sets)
+Video -> Frames (+ per-image metadata sidecar) -> COLMAP SfM (ALIKED+LightGlue)
+    -> 3DGS Training (ImprovedGS+ / MRNF) -> .ksplat -> SAM3 Concept Segmentation
+    -> Key-item ranking -> Per-object hull (FLUX.2 recovery -> TRELLIS.2 / Hunyuan3D-2.1)
+    -> Environment mesh (CoMe default) -> Native USD scene graph (v2g:* metadata)
 ```
 
 ## Research Structure
@@ -130,12 +131,22 @@ research/
 ├── references/
 │   ├── existing-capabilities.md       # What LichtFeld/COLMAP already provide
 │   └── (papers.md, repos.md)         # Academic references
-└── decisions/
-    ├── prd.md                         # Product Requirements Document
-    ├── prd-consolidated-docker.md     # Consolidated Docker PRD
-    ├── adr-001-pipeline-architecture.md
-    └── ddd-domain-model.md
+├── decisions/
+│   ├── prd*.md                        # PRDs: v1, consolidated-docker, v2-upgrade, v3-e2e-closure
+│   ├── adr-001..015-*.md             # Architecture Decision Records (amended to reflect live choices)
+│   ├── work-order-sota-modernisation.md  # Live SOTA stack work plan
+│   ├── upstream-sync-runbook.md, video-ingestion-plan.md, ddd-domain-model.md (v1)
+│   └── audit-findings.md, gap-analysis-*.md  # point-in-time analyses (historical)
+├── ddd/                               # Domain model (current): bounded-contexts, aggregates,
+│   └── ...                            #   anti-corruption-layers, ubiquitous-language, v3-e2e-extensions
+└── qe/                                # Implementation-status / QE analyses (qe-00..04)
 ```
+
+> ADRs are maintained as a living catalogue: ADR-001 records the current pipeline
+> architecture (the original v1 Gaussian-Grouping/SuGaR design is retired), and the
+> evolved records (004, 005, 010, 011, 012, 013, 014) carry dated **Amendment** blocks
+> reflecting the current choices (CoMe default mesh, TRELLIS.2 primary hull, FLUX.2-dev,
+> gemma-4 VLM, native USD export, the SOTA idiot-check, and the canonical ComfyUI).
 
 ## Key Findings
 

@@ -29,6 +29,26 @@ each group. Cross-context terms appear in the Shared section.
 
 ---
 
+## Current Model Selections (2026-06-05)
+
+The live instances of the domain backends/tools, kept here so the glossary matches the
+code (the authoritative, executable registry is `src/pipeline/sota_registry.py`):
+
+| Domain term | Current selection |
+|---|---|
+| Mesh backend (default) | **CoMe** (MILo / GaussianWrapping / TSDF fallbacks) |
+| Object hull generator | **TRELLIS.2-4B** primary, **Hunyuan3D-2.1** fallback, SAM3D last resort |
+| Generative recovery (inpaint) | **FLUX.2-dev** |
+| Artifact-analysis VLM | **gemma-4-26B-A4B** (Q8_0) |
+| SfM matcher | **ALIKED+LightGlue** (SIFT fallback) |
+| Training strategy | **ImprovedGS+** (MRNF / MCMC also native) |
+| USD assembler | **native `scene.export_usd`** (custom assembler fallback for `v2g:*`) |
+
+Licence posture is **research / non-commercial** by default (CoMe, FLUX.2-dev and SAM3D
+are non-commercial); a commercial build swaps to PGSR / Qwen-Image-Edit.
+
+---
+
 ## Ingestion Context
 
 | Domain Term | Code Term / Location | Definition |
