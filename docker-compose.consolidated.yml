@@ -26,6 +26,10 @@ services:
       # from the mounted rclone config secret below — never an env-var token.
       - DRIVE_INGEST_REMOTE=${DRIVE_INGEST_REMOTE:-}
       - RCLONE_CONFIG=/run/secrets/rclone_conf
+      # Canonical ComfyUI endpoint (ADR-014) reached over the v2g-net network —
+      # launched by scripts/run_comfyui.sh (owner ComfyUI + staged model tree).
+      - V2G_COMFYUI_URL=${V2G_COMFYUI_URL:-http://vitrine-comfyui:8188}
+      - V2G_COMFYUI_API_URL=${V2G_COMFYUI_API_URL:-http://vitrine-comfyui:8188}
 
     deploy:
       resources:
