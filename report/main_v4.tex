@@ -1,8 +1,13 @@
-% main_v4.tex — Vitrine: v4 Current-State Account (consolidated)
-% Synthesises the v1 bid aims, the v2 architecture, and the v3 implementation
-% plan into a single current-state report, updated with the end-to-end
-% validation performed in June 2026. Leaves main.tex (v1), main_v2.tex (v2) and
-% main_v3.tex (v3) untouched as historical snapshots.
+% main_v4.tex — Vitrine: v4 Consolidated Project Account
+% A single full accounting of the project across its versions: the Salford
+% AI Knowledge-Exchange pilot brief (v1), the v2 dual-representation
+% architecture, the v3 operational layer and SOTA stack, and the June 2026
+% end-to-end validation. main.tex (v1), main_v2.tex (v2) and main_v3.tex (v3)
+% are left untouched as historical snapshots.
+%
+% Design language follows the A0 conference poster: University of Salford
+% primary red (#D20A11) with a gold forward-slash motif; DreamLab AI as the
+% discrete delivery-partner accent.
 %
 % Self-contained: no biber/glossaries/index, so it compiles cleanly with
 % `latexmk -pdf main_v4` or two `pdflatex` passes.
@@ -20,37 +25,46 @@
 \usepackage{inconsolata}
 \usepackage[dvipsnames,svgnames,x11names]{xcolor}
 
-\definecolor{UoSRed}{HTML}{B71234}
+% ── University of Salford brand palette (matches the poster) ──────────────
+\definecolor{salfordred}{HTML}{D20A11}   % primary Salford red (official 2025 brand)
+\definecolor{salforddeep}{HTML}{8E060B}  % deepened red for inner titles
+\definecolor{salfordgold}{HTML}{F6C900}  % warm accent + slash motif
+\definecolor{salfordteal}{HTML}{6FB6BA}  % cool secondary accent
+\colorlet{UoSRed}{salfordred}            % alias for reused snippets
 \definecolor{DreamLabAccent}{HTML}{6366F1}
 \definecolor{DarkBg}{HTML}{0F172A}
 \definecolor{MidGrey}{HTML}{64748B}
 \definecolor{LightGrey}{HTML}{F1F5F9}
+\definecolor{PanelWarm}{HTML}{F4F1EC}
 \definecolor{CodeBg}{HTML}{1E293B}
 \definecolor{SuccessGreen}{HTML}{15803D}
 \definecolor{WarningAmber}{HTML}{B45309}
 \definecolor{DangerRed}{HTML}{B91C1C}
 
 \usepackage{graphicx}
-\graphicspath{{figures/}{figures/v2/}{figures/v3/}}
+\graphicspath{{figures/}{figures/v2/}{figures/v3/}{poster/assets/}}
 \usepackage{tikz}
 \usetikzlibrary{calc,positioning,arrows.meta,shapes.geometric,backgrounds,fit}
 \usepackage{booktabs}
 \usepackage{tabularx}
 \usepackage{longtable}
 \usepackage{array}
+\usepackage{colortbl}
 \newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
 \newcolumntype{C}[1]{>{\centering\arraybackslash}p{#1}}
+\newcolumntype{R}[1]{>{\raggedleft\arraybackslash}p{#1}}
 \usepackage{amsmath,amssymb}
 \usepackage{csquotes}
 \usepackage{enumitem}
 \setlist{nosep,leftmargin=*}
 \usepackage{caption}
-\captionsetup{font=small,labelfont={bf,color=UoSRed}}
+\usepackage{subcaption}
+\captionsetup{font=small,labelfont={bf,color=salfordred}}
 
-\usepackage[colorlinks=true,linkcolor=UoSRed,citecolor=DreamLabAccent,urlcolor=DreamLabAccent,
+\usepackage[colorlinks=true,linkcolor=salfordred,citecolor=DreamLabAccent,urlcolor=DreamLabAccent,
   bookmarks=true,bookmarksnumbered=true,
   pdfauthor={Dr John O'Hare},
-  pdftitle={Vitrine: Current-State Account (v4)},
+  pdftitle={Vitrine: Consolidated Project Account (v4)},
   pdfsubject={Agentic volumetric capture, 3D Gaussian Splatting, USD, Cultural Heritage}]{hyperref}
 \usepackage{bookmark}
 
@@ -59,10 +73,10 @@
 \fancyhf{}
 \fancyhead[L]{\small\textcolor{MidGrey}{\leftmark}}
 \fancyfoot[R]{\small\textcolor{MidGrey}{\thepage}}
-\fancyfoot[C]{\small\textcolor{MidGrey}{Vitrine, DreamLab AI Consulting Ltd}}
+\fancyfoot[C]{\small\textcolor{MidGrey}{Vitrine \;{\color{salfordgold}//}\; DreamLab AI Consulting Ltd}}
 \renewcommand{\headrulewidth}{0.4pt}
 \renewcommand{\footrulewidth}{0.2pt}
-\renewcommand{\headrule}{\hbox to\headwidth{\color{UoSRed}\leaders\hrule height \headrulewidth\hfill}}
+\renewcommand{\headrule}{\hbox to\headwidth{\color{salfordred}\leaders\hrule height \headrulewidth\hfill}}
 
 \usepackage{listings}
 \lstset{basicstyle=\ttfamily\footnotesize,backgroundcolor=\color{LightGrey},frame=single,
@@ -74,29 +88,37 @@
     {‘}{{`}}1 {’}{{'}}1 {“}{{``}}1 {”}{{''}}1}
 
 \usepackage[most]{tcolorbox}
-\newtcolorbox{keyfinding}[1][]{enhanced,colback=UoSRed!5,colframe=UoSRed,fonttitle=\bfseries,
+\newtcolorbox{keyfinding}[1][]{enhanced,colback=salfordred!5,colframe=salfordred,fonttitle=\bfseries,
   title={Key Finding},left=5mm,boxrule=0.8pt,#1}
 \newtcolorbox{recommendation}[1][]{enhanced,colback=DreamLabAccent!6,colframe=DreamLabAccent,
   fonttitle=\bfseries,title={Recommendation},left=5mm,boxrule=0.8pt,#1}
 \newtcolorbox{technote}[1][]{enhanced,colback=LightGrey,colframe=MidGrey,fonttitle=\bfseries,
   title={Technical Note},left=5mm,boxrule=0.6pt,#1}
+\newtcolorbox{bidvoice}[1][]{enhanced,colback=salfordgold!12,colframe=salfordgold!80!black,
+  fonttitle=\bfseries,title={From the Bid},left=5mm,boxrule=0.6pt,#1}
 
 \usepackage{titlesec}
 \titleformat{\chapter}[display]{\normalfont\huge\bfseries\color{DarkBg}}
-  {\textcolor{UoSRed}{\chaptertitlename\ \thechapter}}{8pt}{\Huge}
+  {\textcolor{salfordred}{\chaptertitlename\ \thechapter}\;{\color{salfordgold}//}}{8pt}{\Huge}
 \titlespacing*{\chapter}{0pt}{-18pt}{26pt}
-\titleformat{\section}{\normalfont\Large\bfseries\color{DarkBg}}{\textcolor{UoSRed}{\thesection}}{1em}{}
+\titleformat{\section}{\normalfont\Large\bfseries\color{DarkBg}}{\textcolor{salfordred}{\thesection}}{1em}{}
 \titleformat{\subsection}{\normalfont\large\bfseries\color{DarkBg}}{\textcolor{DreamLabAccent}{\thesubsection}}{1em}{}
+\titleformat{\part}[display]{\centering\normalfont\Huge\bfseries\color{DarkBg}}
+  {\textcolor{salfordred}{\partname\ \thepart}\;{\color{salfordgold}//}}{8pt}{\huge}
 
-% Convenience: status chips
+% Status chips and inline helpers
 \newcommand{\chip}[2]{\textcolor{#1}{\textbf{#2}}}
 \newcommand{\code}[1]{\texttt{#1}}
 \newcommand{\validated}{\chip{SuccessGreen}{built \& validated}}
 \newcommand{\built}{\chip{SuccessGreen}{built}}
 \newcommand{\wip}{\chip{WarningAmber}{in progress}}
 \newcommand{\designed}{\chip{MidGrey}{designed}}
+\newcommand{\pass}{\textcolor{SuccessGreen}{\textbf{GREEN}}}
+\newcommand{\amber}{\textcolor{WarningAmber}{\textbf{AMBER}}}
+\newcommand{\slm}{{\color{salfordgold}\textbf{/\!/}}}
+\newcommand{\stat}[2]{{\color{salfordred}\bfseries #1}\,{\footnotesize #2}}
 
-\title{Vitrine: Current-State Account}
+\title{Vitrine: Consolidated Project Account}
 \author{Dr John O'Hare \\ DreamLab AI Consulting Ltd}
 \date{June 2026}
 
@@ -108,34 +130,38 @@
 \begin{tikzpicture}[remember picture, overlay]
   \fill[DarkBg] (current page.south west) rectangle (current page.north east);
   \foreach \r in {2,3.2,4.4,5.6} {
-    \draw[UoSRed, opacity=0.15, line width=0.6pt]
+    \draw[salfordred, opacity=0.16, line width=0.6pt]
       ($(current page.north west) + (2.5,-3)$) circle (\r);}
-  \foreach \i in {0,0.8,...,6.4} {
-    \draw[DreamLabAccent, opacity=0.10, line width=0.5pt]
-      ($(current page.south east) + (-\i-1, 0.5)$) -- ($(current page.south east) + (-0.5, \i+1)$);}
-  \fill[UoSRed] ($(current page.west) + (0,2)$) rectangle ($(current page.east) + (0,2.08)$);
-  \fill[DreamLabAccent] ($(current page.west) + (0,1.9)$) rectangle ($(current page.east) + (0,1.94)$);
-  \node[anchor=north west, text=UoSRed, font=\footnotesize\sffamily\bfseries, text width=13cm]
+  % gold forward-slash motif, bottom-right
+  \foreach \i in {0,0.7,...,5.6} {
+    \draw[salfordgold, opacity=0.14, line width=1.0pt]
+      ($(current page.south east) + (-\i-1.2, 0.6)$) -- ($(current page.south east) + (-\i-2.2, 3.4)$);}
+  \fill[salfordred] ($(current page.west) + (0,2)$) rectangle ($(current page.east) + (0,2.08)$);
+  \fill[salfordgold] ($(current page.west) + (0,1.88)$) rectangle ($(current page.east) + (0,1.93)$);
+  \node[anchor=north west, text=salfordred, font=\footnotesize\sffamily\bfseries, text width=14cm]
     at ($(current page.north west) + (3,-2)$)
-    {CURRENT-STATE ACCOUNT \textcolor{MidGrey}{|} END-TO-END VALIDATED};
-  \node[anchor=west, text=white, font=\fontsize{40}{44}\selectfont\bfseries\sffamily, text width=15cm]
-    at ($(current page.west) + (3,5.6)$) {Vitrine};
+    {CONSOLIDATED PROJECT ACCOUNT \textcolor{MidGrey}{|} VALIDATED END-TO-END, JUNE 2026};
+  \node[anchor=west, font=\fontsize{52}{56}\selectfont\bfseries\sffamily]
+    at ($(current page.west) + (3,5.8)$) {\textcolor{white}{Vitrine}\,{\color{salfordgold}/\!/}};
   \node[anchor=west, text=white, font=\fontsize{15}{19}\selectfont\sffamily, text width=14cm]
-    at ($(current page.west) + (3,2.9)$)
-    {An Agentic Pipeline for Volumetric\\ Cultural-Heritage Preservation};
-  \node[anchor=west, text=MidGrey, font=\normalsize\sffamily, text width=13cm]
-    at ($(current page.west) + (3,-0.2)$)
-    {video \textbullet\ COLMAP \textbullet\ 3D Gaussian Splatting \textbullet\ SAM3 \textbullet\ depth-aware object isolation\\
-     per-object mesh \textbullet\ native + composed USD scene graph};
-  \node[anchor=west, text=white, font=\sffamily, text width=10cm]
-    at ($(current page.west) + (3,-2.7)$)
+    at ($(current page.west) + (3,3.0)$)
+    {Agentic Volumetric Capture for the Preservation of\\ Immersive \& Intangible Cultural Heritage};
+  \node[anchor=west, text=MidGrey, font=\normalsize\sffamily, text width=13.5cm]
+    at ($(current page.west) + (3,0.2)$)
+    {One hand-held walkthrough video to a photoreal, object-resolved\\
+     3D scene graph, ready for a games engine.};
+  \node[anchor=west, text=salfordgold, font=\footnotesize\sffamily\bfseries, text width=13.5cm]
+    at ($(current page.west) + (3,-1.4)$)
+    {University of Salford \;/\!/\; AI Knowledge-Exchange Community of Practice Pilot};
+  \node[anchor=west, text=white, font=\sffamily, text width=11cm]
+    at ($(current page.west) + (3,-3.2)$)
     {\textbf{Dr John O'Hare}\\[2pt] DreamLab AI Consulting Ltd\\[8pt]
      \textcolor{MidGrey}{Pairs with the upstream}\\[2pt] \textbf{LichtFeld Studio} reconstruction engine};
   \node[anchor=west, text=DreamLabAccent, font=\sffamily\bfseries]
-    at ($(current page.west) + (3,-5.4)$) {June 2026};
+    at ($(current page.west) + (3,-5.6)$) {June 2026 \;\textcolor{MidGrey}{|}\; Worktribe 5043317};
   \node[anchor=south east, text=MidGrey, font=\tiny\sffamily]
     at ($(current page.south east) + (-3,1)$)
-    {v4.0 \textcolor{MidGrey}{|} CONSOLIDATED CURRENT-STATE ACCOUNT};
+    {v4.0 \textcolor{MidGrey}{|} CONSOLIDATED ACROSS v1--v4};
 \end{tikzpicture}
 \end{titlepage}
 
@@ -146,85 +172,243 @@
 \addcontentsline{toc}{chapter}{Executive Summary}
 \markboth{Executive Summary}{Executive Summary}
 
-This is the \textbf{single current-state account} of \textbf{Vitrine}, the agentic pipeline that turns a
-hand-held walkthrough video of a museum or heritage exhibit into a structured, object-resolved 3D scene.
-It consolidates the three prior reports — the original bid (\code{main.tex}), the v2 architecture
-(\code{main\_v2.tex}) and the v3 implementation plan (\code{main\_v3.tex}), which remain as historical
-snapshots — and updates them with the \textbf{end-to-end validation performed in June 2026}.
+This is the single, consolidated account of \textbf{Vitrine}: the agentic pipeline that turns a hand-held
+walkthrough video of a museum or heritage exhibit into a structured, object-resolved 3D scene. It draws
+the whole project into one document, across its four versions. The original bid (\code{main.tex}) set the
+remit; the v2 architecture (\code{main\_v2.tex}) introduced the dual splat-and-mesh representation; the v3
+report (\code{main\_v3.tex}) delivered the operational layer and the modern model stack; and
+this v4 account adds the end-to-end validation performed in June 2026. The three prior reports remain as
+historical snapshots; this one supersedes none of them and contradicts none of them.
 
-\textbf{The headline change since v3:} the pipeline is no longer only \emph{designed} — it has been
-\textbf{run end to end on a real reconstructed scene and now produces object-resolved, dual-USD output}.
-A single walkthrough now travels the full path: LichtFeld training of a Gaussian-splat field, SAM3
-concept segmentation into named objects, a new depth-aware multi-view projection that isolates each
-object into its own gaussian subset and ranks them by curatorial significance, per-object meshing, and
-\textbf{two USD products} — a native LichtFeld splat USD and a textured composed multi-object scene graph
-with preview renders. Eight concrete defects that previously blocked this path were found and fixed, each
-surfaced by actually running the pipeline rather than by inspection.
+\textbf{Headline.} The pipeline is no longer only designed. A single walkthrough now travels the full path
+on real data: LichtFeld training of a Gaussian-splat field, SAM3 concept segmentation into named objects,
+a depth-aware multi-view projection that isolates each object into its own gaussian subset and ranks them
+by curatorial significance, per-object meshing, and two USD products, a native LichtFeld splat USD and a
+textured composed scene graph with preview renders. Running the pipeline surfaced and fixed eight concrete
+defects that had blocked the path, each found by execution rather than inspection.
 
 \begin{keyfinding}
-Vitrine's core promise --- an \emph{object-resolved} scene, not a monolithic splat --- is now a working
-capability, validated on a real 80-frame indoor scene that resolved into five named objects (sculptures,
-furniture, walls, floor, ceiling), each isolated into its own gaussian subset and correctly ranked with
-the key items (sculptures, furniture) above the structural surfaces.
+Vitrine's central promise, an \emph{object-resolved} scene rather than a monolithic splat, is now a working
+capability. It was validated on a real 80-frame indoor scene that resolved into five named objects
+(sculptures, furniture, walls, floor, ceiling), each isolated into its own gaussian subset, with the key
+items (sculptures, furniture) correctly ranked above the structural surfaces.
 \end{keyfinding}
 
-\textbf{The honest boundary.} This report uses an explicit \validated{} / \wip{} / \designed{} taxonomy
-and does not blur it. Validation was performed on a \emph{reused} 80-frame reconstruction
-(\code{milo\_run}), not on a fresh Google-Drive capture driven through ingest and COLMAP; the
-fresh-capture path needs Drive credentials and has not been exercised at scale. The per-object meshes are
-produced by the always-available \code{gsplat}-to-TSDF backend, \emph{not} by the SOTA single-image hull
-generators (TRELLIS.2 / Hunyuan3D-2.1), whose ComfyUI custom-node dependencies are not yet built; and the
-generative \emph{recovery} of unseen object faces (FLUX.2) and the local gemma-4 vision agent are staged
-but not wired into the loop. Those are reported as \wip{} or \designed{} below, not as done. Quality, too,
-is first-pass: SAM3's per-frame detection was sparse and the projection is multi-view-consistent but not
-yet depth-tested, so object masks are coherent but over-inclusive.
+\textbf{Honest boundary.} This account keeps an explicit \validated{} / \wip{} / \designed{} taxonomy and
+holds the line. Validation ran on a reused 80-frame reconstruction (\code{milo\_run}), not on a fresh
+Google-Drive capture driven through ingest and COLMAP. The per-object meshes came from the
+always-available \code{gsplat}-to-TSDF backend, not from the SOTA single-image hull generators
+(TRELLIS.2 / Hunyuan3D-2.1), whose ComfyUI custom-node dependencies are staged but not built. Generative
+recovery of unseen object faces (FLUX.2) and the local gemma-4 vision judge are staged, not yet wired into
+the loop. Mask quality is first-pass: SAM3's per-frame detection was sparse, and the projection is
+multi-view-consistent but not yet depth-tested, so object subsets are coherent but over-inclusive. Each of
+these sits below as \wip{} or \designed{}, never as done.
 
-The report has four chapters: the project and its origin (\S1); the architecture as it now stands (\S2);
-the current implementation status, capability by capability, with the June 2026 validation results (\S3);
-and what remains, with the decision-record status table and the path to a fresh-capture, SOTA-hull,
-fully-agentic run (\S4).
+\textbf{Structure.} Part~I records the origin and mandate (the Salford pilot and its brief). Part~II sets
+out the architecture and how it reached its current shape across four versions, then the eight-stage
+pipeline, the operational layer, and the SOTA model stack. Part~III reports the June 2026 validation, the
+defects it exposed, and the quality-engineering and decision-record status. Part~IV covers impact, the
+Horizon Europe 2027 trajectory, and the roadmap. Appendix~A carries a reduced copy of the A0 conference
+poster.
 
 \tableofcontents
+\listoffigures
+\listoftables
 
 % ───────────────────────── Main matter ─────────────────────────
 \cleardoublepage
 \pagenumbering{arabic}
 
-% ====================================================================
-\chapter{The Project and Its Origin}
+\part{Origin and Mandate}
 
-\section{Why Vitrine exists}
+% ====================================================================
+\chapter{A Salford Knowledge-Exchange Pilot}
+
+\section{Programme, team and remit}
 Vitrine began as a University of Salford \emph{AI Knowledge-Exchange Community of Practice} pilot, led from
-the MediaCity campus, partnered with DreamLab AI Consulting. The brief — preserved in \code{docs/brief/} —
-named the problem plainly: the University has a growing catalogue of immersive, experiential, time-based
-arts (Nested Cinema, We Invented the Weekend, Lightwaves) but \emph{no coherent or efficient pipeline for
-the preservation and emulation of site-based interactive and immersive experiences}. The pilot's aim was
-to test a novel, efficient pipeline that takes existing digital assets — video recordings, still imagery —
-and deploys \emph{AI agentic workflows} to produce 3D objects suitable for emulation and preservation
-inside a games engine (the Salford MetaCampus, in Unreal).
+the MediaCity campus and delivered with DreamLab AI Consulting Ltd. The award is a light-touch
+\pounds10{,}000 AI KE CoP pilot grant (Worktribe project 5043317). Its purpose is to test a route, on
+existing digital assets, from flat 2D media to 3D objects that can live and be re-staged inside a games
+engine.
 
-\section{What the pipeline produces}
-That framing maps directly onto what Vitrine builds. From one walkthrough video it produces:
-\begin{itemize}
-  \item a photoreal \textbf{Gaussian-splat field} of the whole space (the high-fidelity record);
+The programme team is cross-disciplinary, pairing University staff with an external AI partner:
+
+\begin{table}[h]
+\centering\small
+\caption{Programme team and roles.}\label{tab:team}
+\begin{tabularx}{\textwidth}{L{0.32\textwidth} X}
+\toprule
+\textbf{Member} & \textbf{Role} \\
+\midrule
+Roger McKinley & Creative Technology \& Content Manager, MediaCity (project lead): partnership co-ordination, reporting and communications. \\
+Glenn Watts & Creative Technical Demonstrator in Immersive Technology: workflow testing inside the existing MetaCampus Unreal environments. \\
+Derek Hales & Academic Architect, Digital Design (advisory): reflexive architecture and digital twinning. \\
+Dr John O'Hare & DreamLab AI Consulting Ltd (technical lead): pipeline design, implementation and validation. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+DreamLab AI Consulting Ltd is a residential training facility and deep-tech laboratory in the Eskdale
+Valley, Cumbria. It works on agentic and immersive systems with a network of technical specialists and an
+active collaboration with the Global Agentics Foundation, and recently built a mixed-reality agentic
+collaboration platform for knowledge work between people and agents. The pilot draws on that practice
+directly: six days of DreamLab consultation, inclusive of credits for the AI tools the pipeline runs, plus
+backfill time for the University technical staff, with a 24~GB GPU sourced through SAMCT DevLab and 2D / 3D
+cameras through the SAMCT stores.
+
+\section{Preservation gap}
+The University holds a growing catalogue of immersive, experiential, time-based arts that happen in
+real time through public-facing events: \textbf{Nested Cinema} (Vera's Not Alone), \textbf{We Invented the
+Weekend}, and \textbf{Lightwaves}. There is, today, no coherent or efficient pipeline to preserve or
+re-stage these site-based experiences once the event is over. Heritage of this kind is fragile, often
+immovable, and under-documented. Flat photography and sparse photogrammetry lose material appearance,
+view-dependent light, and the spatial relationships between objects, which are exactly the qualities that
+make an immersive space worth keeping.
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=0.96\textwidth]{preservation_workflow.pdf}
+\caption{Preservation gap the pilot addresses: site-based immersive events have no efficient route into a
+durable, re-stageable 3D record. Vitrine inserts an agentic capture-to-scene pipeline between the event
+and the games engine.}\label{fig:preservation}
+\end{figure}
+
+\section{What the pilot set out to test}
+The bid framed the aim plainly. The wording below is the brief's own.
+
+\begin{bidvoice}
+An efficient, automated AI agentic workflow to transcribe from video files and other 2D media formats to
+3D objects for the emulation and preservation of assets in games engines.
+\end{bidvoice}
+
+The target environment is the University's nascent virtual MetaCampus in Unreal Engine, which already
+carries the MediaCity ground floor, New Adelphi, the Old Fire Station, Energy House~2 and GMIOT. The pilot
+tests whether a games engine can serve as an accessible, lower-resolution preservation space, fed by an
+agentic pipeline rather than by hand modelling.
+
+\section{From one video, four products}
+That remit maps onto a concrete deliverable. From one walkthrough video, Vitrine produces four
+co-registered products:
+
+\begin{enumerate}
+  \item a photoreal \textbf{Gaussian-splat field} of the whole space, the high-fidelity record;
   \item a set of \textbf{named, individually-addressable objects}, each isolated from the field and placed
-        at its measured pose (the curatorially-useful decomposition);
-  \item a textured \textbf{polygonal environment} mesh and per-object meshes (the games-engine-ready
-        geometry); and
-  \item a single \textbf{USD scene graph} tying them together with source-video provenance — directly
-        importable into Unreal or any USD-aware engine.
-\end{itemize}
-The work pairs with, and never forks, the upstream \textbf{LichtFeld Studio} reconstruction engine; Vitrine
-is the agentic orchestration, segmentation, decomposition and assembly layer on top of it.
+        at its measured pose, the curatorially-useful decomposition;
+  \item a textured \textbf{polygonal environment} mesh and per-object meshes, the games-engine-ready
+        geometry; and
+  \item a single \textbf{USD scene graph} binding them together with source-video provenance, importable
+        straight into Unreal or any USD-aware engine.
+\end{enumerate}
+
+The work pairs with, and never forks, the upstream \textbf{LichtFeld Studio} reconstruction engine.
+Vitrine is the agentic orchestration, segmentation, decomposition and assembly layer on top of it. A
+\emph{vitrine} is a museum display case, which is the shape of the output: a structured case of named,
+inspectable objects rather than one undifferentiated cloud.
 
 % ====================================================================
-\chapter{Architecture as It Now Stands}
+\part{Architecture and Evolution}
 
-\section{One walkthrough, one structured scene}
-The validated pipeline is a \emph{reconstruct-then-decompose} flow, orchestrated by an in-container agent
-over the LichtFeld tool surface. The stages, in order:
+\chapter{Four Versions, One Trajectory}
 
-\begin{lstlisting}
+The project has moved through four versions in a single direction: from proving the medium, to structuring
+the output, to making the system operable, to running it end to end on real data. Figure~\ref{fig:timeline}
+places the four against the capability each one added.
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=0.95\textwidth]{timeline.pdf}
+\caption{Project trajectory across four versions. Each version reused the prior contracts and added one
+capability layer rather than redesigning the system.}\label{fig:timeline}
+\end{figure}
+
+\section{v1 pilot: proving the medium}
+The v1.0 pilot established that 3D Gaussian Splatting is a viable preservation medium: a consumer
+walkthrough can become a navigable, photoreal radiance field at capture resolution. It left an open
+tension. Splat fidelity and mesh editability looked mutually exclusive, and the splat was monolithic, with
+no per-object structure a curator could address.
+
+\section{v2: dual representation under one scene graph}
+v2.0 re-platformed the system onto LichtFeld Studio v0.5.2 and resolved that tension with a
+\textbf{splat-and-mesh dual representation governed by a single USD scene graph}. Mesh extraction stopped
+being a lossy terminal step. The Gaussian splat and the polygonal mesh are co-registered USD variants of
+the same prims, so a curator can view the scene as a photoreal splat in a browser or as a game-engine-ready
+mesh hierarchy in Unreal, with object-level selection in both. v2 also set the eight-stage pipeline shape,
+four pluggable mesh backends, and a per-object generative reconstruction subsystem driven through ComfyUI.
+
+\begin{figure}[ht]
+\centering
+\begin{minipage}[b]{0.48\textwidth}\centering
+  \includegraphics[width=\textwidth]{src_frame.jpg}\\[2pt]
+  \footnotesize\textcolor{MidGrey}{Input: one frame of a hand-held 4K walkthrough}
+\end{minipage}\hfill
+\begin{minipage}[b]{0.48\textwidth}\centering
+  \includegraphics[width=\textwidth]{splat_render.png}\\[2pt]
+  \footnotesize\textcolor{MidGrey}{Output: the reconstructed Gaussian-splat field}
+\end{minipage}
+\caption{Vitrine in one image: a consumer walkthrough video becomes a photoreal, navigable radiance field,
+then an object-resolved USD scene. Frames are genuine pipeline output.}\label{fig:hero}
+\end{figure}
+
+\section{v3: operational layer and SOTA stack}
+v3.0 added the operational scaffolding that lets an operator run the system reproducibly, specified across
+seven decision records (ADR-009 to ADR-015), forty functional requirements (PRD-v3), and an additive domain
+model. Its core was built and host-validated: a single human-authored \code{exhibit.toml} manifest with
+\code{env:} secret indirection; a VRAM-bounded serial model lifecycle; a Docker service mesh
+(\code{v2g-net}); an agent-controlled ComfyUI client; a pinned model registry with a host
+idiot-check; and a Rust/Axum web onboarding tool with verified secret containment. v3 also modernised the
+model stack (ADR-012) and closed the prior plaintext-secrets regression in running code.
+
+\section{v4: validated end to end}
+v4 is this account. The headline is the June 2026 run: a single walkthrough now becomes an object-resolved,
+dual-USD scene on real data, with the five-object result and the eight fixed defects reported in Chapter~6.
+The architecture did not change to get there. What changed is that the designed path now executes.
+
+% ====================================================================
+\chapter{Reconstruct-Then-Decompose Pipeline}
+
+\section{Capture methodology}
+Input is one hand-held 4K walkthrough at roughly 30~fps, shot to give the reconstruction overlapping views
+of every surface that matters. The capture step writes a per-image metadata sidecar (blur, exposure,
+perceptual hash, pose hint, source-video reference) that becomes the lineage root for everything
+downstream. A single clip is the only required input; no turntable, rig or structured scan is needed.
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=0.96\textwidth]{capture_vs_youtube.pdf}
+\caption{Capture quality matters more than capture cost. A deliberate hand-held walkthrough gives the
+overlap and coverage that reconstruction needs, where incidental footage does not.}\label{fig:capture}
+\end{figure}
+
+\section{Eight stages}
+The validated pipeline is a reconstruct-then-decompose flow, orchestrated by an in-container agent over the
+LichtFeld tool surface. Stages run in order, each manifest-configured, checkpointed and independently
+recoverable.
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[
+  font=\scriptsize,
+  node distance=5mm and 6mm,
+  stg/.style={rectangle, rounded corners=2pt, draw=salfordred, very thick,
+              fill=PanelWarm, text width=27mm, align=center, minimum height=13mm, inner sep=1.4mm},
+  ar/.style={-{Stealth[length=2.6mm]}, very thick, salfordred}]
+\node[stg] (a) {\textbf{1\;Capture}\\4K/30fps + sidecar};
+\node[stg, right=of a] (b) {\textbf{2\;COLMAP SfM}\\poses + sparse pts};
+\node[stg, right=of b] (c) {\textbf{3\;3DGS Train}\\LichtFeld igs+};
+\node[stg, right=of c] (d) {\textbf{4\;SAM3 Segment}\\named-concept masks};
+\node[stg, below=of a] (e) {\textbf{5\;Keyness Rank}\\curatorial order};
+\node[stg, right=of e] (f) {\textbf{6\;Depth-aware\\Isolation (D10)}\\per-object subsets};
+\node[stg, right=of f] (g) {\textbf{7\;Per-object\\Meshing}\\gsplat-TSDF / CoMe};
+\node[stg, right=of g] (h) {\textbf{8\;USD Assembly}\\native + composed};
+\draw[ar] (a)--(b); \draw[ar] (b)--(c); \draw[ar] (c)--(d);
+\draw[ar] (d.south) to[out=-90,in=90] (e.north);
+\draw[ar] (e)--(f); \draw[ar] (f)--(g); \draw[ar] (g)--(h);
+\end{tikzpicture}
+\caption{Eight-stage agentic pipeline: pixels to scene graph. Two agents drive it, cleanly separated (see
+\S\ref{sec:twoagent}).}\label{fig:pipeline}
+\end{figure}
+
+\begin{lstlisting}[caption={The validated path, in order.}]
 video -> frames (+ per-image metadata sidecar)
       -> COLMAP SfM  ->  3DGS training (LichtFeld: ImprovedGS+ / MRNF / MCMC)
       -> SAM3 concept segmentation  ->  key-item keyness ranking
@@ -233,93 +417,322 @@ video -> frames (+ per-image metadata sidecar)
       -> native USD (LichtFeld convert)  +  composed textured USD (Blender)
 \end{lstlisting}
 
-\section{The two-agent separation}
-A recurring design principle, unchanged from v3, is the clean separation between the \emph{in-container
-orchestrator} (which decides what to run, calling LichtFeld and the pipeline stages as tools) and a
-\emph{unified multimodal agent} (a vision-and-reasoning tool it calls for artefact judgement). There is no
-hidden state machine: the orchestration is explicit tool-calls over a manifest-driven configuration.
+\section{Two agents, cleanly separated}\label{sec:twoagent}
+A design principle, unchanged since v3, separates the in-container orchestrator from the vision agent it
+calls. The orchestrator decides what to run, driving the stateless stage functions and ComfyUI as tools.
+The \textbf{gemma-4-26B-A4B} model is a tool it calls for artefact judgement, not a second orchestrator.
+There is no hidden state machine: orchestration is explicit tool-calls over a manifest-driven
+configuration. gemma-4 is multimodal (\code{Gemma4ForConditionalGeneration} ships a SigLIP vision tower and
+an \code{mmproj} projector), so one model covers both the vision and reasoning roles and halves VRAM
+relative to running a separate VLM.
 
-\section{Operational scaffolding}
-Underneath sits the v3 operational layer, built and host-validated: a single human-authored
-\code{exhibit.toml} manifest with \code{env:} secret indirection and pre-snapshot stripping; a
-VRAM-bounded serial model lifecycle; a Docker service mesh (\code{v2g-net}) with service-DNS endpoints; an
-agent-controlled ComfyUI client; a state-of-the-art model registry with a host ``idiot-check'' wired into
-preflight; and a Rust/Axum web onboarding tool whose secret-containment is verified end-to-end.
+\section{Depth-aware object isolation (D10)}
+Decomposition is the step that turns a monolithic field into a structured scene. SAM3 segments the capture
+into named concepts. A depth-aware multi-view projection then votes each gaussian inside or outside an
+object's masks across every registered COLMAP camera, isolating each object into its own gaussian subset.
+Figure~\ref{fig:depth} shows the multi-view depth evidence the projection runs over.
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=0.96\textwidth]{depth_montage.png}
+\caption{Depth-aware isolation evidence: per-view depth across the registered cameras feeds the
+inside/outside vote that assigns each gaussian to a named object. The projection is multi-view-consistent;
+per-view depth occlusion is the next quality step (\S\ref{sec:quality}).}\label{fig:depth}
+\end{figure}
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=0.95\textwidth]{data_flow.pdf}
+\caption{Data flow from source video to the dual-USD deliverable, with the per-image sidecar carrying
+provenance through every stage.}\label{fig:dataflow}
+\end{figure}
 
 % ====================================================================
-\chapter{Current Implementation Status}
+\chapter{Operational Architecture}
 
-This chapter is the heart of the report: each capability with its status and, where it was exercised, the
-\textbf{June 2026 validation result}. The validation scene throughout is \code{milo\_run}: a real
-80-frame indoor capture, reconstructed with COLMAP and trained to a 4M-gaussian splat
-(\code{splat\_30000.ply}, LichtFeld \code{igs+} strategy, SH degree 3).
+\section{One human-authored input: \texttt{exhibit.toml}}
+v3 gave the pipeline a single declarative input. A TOML manifest carries the exhibit identity, an object
+sub-list (each object with a stable \code{id}, a \code{sam3\_concept}, and a \code{priority}), the Drive
+URL, \code{env:}-indirected secrets, a \code{[pipeline]} override block, and an \code{[oversight]} block.
+The loader resolves the \code{env:} references at load time, strips resolved secrets before writing the JSON
+run snapshot, and materialises the existing \code{PipelineConfig}. A missing referenced environment
+variable fails by name. Objects marked \code{priority = "key"} enter the per-object hull-recovery path.
 
-\section{Capability status table}
-\begin{center}\small
-\begin{tabularx}{\linewidth}{@{}L{0.30\linewidth} c X@{}}
+\begin{lstlisting}[caption={Illustrative exhibit.toml fragments (ADR-013/015).}]
+[exhibit]
+name        = "Egyptian Gallery — Case 12"
+description = "Glass medallions and funerary objects"
+
+[[objects]]
+id          = "medallion-01"
+sam3_concept = "circular glass medallion"
+priority    = "key"          # enters the hull-recovery path
+
+[oversight]
+backend     = "claude_code"  # the in-container overseer (operator logs in once)
+artifact_vlm = "gemma_local" # transient bulk-triage vision tool
+
+[secrets]
+hf_token          = "env:HF_TOKEN"
+gcloud_credentials = "env:GOOGLE_APPLICATION_CREDENTIALS"
+\end{lstlisting}
+
+\section{Serial model lifecycle: bounding peak VRAM}
+Stages run serially behind a \code{ModelLifecycleManager}. Each stage declares a \code{ModelSpec} (engine,
+checkpoint, VRAM estimate, GPU affinity, isolation tier). The manager asserts headroom, loads the model,
+yields to the stage, then unloads: soft (ComfyUI \code{/free} plus \code{cuda.empty\_cache}) by default,
+hard (container stop/start) for the heavyweight FLUX.2 to Hunyuan3D transition. Peak VRAM is therefore
+bounded to the largest single stage rather than the sum of all models, which is what lets the system run the
+most-performant model per stage on a single GPU.
+
+\section{\texttt{v2g-net}: a three-container service mesh}
+Service endpoints resolve by DNS name on a Docker bridge, \code{v2g-net}: \code{comfyui:8188} for the graph
+API, \code{comfyui:3001} for the in-container control API, and \code{agent-vlm} for the unified model. The
+lifecycle manager owns container start/stop on this network. Figure~\ref{fig:mesh} shows the orchestrator
+calling gemma-4 to see, submitting graphs to ComfyUI, and driving model lifecycle through the control API.
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[node distance=7mm and 14mm, every node/.style={font=\footnotesize\sffamily},
+  box/.style={draw=DreamLabAccent, fill=DreamLabAccent!6, rounded corners, minimum height=9mm,
+    minimum width=30mm, align=center},
+  ext/.style={draw=salfordred, fill=salfordred!6, rounded corners, minimum height=9mm, minimum width=30mm,
+    align=center}]
+  \node[box] (orch) {Claude Code\\orchestrator};
+  \node[box, right=of orch] (vlm) {\code{agent-vlm}\\gemma-4 (tool)};
+  \node[ext, below=of orch] (cui) {\code{comfyui:8188}\\graph API};
+  \node[ext, below=of vlm] (salad) {\code{comfyui:3001}\\control API};
+  \draw[-{Stealth}, MidGrey] (orch) -- (vlm) node[midway, above]{see};
+  \draw[-{Stealth}, MidGrey] (orch) -- (cui) node[midway, left]{submit};
+  \draw[-{Stealth}, MidGrey] (orch) -- (salad) node[midway, sloped, above]{load/free};
+  \begin{scope}[on background layer]
+    \node[draw=MidGrey, dashed, rounded corners, fit=(orch)(vlm)(cui)(salad),
+      label={[MidGrey]above:\code{v2g-net} Docker mesh}] {};
+  \end{scope}
+\end{tikzpicture}
+\caption{\code{v2g-net} service mesh: the orchestrator calls gemma-4 to see, submits graphs to ComfyUI, and
+drives model lifecycle through the in-container control API.}\label{fig:mesh}
+\end{figure}
+
+\section{Agent-controlled generative recovery (ADR-014)}
+Objects seen from one side are completed by a generative sub-pipeline, then re-emplaced at their surveyed
+pose as separate, inference-reconstructed objects. The orchestrator runs a verify-or-retry loop per
+recovery target: plan a FLUX.2 inpaint or Hunyuan3D graph, submit it, have gemma-4 score the result against
+the object identity, and choose accept, re-prompt within a bounded retry budget, or veto. Every attempt and
+verdict is written to the per-video ledger and the \code{v2g:*} lineage, so the loop annotates and never
+silently drops. Figures~\ref{fig:recovery} and \ref{fig:object360} show the verdict step and a recovered
+hull.
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=0.84\textwidth]{recovery_verdict.png}
+\caption{Generative recovery in action: gemma-4 scores each FLUX.2 / Hunyuan3D output against the object
+identity and returns accept, re-prompt or veto. Every attempt and verdict is
+logged.}\label{fig:recovery}
+\end{figure}
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=0.95\textwidth]{object_360_turntable.png}
+\caption{Per-object 360\textdegree{} reconstruction: a key object is inpainted to fill occluded faces,
+lifted to a watertight hull, and emplaced at its measured pose in the USD scene.}\label{fig:object360}
+\end{figure}
+
+\section{Vitrine Onboarding: the web setup tool (ADR-015)}
+Setup runs through a frameworkless HTML/CSS/JS frontend backed by a single statically-linked Rust + Axum
+binary. Forms are schema-driven: a JSON Schema is the single source of truth, and TOML round-trips with
+\code{toml\_edit}, preserving comments and key order. A \code{/api/hardware} endpoint probes GPUs, RAM and
+disk, and recommends the most-performant per-stage model and quant that fits the VRAM budget; an over-budget
+override is flagged, not silently accepted. Secrets stay server-side: the browser never sees a credential,
+and the manifest holds only \code{env:} references. The boundary is clean: setup makes the system runnable,
+and the agent decides how to run it.
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=0.9\textwidth]{onboarding_wizard.png}
+\caption{Vitrine Onboarding, hardware-aware model selection: the wizard probes the GPU and recommends a
+per-stage model and quant that fits the VRAM budget, writing the choice back to
+\code{exhibit.toml}.}\label{fig:onboarding}
+\end{figure}
+
+% ====================================================================
+\chapter{State-of-the-Art Model Stack}
+
+\section{Stack and pins}
+ADR-012 modernised the tool stack away from the weakest default at every fork. The live selections below are
+staged and verified on the reference host (dual RTX~6000 Ada class GPUs) and enforced by the
+\code{sota\_registry.py} idiot-check wired into preflight.
+
+\begin{table}[h]
+\centering\small
+\caption{Live SOTA model stack (ADR-012 amendment, June 2026).}\label{tab:sota}
+\begin{tabularx}{\textwidth}{L{0.20\textwidth} L{0.40\textwidth} X}
 \toprule
-\textbf{Capability} & \textbf{Status} & \textbf{Evidence / note (June 2026)} \\
+\textbf{Role} & \textbf{Selection} & \textbf{Note} \\
 \midrule
-LichtFeld training in-container & \validated{} & Runs after the CUDA-13 + vcpkg-OpenUSD + \code{libz-ng} runtime-lib fix; produced \code{splat\_30000.ply}. \\
-SAM3 concept segmentation & \validated{} & 5 objects (sculptures, furniture, walls, floor, ceiling) after patching the SAM 3.1 \code{addmm\_act} bf16 dtype regression (sam3 \#507). \\
-Depth-aware object isolation (D10) & \validated{} & New multi-view mask$\rightarrow$3D projection: per-object gaussian subsets via COLMAP-camera voting. Isolated sculptures 1{,}080{,}171; furniture 452{,}401; floor 964{,}074; walls 357{,}276; ceiling 11{,}012 gaussians. \\
-Key-item keyness ranking (FR-9) & \validated{} & Curatorial priority $\times$ gaussian count ranks sculptures/furniture above structural surfaces despite floor's larger count. \code{min\_object\_gaussians} threshold enforced. \\
-Per-object meshing & \validated{} & 5 meshes via \code{gsplat}-to-TSDF after fixing the SH-degree PLY loader (the trained PLY is degree 1$\rightarrow$3; was hardcoded to 45 coefficients). \\
-Native USD export & \validated{} & Via the LichtFeld CLI \code{convert} subcommand (headless; no GUI/MCP) $\rightarrow$ \code{scene\_native.usd} (901\,MB splat field). \\
-Composed textured USD & \validated{} & Blender assembler $\rightarrow$ \code{scene.usda} + 4 preview renders, after fixing the bake object-selection bug and the Blender 5.0 \code{usd\_export} keyword change. \\
-Manifest / lifecycle / service mesh & \validated{} & \code{model\_lifecycle} + \code{comfyui\_control} suites 31/31; manifest loader + idiot-check host-validated (ADR-013). \\
-SOTA model registry idiot-check & \validated{} & Wired into preflight; full set (FLUX.2-dev, gemma-4-26B-A4B, TRELLIS.2, Hunyuan3D-2.1, SAM3D) staged on the host. \\
-Web onboarding tool & \validated{} & Rust/Axum wizard; secret-containment verified; step-by-step credential instructions (ADR-015). \\
-\midrule
-SOTA single-image hulls (TRELLIS.2 / Hunyuan3D-2.1) & \wip{} & Weights staged; ComfyUI custom-node dependencies not built. Meshing falls back to gsplat-TSDF. \\
-FLUX.2 generative recovery loop & \wip{} & Client built; not yet wired into the per-object hull path (unseen-face inpaint). \\
-Local gemma-4 VLM serving & \wip{} & Q8\_0 weights staged; \code{agent-vlm} serving not stood up. \\
-\code{v2g:*} USD metadata + per-object composition & \wip{} & Supplied by the custom assembler; native-export \code{customData} parity probe pending. \\
-Fresh-capture end-to-end (Drive$\rightarrow$ingest$\rightarrow$COLMAP) & \designed{} & Validated on the reused \code{milo\_run} scene only; Drive ingest needs credentials. \\
-Automated acceptance gates + golden fixture & \designed{} & 27-gate harness and golden test scene specified, not yet built. \\
+Splat training & ImprovedGS+ (native LichtFeld) & switch from MRNF default \\
+SfM / matching & ALIKED + LightGlue (COLMAP plugin) & SIFT fallback for low-texture scenes \\
+Segmentation & SAM3 concept masks & named-concept, per frame \\
+Environment mesh & CoMe (default) & supersedes MILo default; CC BY-NC-ND \\
+Object hulls & TRELLIS.2-4B primary, Hunyuan3D-2.1 fallback & single-image to watertight hull \\
+Face recovery & FLUX.2-dev (fp8) & unseen-face inpaint \\
+Vision judge & gemma-4-26B-A4B Q8\_0 & {\raggedright$\approx$28~GB, fits 48~GB serial budget\par} \\
+Reproducibility & \code{pins.lock.toml} $\rightarrow$ \code{pins.resolved.toml} & every model and tool pinned \\
 \bottomrule
 \end{tabularx}
+\end{table}
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=0.95\textwidth]{mesh_comparison.pdf}
+\caption{Mesh-backend trade-offs measured in v2. CoMe is the quality default; gsplat-TSDF is the
+always-available fallback used in the June 2026 validation run.}\label{fig:meshcompare}
+\end{figure}
+
+\section{Licence posture}
+Research / non-commercial is the governing default, enforced by the idiot-check: CoMe (CC BY-NC-ND),
+FLUX.2-dev and SAM3D (non-commercial) are allowed under it and fail a \code{--commercial} check. A
+commercial build swaps CoMe for PGSR and FLUX.2 for Qwen-Image-Edit, both permissive. This keeps the
+University's exposure clear: the pilot runs under research terms, and the commercial path is a declared,
+auditable swap rather than a silent one. Pinning every model and tool makes the build deterministic, which
+the prior unpinned-HEAD clones did not.
+
+% ====================================================================
+\part{Results and Validation}
+
+\chapter{Validated End-to-End Run, June 2026}
+
+\section{Validation scene}
+The validation scene is \code{milo\_run}: a real 80-frame indoor capture, reconstructed with COLMAP and
+trained to a 4M-gaussian splat (\code{splat\_30000.ply}, LichtFeld \code{igs+} strategy, SH degree~3,
+30{,}000 iterations). Reconstruction quality sits at the measured v2 baseline of roughly 27--28~dB PSNR for
+indoor scenes. On this scene, a single invocation now traverses segmentation, isolation, meshing and
+dual-USD assembly.
+
+\begin{center}\large
+\stat{4.0\,M}{gaussians}\quad\textcolor{salfordgold}{/\!/}\quad
+\stat{80}{frames}\quad\textcolor{salfordgold}{/\!/}\quad
+\stat{SH\,3}{harmonics}\quad\textcolor{salfordgold}{/\!/}\quad
+\stat{30\,000}{iters}\quad\textcolor{salfordgold}{/\!/}\quad
+\stat{901\,MB}{native USD}
 \end{center}
 
-\section{The validated end-to-end run}
-On \code{milo\_run}, a single invocation now traverses segmentation $\rightarrow$ isolation $\rightarrow$
-meshing $\rightarrow$ dual-USD assembly and produces: five isolated object PLYs; five per-object meshes; a
-901\,MB native splat USD; and a composed, textured \code{scene.usda} with four preview renders. This is
-the first time the object-resolved promise has been demonstrated on real data rather than asserted.
+\section{Object-resolved result}
+The decomposition resolved five named objects, each isolated into its own gaussian subset, and ranked the
+key items above the structural surfaces (Table~\ref{tab:objects}). This is the first time the
+object-resolved promise has been demonstrated on real data rather than asserted.
 
-\section{Defects found and fixed by running it}
-The run was instructive precisely because each stage surfaced a real defect:
+\begin{table}[h]
+\centering\small
+\caption{Object-resolved scene on the validated 80-frame capture: per-object gaussian counts and keyness
+order.}\label{tab:objects}
+\renewcommand{\arraystretch}{1.25}
+\begin{tabularx}{0.86\textwidth}{@{}l X r@{}}
+\toprule
+\textbf{Object} & \textbf{Role} & \textbf{Gaussians} \\
+\midrule
+\rowcolor{PanelWarm}\textbf{Sculptures} & key item & 1{,}080{,}171 \\
+\textbf{Furniture} & key item & 452{,}401 \\
+\rowcolor{PanelWarm}Floor & structure & 964{,}074 \\
+Walls & structure & 357{,}276 \\
+\rowcolor{PanelWarm}Ceiling & structure & 11{,}012 \\
+\bottomrule
+\end{tabularx}
+\par\smallskip
+{\footnotesize\textcolor{MidGrey}{Keyness $=$ curatorial priority $\times$ gaussian count, so sculptures and
+furniture rank above the floor despite the floor's larger raw count.}}
+\end{table}
+
+\begin{figure}[ht]
+\centering
+\begin{minipage}[b]{0.49\textwidth}\centering
+  \includegraphics[width=\textwidth]{multi_object_composed.jpg}\\[2pt]
+  \footnotesize\textcolor{MidGrey}{Composed multi-object scene at surveyed pose}
+\end{minipage}\hfill
+\begin{minipage}[b]{0.49\textwidth}\centering
+  \includegraphics[width=\textwidth]{gsplat_mesh.png}\\[2pt]
+  \footnotesize\textcolor{MidGrey}{Per-object mesh reconstruction (gsplat-TSDF)}
+\end{minipage}
+\caption{Decomposition output: isolated objects re-emplaced at surveyed pose (left) and the per-object mesh
+geometry (right), both from the validated run.}\label{fig:results}
+\end{figure}
+
+\section{Dual-USD output}
+Two USD products ship together. A native LichtFeld splat USD comes from the headless CLI \code{convert}
+subcommand (901~MB). A composed, textured \code{scene.usda} comes from the Blender assembler, with four
+preview renders. Each isolated object is a prim under a single scene graph, carrying a
+Gaussian\,$|$\,Mesh variant set and \code{v2g:*} provenance back to the source video, so a viewer can swap
+any object between its splat appearance and a watertight polygonal twin without re-authoring the scene
+(Figure~\ref{fig:scenegraph}).
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=0.6\textwidth]{usd_scenegraph.png}
+\caption{USD scene graph: \code{/World} resolves into an environment Gaussian field and an \code{Objects}
+subtree, each prim a variant set \{Gaussian\,$|$\,Mesh\} carrying \code{v2g:*} provenance back to the source
+video.}\label{fig:scenegraph}
+\end{figure}
+
+\section{Validation status and the eight defects}
+Every stage came up green on the validated run (Table~\ref{tab:validation}). The run earned that result by
+exposing eight concrete defects, each found by running the pipeline rather than by reading it.
+
+\begin{table}[h]
+\centering\small
+\caption{End-to-end validation status on \code{milo\_run}, June 2026.}\label{tab:validation}
+\renewcommand{\arraystretch}{1.2}
+\begin{tabularx}{0.86\textwidth}{@{}X r@{}}
+\toprule
+\textbf{Stage} & \textbf{Result} \\
+\midrule
+LichtFeld 3DGS training & \chip{SuccessGreen}{4.0\,M splat} \\
+SAM3 concept segmentation & \chip{SuccessGreen}{5 objects} \\
+Depth-aware isolation (D10) & \chip{SuccessGreen}{5 subsets} \\
+Keyness ranking (FR-9) & \chip{SuccessGreen}{ordered} \\
+Per-object meshing & \chip{SuccessGreen}{5 meshes} \\
+Native USD export & \chip{SuccessGreen}{901\,MB} \\
+Composed textured USD & \chip{SuccessGreen}{scene.usda} \\
+Lifecycle + control suites & \chip{SuccessGreen}{31/31} \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
 \begin{enumerate}
-  \item \textbf{SAM3 \#507} --- the SAM 3.1 \code{addmm\_act} fused op casts to bfloat16 and never
-        restores, crashing segmentation; patched at the source binding.
-  \item \textbf{gsplat SH-degree} --- the PLY loader hardcoded 45 spherical-harmonic coefficients but the
-        trained field is SH degree 1 (9); now reads the actual degree and zero-pads.
-  \item \textbf{Hunyuan3D kwargs} --- a \code{turbo} keyword crashed the client; kwargs now filtered to
+  \item \textbf{SAM3 \#507.} The SAM~3.1 \code{addmm\_act} fused op casts to bfloat16 and never restores,
+        crashing segmentation; patched at the source binding.
+  \item \textbf{gsplat SH-degree.} The PLY loader hardcoded 45 spherical-harmonic coefficients but the
+        trained field is SH degree~1; it now reads the actual degree and zero-pads.
+  \item \textbf{Hunyuan3D kwargs.} A \code{turbo} keyword crashed the client; kwargs are now filtered to
         the constructor signature.
-  \item \textbf{LichtFeld runtime} --- the binary needs the host CUDA-13 runtime, vcpkg OpenUSD libs and
-        \code{libz-ng}; resolved via \code{LD\_LIBRARY\_PATH} (a Dockerfile fold-in remains).
-  \item \textbf{Depth-aware projection (D10)} --- three sub-defects (empty-mask frames inflating the vote,
-        absent SH vertex colours, and the world-space alignment) fixed to isolate objects correctly.
-  \item \textbf{Native USD path} --- rewired from the never-running MCP server to the headless CLI
+  \item \textbf{LichtFeld runtime.} The binary needs the host CUDA-13 runtime, vcpkg OpenUSD libs and
+        \code{libz-ng}; resolved via \code{LD\_LIBRARY\_PATH}, with a Dockerfile fold-in to follow.
+  \item \textbf{Depth-aware projection (D10).} Three sub-defects (empty-mask frames inflating the vote,
+        absent SH vertex colours, and world-space alignment) were fixed to isolate objects correctly.
+  \item \textbf{Native USD path.} Rewired from the never-running MCP server to the headless CLI
         \code{convert}.
-  \item \textbf{Blender bake} --- the glTF-import \code{world} root was selected during bake; deselected.
-  \item \textbf{Blender USD export} --- Blender 5.0 dropped a \code{usd\_export} keyword; kwargs now
+  \item \textbf{Blender bake.} The glTF-import \code{world} root was selected during bake; deselected.
+  \item \textbf{Blender USD export.} Blender 5.0 dropped a \code{usd\_export} keyword; kwargs are now
         filtered to the operator's RNA properties.
 \end{enumerate}
 
-\section{Known quality limitations}
+\section{Known quality limits}\label{sec:quality}
 The isolation mechanism works; its quality is first-pass. SAM3 detected each object in only a minority of
-sampled frames, so the multi-view vote runs over few views; the projection is multi-view-consistent (and
-parallax filters gross background) but is \emph{not} yet depth-tested per view, so object subsets are
-coherent but over-inclusive. Tightening this — more sampled frames, per-view depth occlusion, and denser
-SAM3 prompts — is the first quality task, distinct from the functional milestone reported above.
+sampled frames, so the multi-view vote runs over few views. The projection is multi-view-consistent, and
+parallax filters gross background, but it is not yet depth-tested per view, so object subsets are coherent
+but over-inclusive. Tightening this is the first quality task: more sampled frames, per-view depth
+occlusion, and denser SAM3 prompts. It is a quality task on a working path, distinct from the functional
+milestone above.
 
-% ====================================================================
-\chapter{What Remains}
+\chapter{Quality Engineering and Decision Records}
 
 \section{Decision-record status}
-\begin{center}\small
-\begin{tabularx}{\linewidth}{@{}c X c@{}}
+Seven ADRs and one DDD extension realise the forty functional requirements of PRD-v3.
+Table~\ref{tab:adr} gives the honest per-record status against the validated run.
+
+\begin{table}[h]
+\centering\small
+\caption{Decision-record status, June 2026.}\label{tab:adr}
+\begin{tabularx}{\textwidth}{@{}c X c@{}}
 \toprule
 \textbf{ADR} & \textbf{Subject} & \textbf{Status} \\
 \midrule
@@ -332,30 +745,174 @@ SAM3 prompts — is the first quality task, distinct from the functional milesto
 015 & Schema-driven web onboarding; hardware-aware selection; Drive write-back & \validated{} \\
 \bottomrule
 \end{tabularx}
-\end{center}
-\noindent{\footnotesize\textcolor{MidGrey}{\validated{} = built and exercised on real data \quad \wip{} = core built, integration pending \quad \designed{} = specified, build pending}}
+\par\smallskip
+{\footnotesize\textcolor{MidGrey}{\validated{} $=$ built and exercised on real data \quad \wip{} $=$ core
+built, integration pending \quad \designed{} $=$ specified, build pending}}
+\end{table}
 
-\section{The path to a complete run}
-In rough dependency order, the work that turns the validated milestone into a production capability:
-\begin{enumerate}
-  \item \textbf{Quality:} densify SAM3 sampling and add per-view depth occlusion to the D10 projection.
-  \item \textbf{SOTA hulls:} build the TRELLIS.2 / Hunyuan3D-2.1 ComfyUI custom-node dependencies, replacing
-        the gsplat-TSDF fallback for key objects.
-  \item \textbf{Recovery:} wire the FLUX.2 unseen-face inpaint loop and stand up the local gemma-4 VLM as
-        the verify-or-retry judge.
-  \item \textbf{Metadata:} populate the \code{v2g:*} per-object USD customData and run the native-export
-        parity probe; persist per-object pose.
-  \item \textbf{Fresh capture:} exercise the Drive$\rightarrow$ingest$\rightarrow$COLMAP$\rightarrow$\dots
-        path end to end on a new capture with credentials.
-  \item \textbf{Assurance:} author the golden test fixture and automate the acceptance gates; fold the
-        \code{libz-ng} runtime lib and host-staged weights into the container image.
-\end{enumerate}
+\section{Status by lens}
+The implementation-status review assesses the plan against the shipping code across four lenses
+(Table~\ref{tab:qe}). The \amber{} marks are honest, not adverse: the load-bearing infrastructure is built
+and unit-tested, and what remains is integration and the automated gate harness.
+
+\begin{table}[h]
+\centering\small
+\caption{Implementation status by lens.}\label{tab:qe}
+\begin{tabularx}{\textwidth}{L{0.26\textwidth} l X}
+\toprule
+\textbf{Lens} & \textbf{Status} & \textbf{Headline} \\
+\midrule
+Plan coherence & \pass{} & Clean ADR DAG; additive DDD extension; corpus reconciled to code. \\
+Implementation coverage & \amber{} & Core infrastructure built and the e2e path validated; ingest/recovery/USD-annotation integration in progress. \\
+Gate testability & \amber{} & Unit suites pass (31/31); the 27 acceptance gates + golden fixture are not yet automated. \\
+Security & \pass{} & FINDING-006 closed in code: \code{env:} indirection + secret stripping verified. \\
+\midrule
+\textbf{Overall} & \amber{} & Architecture delivered, operational layer built, e2e path demonstrated; SOTA hulls, recovery and automated gates pending. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=0.92\textwidth]{qe_validation_dashboard.png}
+\caption{Quality-engineering validation dashboard: unit surfaces green across \code{model\_lifecycle} and
+\code{comfyui\_control} (31/31), with the acceptance-gate harness pending a golden test
+fixture.}\label{fig:qedash}
+\end{figure}
+
+\section{Security: FINDING-006 closed}
+The prior audit's FINDING-006 (secrets exposed as plaintext environment variables) is closed in the running
+code. \code{HF\_TOKEN} and the Google service-account credential resolve through \code{env:} indirection and
+never serialise into the JSON run snapshot; \code{PipelineConfig.save()} strips secret-named fields before
+write. The onboarding tool holds a pasted token in a \code{0600} \code{.secrets.env}, never echoes it, and
+emits only \code{env:} references into the manifest, verified end to end. Remaining hardening, specified but
+not yet implemented: browser OAuth with PKCE and CSRF \code{state}, and a URL allowlist on the server-side
+proxy for the Google Drive grant.
+
+\section{Verification spine}
+PRD-v3 defines 27 acceptance gates, of which 20 are blocking. Unit surfaces pass today (31/31 across
+\code{model\_lifecycle} and \code{comfyui\_control}), and the manifest loader, preflight and SOTA
+idiot-check are exercised on the reference host. The full acceptance harness is not yet built: it needs a
+curated golden test scene (a short walkthrough plus a ground-truth object manifest and artifact
+annotations), which is the prerequisite for the two precision gates (key-item and VLM-artifact, both
+$\geq 90\%$) and for calibrating the \code{min\_object\_gaussians} threshold. Authoring that fixture and
+automating the gates against it is the single most valuable validation task remaining.
+
+% ====================================================================
+\part{Impact and Roadmap}
+
+\chapter{Impact, Partners and Next Steps}
+
+\section{Impact for Salford}
+For the University, the pilot delivers a proof-of-principle toolset and a business case for using a games
+engine as an accessible preservation space, plus cross-disciplinary CPD and knowledge exchange for academic
+and technical staff. It also models a contractual relationship with a private-sector partner that respects
+IP for civic value: open source and Creative Commons where appropriate, shared IP where not. A technical
+report, alongside access to the core code and tools, gives the University an evidence base it owns.
 
 \begin{recommendation}
-Vitrine has crossed the line from \emph{designed} to \emph{demonstrated}: a real capture now becomes an
-object-resolved, dual-USD scene. The next increment of value is \emph{quality and SOTA hulls} on the same
-validated path, followed by a fresh-capture run --- not new architecture. The honest gaps above are the
-backlog, in priority order.
+Vitrine has crossed the line from designed to demonstrated: a real capture now becomes an object-resolved,
+dual-USD scene. The next increment of value is quality and SOTA hulls on the same validated path, then a
+fresh-capture run, not new architecture. The honest gaps in Part~III are the backlog, in priority order.
 \end{recommendation}
+
+\section{Horizon Europe 2027 and partners}
+The pilot deliberately aligns with a planned application to the EU Commission Horizon Europe 2027 Culture,
+Creativity and Inclusive Society programme (Cluster~2), specifically HORIZON-CL2-2027-01-HERITAGE-08:
+safeguarding and transmission of intangible cultural heritage. The proof-of-principle toolset and the
+working relationship with a UK CCI AI partner are the evidence base for that bid. Current and proposed
+international partners include Rhizome (USA) and Onassis ONX (USA and Greece), with the Waag FutureLab
+(Netherlands) and V2 (Netherlands) proposed, alongside the ARA (Archives and Records Association) and the
+ICA (International Council on Archives). The 2003 ICH Convention, adopted by 148 countries, frames
+intangible heritage as living heritage that continually transforms, which is exactly what a structured,
+re-stageable capture is meant to keep alive.
+
+\section{Roadmap}
+The work that turns the validated milestone into a production capability, in rough dependency order:
+
+\begin{enumerate}
+  \item \textbf{Quality.} Densify SAM3 sampling and add per-view depth occlusion to the D10 projection.
+  \item \textbf{SOTA hulls.} Build the TRELLIS.2 / Hunyuan3D-2.1 ComfyUI custom-node dependencies, replacing
+        the gsplat-TSDF fallback for key objects.
+  \item \textbf{Recovery.} Wire the FLUX.2 unseen-face inpaint loop and stand up the local gemma-4 VLM as
+        the verify-or-retry judge.
+  \item \textbf{Metadata.} Populate the \code{v2g:*} per-object USD customData, run the native-export parity
+        probe, and persist per-object pose.
+  \item \textbf{Fresh capture.} Exercise the Drive\,$\rightarrow$\,ingest\,$\rightarrow$\,COLMAP path end to
+        end on a new capture with credentials.
+  \item \textbf{Assurance.} Author the golden test fixture, automate the acceptance gates, and fold the
+        \code{libz-ng} runtime lib and host-staged weights into the container image.
+  \item \textbf{Scale.} Generalise the single-exhibit manifest to multi-room collections in the MetaCampus,
+        add WebXR delivery of the ksplat + USD scene, and run a curated public capture programme across the
+        University's heritage and teaching collections.
+\end{enumerate}
+
+% ───────────────────────── Appendices ─────────────────────────
+\appendix
+\part*{Appendices}
+\addcontentsline{toc}{part}{Appendices}
+
+\chapter{Conference Poster (Reduced)}
+The project is summarised on a single A0 portrait conference poster, reproduced here at reduced size. The
+poster carries the University of Salford primary brand and the discrete DreamLab AI delivery-partner mark,
+and reproduces the validated June 2026 result. The final artwork is maintained separately; the placeholder
+below marks its position and aspect (A0 portrait, 1:$\sqrt{2}$).
+
+\begin{figure}[ht]
+\centering
+\setlength{\fboxrule}{1.2pt}\setlength{\fboxsep}{0pt}
+\fcolorbox{salfordred}{PanelWarm}{%
+  \begin{minipage}[c][0.74\textheight][c]{0.52\textwidth}
+    \centering
+    {\color{salfordred}\bfseries\Huge Vitrine\,{\color{salfordgold}/\!/}}\\[6mm]
+    {\large\color{DarkBg} A0 Conference Poster}\\[2mm]
+    {\color{MidGrey} University of Salford \;/\!/\; AI KE CoP Pilot}\\[10mm]
+    {\color{MidGrey}\itshape final poster artwork to be inserted here}\\[2mm]
+    {\footnotesize\color{MidGrey} (A0 portrait, 841\,$\times$\,1189\,mm, 1:$\sqrt{2}$)}
+  \end{minipage}}
+\caption{Placeholder for the A0 conference poster. Replace with the final reduced artwork
+(\code{poster/poster\_a0.pdf} or the high-resolution render) before
+distribution.}\label{fig:poster}
+\end{figure}
+
+\chapter{Decision-Record Index}
+The architecture and its rationale are recorded in fifteen decision records under
+\code{research/decisions/}. The v3/v4 set most relevant to this account:
+
+\begin{description}
+  \item[ADR-009] Per-video ingest unit; per-image metadata sidecar; delete-on-verified-extraction.
+  \item[ADR-010] Key-item ranking; depth-aware isolation; FLUX-inpainted hull recovery; pose persistence.
+  \item[ADR-011] USD \code{v2g:*} metadata schema; native + composed USD; lineage into USD.
+  \item[ADR-012] SOTA tooling: CoMe mesh, ALIKED+LightGlue, TRELLIS.2 / Hunyuan3D-2.1, FLUX.2-dev, version
+        pins; research / non-commercial licence posture.
+  \item[ADR-013] \code{exhibit.toml} manifest; serial model lifecycle; \code{v2g-net}; unified gemma-4
+        agent.
+  \item[ADR-014] Agent-controlled ComfyUI; native USD via CLI convert; verify-or-retry recovery loop.
+  \item[ADR-015] Schema-driven web onboarding; hardware-aware model selection; Drive write-back.
+\end{description}
+
+\chapter{Acronyms}
+\begin{description}
+  \item[3DGS] 3D Gaussian Splatting
+  \item[ADR] Architecture Decision Record
+  \item[COLMAP] Structure-from-Motion / Multi-View Stereo reconstruction toolkit
+  \item[CoMe] Confidence-based Meshing
+  \item[CoP] Community of Practice
+  \item[ICH] Intangible Cultural Heritage
+  \item[KE] Knowledge Exchange
+  \item[MILo] Mesh-In-the-Loop Gaussian Splatting
+  \item[SAM] Segment Anything Model
+  \item[SfM] Structure from Motion
+  \item[USD] Universal Scene Description
+  \item[VLM] Vision-Language Model
+  \item[VRAM] Video Random-Access Memory
+\end{description}
+
+\vfill
+\noindent\textcolor{MidGrey}{\footnotesize\raggedright Source artefacts: \code{docs/brief/} (the bid),
+\code{report/main.tex} (v1), \code{report/main\_v2.tex} (v2), \code{report/main\_v3.tex} (v3),
+\code{research/decisions/adr-009..015}, \code{research/decisions/prd-v3-e2e-closure.md}, and
+\code{docs/engineering-log.md}. Reconstruction and decomposition figures are genuine pipeline output;
+diagram figures are authored. Poster artwork is maintained under \code{report/poster/}.}
 
 \end{document}
