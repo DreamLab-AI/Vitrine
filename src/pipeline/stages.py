@@ -2204,34 +2204,61 @@ class PipelineStages:
     # ------------------------------------------------------------------
 
     def _export_native_usd(self, out_path: Path) -> str:
-        """Best-effort native USD export via LichtFeld MCP (scene.export_usd,
-        v0.5.1+). Tries the resident training scene first, then a checkpoint
-        reload. Returns the path on success, "" on any failure (the composed
-        assembler remains the authority). Never raises.
+        """Best-effort native USD export via the LichtFeld CLI `convert`
+        subcommand (the binary reads .ply and writes native .usd/.usda
+        headlessly). Converts the trained scene gaussian field. Returns the path
+        on success, "" on any failure (the composed assembler stays authoritative).
+        Never raises.
         """
         try:
-            from pipeline.mcp_client import McpClient, McpError, McpConnectionError
-        except Exception:  # pragma: no cover - import guard
-            return ""
-        try:
-            client = McpClient(self.config.mcp_endpoint)
-            if not client.ping():
-                logger.info("Native USD export skipped: LichtFeld MCP not reachable at %s",
-                            self.config.mcp_endpoint)
+            # Source = the latest trained gaussian PLY for this job.
+            candidates = sorted(self.job_dir.rglob("model/**/*.ply"))
+            if not candidates:
+                candidates = sorted(p for p in self.job_dir.rglob("*.ply")
+                                    if p.name not in ("scene.ply",))
+            if not candidates:
+                logger.info("Native USD export skipped: no trained PLY found")
                 return ""
+            src_ply = candidates[-1]
+
+            # Resolve the LichtFeld binary (same candidate list as train()).
+            lfs_binary = self.config.training.lichtfeld_binary
+            for cand in (
+                lfs_binary,
+                "/opt/gaussian-toolkit/build/LichtFeld-Studio",
+                str(Path.home() / "workspace/gaussians/LichtFeld-Studio/build/LichtFeld-Studio"),
+            ):
+                if cand and Path(cand).exists():
+                    lfs_binary = cand
+                    break
+            if not lfs_binary or not Path(lfs_binary).exists():
+                logger.info("Native USD export skipped: LichtFeld binary not found")
+                return ""
+
+            # `convert` accepts .usd/.usda/.usdc (not .usdz).
+            if out_path.suffix not in (".usd", ".usda", ".usdc"):
+                out_path = out_path.with_suffix(".usda")
             out_path.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                client.export_usd(str(out_path))
-            except (McpError, McpConnectionError):
-                # Scene may not be resident; reload the latest checkpoint/PLY and retry.
-                candidates = sorted(self.job_dir.rglob("*.ckpt")) or sorted(self.job_dir.rglob("model/**/*.ply"))
-                if not candidates:
-                    return ""
-                client.load_checkpoint(str(candidates[-1]))
-                client.export_usd(str(out_path))
+
+            blib = Path(lfs_binary).parent
+            ld = ":".join(p for p in [
+                str(blib),
+                str(blib / "vcpkg_installed" / "x64-linux" / "debug" / "lib"),
+                str(blib / "vcpkg_installed" / "x64-linux" / "lib"),
+                "/opt/host-cuda-libs",
+                os.environ.get("LD_LIBRARY_PATH", ""),
+            ] if p)
+            proc = subprocess.run(
+                [str(lfs_binary), "convert", str(src_ply), str(out_path)],
+                capture_output=True, text=True, timeout=600,
+                env={**os.environ, "LD_LIBRARY_PATH": ld},
+            )
             if out_path.exists() and out_path.stat().st_size > 0:
-                logger.info("Native LichtFeld USD export -> %s", out_path)
+                logger.info("Native LichtFeld USD export -> %s (%d bytes)",
+                            out_path, out_path.stat().st_size)
                 return str(out_path)
+            logger.info("Native USD export produced no output (rc=%d): %s",
+                        proc.returncode, (proc.stderr or "")[-200:])
             return ""
         except Exception as exc:  # pragma: no cover - best-effort
             logger.info("Native USD export failed (%s); using composed assembler", exc)

@@ -375,12 +375,17 @@ def bake_vertex_colors_to_texture(
     """
     import bpy
 
-    bpy.context.view_layer.objects.active = obj
-    obj.select_set(True)
+    if getattr(obj, "type", None) != 'MESH':
+        return  # only mesh objects can be baked
 
-    # Ensure we're in object mode
+    # Ensure object mode and that ONLY this mesh is selected. The glTF import
+    # leaves a non-mesh 'world' root selected, and bpy.ops.object.bake operates
+    # on every selected object -> "Object 'world' is not a mesh".
     if bpy.context.mode != 'OBJECT':
         bpy.ops.object.mode_set(mode='OBJECT')
+    bpy.ops.object.select_all(action='DESELECT')
+    bpy.context.view_layer.objects.active = obj
+    obj.select_set(True)
 
     me = obj.data
 
@@ -470,7 +475,7 @@ def bake_vertex_colors_to_texture(
 def export_usd(output_path: str) -> None:
     """Export the scene as USD (.usda or .usdc based on extension)."""
     bpy.ops.object.select_all(action="SELECT")
-    bpy.ops.wm.usd_export(
+    desired = dict(
         filepath=output_path,
         selected_objects_only=False,
         export_materials=True,
@@ -479,6 +484,14 @@ def export_usd(output_path: str) -> None:
         export_cameras=True,
         overwrite_existing_textures=True,
     )
+    # wm.usd_export's keyword set varies across Blender versions (5.0 dropped
+    # 'overwrite_existing_textures'). Pass only properties this build accepts.
+    try:
+        valid = set(bpy.ops.wm.usd_export.get_rna_type().properties.keys())
+        kwargs = {k: v for k, v in desired.items() if k in valid}
+    except Exception:
+        kwargs = {k: v for k, v in desired.items() if k != "overwrite_existing_textures"}
+    bpy.ops.wm.usd_export(**kwargs)
 
 
 # ---------------------------------------------------------------------------
