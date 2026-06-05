@@ -219,7 +219,12 @@ class SAM3Segmentor:
             processor.confidence_threshold = confidence_threshold
 
         try:
-            # Set image and run text-prompted grounding
+            # NOTE: SAM3 (the external `sam3` package) hardcodes a bfloat16 cast
+            # internally while the processor feeds float32 pixels — this raises a
+            # dtype mismatch in the model's matmuls. Neither model.float() nor a
+            # bfloat16 autocast cleanly resolves it (autocast moves the error to a
+            # bf16-unsupported op). Tracked as a sam3-package-level fix; until then
+            # stages.segment() degrades to full-scene segmentation.
             state = processor.set_image(image)
             state = processor.set_text_prompt(concept_text, state)
         finally:

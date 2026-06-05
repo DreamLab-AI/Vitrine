@@ -1888,6 +1888,10 @@ class PipelineStages:
                 sig = inspect.signature(Hunyuan3DClient.__init__)
                 if "multiview" in sig.parameters:
                     h3d_kwargs["multiview"] = self.config.hunyuan3d.multiview
+                # Drop any kwargs the installed client version doesn't accept
+                # (e.g. 'turbo' is config-only on some versions) to avoid a
+                # TypeError that would crash this mesh strategy.
+                h3d_kwargs = {k: v for k, v in h3d_kwargs.items() if k in sig.parameters}
 
                 h3d = Hunyuan3DClient(**h3d_kwargs)
                 result = h3d.reconstruct_from_gaussians(ply_path)

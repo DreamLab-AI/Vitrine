@@ -72,13 +72,25 @@ def load_3dgs_ply(path: str) -> dict:
         dtype=torch.float32, device='cuda',
     ))
 
-    # SH coefficients: DC (3) + rest (45) = 48 -> [N, 16, 3]
+    # SH coefficients: DC (3) + rest. The PLY may carry fewer SH bands than
+    # degree 3 — e.g. LichtFeld's indoor preset trains at SH degree 1, giving 9
+    # f_rest fields, not 45 — so the old hardcoded range(45) raised
+    # "no field of name f_rest_9". Count what's present and zero-pad the higher
+    # bands up to degree 3 (15 rest bands) so the gsplat sh_degree=3 path holds.
     sh_dc = np.column_stack([v['f_dc_0'], v['f_dc_1'], v['f_dc_2']]).astype(np.float32)
-    sh_rest = np.column_stack(
-        [v[f'f_rest_{i}'] for i in range(45)]
-    ).astype(np.float32)
+    n_rest = sum(1 for p in v.properties if p.name.startswith('f_rest_'))
+    rest_bands = n_rest // 3
+    if rest_bands:
+        sh_rest = np.column_stack(
+            [v[f'f_rest_{i}'] for i in range(n_rest)]
+        ).astype(np.float32)
+        sh_rest_r = sh_rest.reshape(n, rest_bands, 3)
+    else:
+        sh_rest_r = np.zeros((n, 0, 3), dtype=np.float32)
+    if rest_bands < 15:
+        pad = np.zeros((n, 15 - rest_bands, 3), dtype=np.float32)
+        sh_rest_r = np.concatenate([sh_rest_r, pad], axis=1)
     sh_dc_r = sh_dc.reshape(n, 1, 3)
-    sh_rest_r = sh_rest.reshape(n, 15, 3)
     sh_all = np.concatenate([sh_dc_r, sh_rest_r], axis=1)  # [N, 16, 3]
     sh_coeffs = torch.tensor(sh_all, dtype=torch.float32, device='cuda')
 
