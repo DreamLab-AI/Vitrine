@@ -331,3 +331,62 @@ FR-40 codebase rename (high blast radius, mechanical, scheduled separately); GPU
 weight staging (host-only); live pin resolution (requires the .48 checkouts); pytest execution
 (no pytest in the build container — the two new suites, `test_model_lifecycle.py` and
 `test_comfyui_control.py`, are AST-clean and run in CI / on the host).
+
+---
+
+## v4 End-to-End Validation — 2026-06-05
+
+### Overview
+
+The pipeline was run **end to end on a real scene** for the first time, taking it from
+*designed* to *demonstrated*. A reused 80-frame indoor capture (`output/milo_run`) was trained
+to a 4M-gaussian field (LichtFeld `igs+`, `splat_30000.ply`, SH degree 3) and driven through
+segmentation → object isolation → meshing → dual-USD assembly. The run produced five isolated
+object PLYs, five per-object meshes, a 901 MB native splat USD, and a composed textured
+`scene.usda` with four preview renders. Every stage surfaced a real defect; eight were fixed.
+
+### Object resolution now works (SAM3 + ADR-010 D10)
+
+- **SAM3 #507** — the SAM 3.1 fused `addmm_act` casts operands to bfloat16 and never restores,
+  crashing segmentation (`mat1 and mat2 must have the same dtype`). Patched at the source binding
+  in `sam3_segmentor.py` (monkey-patch, survives container rebuilds). SAM3 now resolves 5 objects
+  (sculptures, furniture, walls, floor, ceiling). We segment **stills** per-frame then union by
+  concept — no video tracker — so SAM3 (kept after a web-verified SOTA check) remains the right model.
+- **Depth-aware multi-view projection (D10)** — replaced the broken world-XY heuristic in
+  `extract_objects`. `segment()` now persists per-frame masks; `_extract_with_mask_mv` projects every
+  gaussian centre through each registered COLMAP camera that has a per-frame mask, votes inside/outside
+  the mask across views (skipping empty-mask frames), and keeps gaussians inside the object in a
+  majority of detected views. Isolated: sculptures 1,080,171; furniture 452,401; floor 964,074;
+  walls 357,276; ceiling 11,012 gaussians — correctly keyness-ranked (sculptures/furniture above
+  structural surfaces). Three sub-defects fixed en route (empty-mask vote inflation, absent SH
+  vertex colours, alignment).
+
+### Meshing, native USD, composed USD
+
+- **gsplat SH-degree loader** — `load_3dgs_ply` hardcoded 45 f_rest coefficients but the trained PLY
+  is SH degree 1 (9); now reads the actual degree and zero-pads. gsplat-TSDF then produces real
+  meshes (was a degenerate fallback).
+- **Hunyuan3D kwargs** — `turbo` keyword crashed the client; kwargs filtered to the constructor signature.
+- **LichtFeld runtime** — the prebuilt binary needs the host CUDA-13 runtime, vcpkg OpenUSD libs and
+  `libz-ng`; resolved via `LD_LIBRARY_PATH` (CUDA + vcpkg dirs) plus staging `libz-ng.so.2` into the
+  bind-mounted `build/`. This unblocked **training** in-container.
+- **Native USD** — rewired `_export_native_usd` from the never-running MCP server to the headless
+  LichtFeld CLI `convert` subcommand (`LichtFeld-Studio convert <ply> <out.usda>`).
+- **Blender** — fixed the bake selecting the glTF `world` root (`Object 'world' is not a mesh`) and the
+  Blender 5.0 `wm.usd_export` keyword change (`overwrite_existing_textures` removed); both now pass, so
+  `blender_assembled=True` with textured `scene.usda` + 4 renders.
+
+### Honest boundary
+
+Validation was on the **reused** `milo_run` scene, not a fresh Drive→ingest→COLMAP capture. Meshes use
+the **gsplat-TSDF fallback**, not the SOTA single-image hulls (TRELLIS.2 / Hunyuan node deps unbuilt).
+The FLUX.2 recovery loop and local gemma-4 VLM are staged but not wired. Isolation quality is first-pass
+(sparse SAM3 detection, no per-view depth occlusion → coherent but over-inclusive). These are tracked as
+in-progress/pending in `report/main_v4.tex` (the consolidated current-state report) and the README.
+
+### Docs
+
+ADR catalogue reconciled to current design (ADR-001 rewritten as the live architecture; evolved ADRs
+amended in place). The original bid + pitch brief extracted to `docs/brief/`. New consolidated
+current-state report `report/main_v4.tex` (v1/v2/v3 left as historical snapshots).
+

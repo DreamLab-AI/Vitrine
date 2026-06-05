@@ -150,6 +150,13 @@ research/
 
 ## Key Findings
 
+> **Current status (2026-06-05):** the findings below are the original research snapshot. The pipeline
+> has since been **validated end to end on real data** — SAM3 segmentation, depth-aware object isolation
+> (ADR-010 D10), per-object meshing, and native + composed USD all work. See
+> [report/main_v4.tex](../report/main_v4.tex) (consolidated current-state account) and
+> [docs/engineering-log.md](../docs/engineering-log.md) for the current state; the SAM2 / Hunyuan-3D-2.0
+> notes below are superseded (now SAM3 + TRELLIS.2 / Hunyuan-2.1).
+
 ### Critical Path
 
 The current pipeline uses these core components:

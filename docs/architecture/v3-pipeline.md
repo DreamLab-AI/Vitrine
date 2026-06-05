@@ -1,14 +1,19 @@
-# v3 Pipeline Design Reference (Proposed)
+# v3 Pipeline Design Reference
 
-> **Status: Proposed — not yet built.** All content below describes the design decided in ADR-012
-> through ADR-015 (2026-06-04). The current deployed system is the v2 three-container architecture
-> documented in [architecture.md](../architecture.md) and [overview.md](overview.md).
+> **Status (2026-06-05): largely built; core validated end-to-end on real data.** The operational
+> scaffolding (manifest, serial lifecycle, `v2g-net`, idiot-check, onboarding — ADR-013/015) is built
+> and host-validated, and the reconstruct→segment→isolate→mesh→USD path was run end to end on a real
+> 80-frame scene (June 2026). Still in progress: SOTA single-image hulls (TRELLIS.2/Hunyuan node
+> builds), the FLUX.2 recovery loop, gemma VLM serving, and a fresh-capture (Drive→ingest→COLMAP) run.
+> The design below is decided in ADR-012 through ADR-015 (amended in place to current choices); see
+> [report/main_v4.tex](../../report/main_v4.tex) for the consolidated current-state account and the
+> per-capability status table.
 
 This page ties the four decision records together into a single design reference.
 
 | Source ADR | Subject |
 |-----------|---------|
-| `adr-012-sota-tooling-modernisation.md` | SOTA defaults: MILo mesh, ALIKED+LightGlue, Hunyuan3D-2.1, FLUX.2-dev |
+| `adr-012-sota-tooling-modernisation.md` | SOTA defaults: **CoMe** mesh (default), ALIKED+LightGlue, **TRELLIS.2**/Hunyuan3D-2.1 hulls, FLUX.2-dev |
 | `adr-013-ingest-manifest-serial-model-lifecycle.md` | `exhibit.toml`, `ModelLifecycleManager`, `v2g-net`, Claude Code orchestrator, gemma-4 tool |
 | `adr-014-agent-controlled-comfyui-integration.md` | ComfyUI update/pin, Salad control API, `RecoveryController` agent loop |
 | `adr-015-vitrine-web-onboarding.md` | Vitrine Onboarding wizard, hardware-aware selection, secret containment, setup→agent hand-off |
