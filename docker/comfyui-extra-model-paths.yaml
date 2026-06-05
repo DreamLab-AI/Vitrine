@@ -1,0 +1,21 @@
+# Vitrine — map the host model-staging tree into the owner's ComfyUI.
+# base_path is the in-container mount of ~/comfyui-models-staging (-> /staging).
+vitrine_staging:
+  base_path: /staging
+  checkpoints: checkpoints
+  diffusion_models: diffusion_models
+  unet: unet
+  vae: vae
+  text_encoders: text_encoders
+  clip: clip
+  clip_vision: clip_vision
+  loras: loras
+  controlnet: controlnet
+  embeddings: embeddings
+  upscale_models: upscale_models
+  style_models: style_models
+  trellis2: trellis2
+  hunyuan3d: hunyuan3d
+  sam3d: sam3d
+  sam2: sam2
+  sam3: sam3
