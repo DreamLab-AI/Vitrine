@@ -4,14 +4,45 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Vitrine — From video to a living 3D world</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5/dist/reveal.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5/dist/theme/black.css">
   <style>
     :root { --r-background-color:#0a1626; }
     html, body, .reveal { background:#0a1626; }
-    .reveal .slides section { padding:0; }
+    .reveal .slides section { padding:0; height:100%; }
+
+    /* frosted glass content card */
+    .panel { position:absolute; box-sizing:border-box; max-width:42%; padding:24px 30px;
+      background:rgba(8,18,32,.58); -webkit-backdrop-filter:blur(10px) saturate(1.15);
+      backdrop-filter:blur(10px) saturate(1.15);
+      border:1px solid rgba(255,255,255,.10); border-left:5px solid var(--accent,#2fd4e8);
+      border-radius:16px; box-shadow:0 18px 50px rgba(0,0,0,.50);
+      text-align:left; opacity:0; transition:opacity .6s ease; }
+    .reveal .slides section.present .panel { opacity:1; }
+
+    .panel h3 { font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:36px; line-height:1.1;
+      margin:0 0 16px; color:#ffffff; letter-spacing:-.01em; }
+    .panel h3 .u { color:var(--accent,#2fd4e8); }
+    .panel ul { list-style:none; margin:0; padding:0; }
+    .panel li { font-family:'Inter',sans-serif; font-weight:600; font-size:26px; line-height:1.35;
+      color:#eaf2f8; margin:.40em 0; padding-left:1.25em; position:relative; }
+    .panel li::before { content:'▸'; position:absolute; left:0; color:var(--accent,#2fd4e8); font-weight:800; }
+    .panel .tagline { font-family:'Space Grotesk',sans-serif; font-weight:500; font-size:30px; color:#eaf2f8; line-height:1.25; }
+    .panel .credit { font-family:'Inter',sans-serif; font-size:17px; color:#9fb3c8; margin-top:12px; letter-spacing:.02em; }
+
+    .acc-amber { --accent:#ffc24b; }
+    .acc-green { --accent:#46e08a; }
+
+    .pos-left   { left:5%;  top:50%; transform:translateY(-50%); }
+    .pos-right  { right:5%; top:50%; transform:translateY(-50%); }
+    .pos-bottom { left:50%; bottom:6%; transform:translateX(-50%); max-width:74%; }
+    .pos-bottom.tag { text-align:center; }
+
     .corner { position:fixed; right:12px; bottom:10px; z-index:40; font:600 12px/1 Inter,Arial,sans-serif;
-              color:#9fb3c8; text-decoration:none; opacity:.6; }
+      color:#9fb3c8; text-decoration:none; opacity:.55; }
     .corner:hover { opacity:1; color:#2fd4e8; }
     .reveal .slide-number { background:transparent; color:#5e7a93; font-size:13px; }
   </style>
@@ -19,22 +50,121 @@
 <body>
   <a class="corner" href="tech/">Technical version →</a>
   <div class="reveal"><div class="slides">
-    <section data-background-color="#0a1626" data-background-image="assets/s01.png" data-background-size="contain"></section>
-    <section data-background-color="#0a1626" data-background-image="assets/s02.png" data-background-size="contain"></section>
-    <section data-background-color="#0a1626" data-background-image="assets/s03.png" data-background-size="contain"></section>
-    <section data-background-color="#0a1626" data-background-image="assets/s04.png" data-background-size="contain"></section>
-    <section data-background-color="#0a1626" data-background-image="assets/s05.png" data-background-size="contain"></section>
-    <section data-background-color="#0a1626" data-background-image="assets/s06.png" data-background-size="contain"></section>
-    <section data-background-color="#0a1626" data-background-image="assets/s07.png" data-background-size="contain"></section>
-    <section data-background-color="#0a1626" data-background-image="assets/s08.png" data-background-size="contain"></section>
-    <section data-background-color="#0a1626" data-background-image="assets/s09.png" data-background-size="contain"></section>
-    <section data-background-color="#0a1626" data-background-image="assets/s10.png" data-background-size="contain"></section>
+
+    <section data-background-color="#0a1626" data-background-image="assets/s01.png" data-background-size="contain">
+      <div class="panel pos-bottom tag">
+        <div class="tagline">Turn a video of a room into a <span style="color:#2fd4e8">3D world you can use</span></div>
+        <div class="credit">University of Salford · DreamLab AI</div>
+      </div>
+    </section>
+
+    <section data-background-color="#0a1626" data-background-image="assets/s02.png" data-background-size="contain">
+      <div class="panel pos-left acc-amber">
+        <h3>Save real <span class="u">places</span></h3>
+        <ul>
+          <li class="fragment fade-up">Film a real room or place</li>
+          <li class="fragment fade-up">Keep it forever in 3D</li>
+          <li class="fragment fade-up">For history, games and VR</li>
+        </ul>
+      </div>
+    </section>
+
+    <section data-background-color="#0a1626" data-background-image="assets/s03.png" data-background-size="contain">
+      <div class="panel pos-left">
+        <h3>Why it is <span class="u">hard</span></h3>
+        <ul>
+          <li class="fragment fade-up">Phone video is shaky and blurry</li>
+          <li class="fragment fade-up">A 3D model must be clean</li>
+          <li class="fragment fade-up">Going from one to the other is the hard part</li>
+        </ul>
+      </div>
+    </section>
+
+    <section data-background-color="#0a1626" data-background-image="assets/s04.png" data-background-size="contain">
+      <div class="panel pos-right">
+        <h3>What you <span class="u">get</span></h3>
+        <ul>
+          <li class="fragment fade-up">A full 3D room</li>
+          <li class="fragment fade-up">Each object on its own</li>
+          <li class="fragment fade-up">Ready for a game engine</li>
+        </ul>
+      </div>
+    </section>
+
+    <section data-background-color="#0a1626" data-background-image="assets/s05.png" data-background-size="contain">
+      <div class="panel pos-left">
+        <h3>Smart by <span class="u">design</span></h3>
+        <ul>
+          <li class="fragment fade-up">First, check the video</li>
+          <li class="fragment fade-up">Then pick the best way</li>
+          <li class="fragment fade-up">Every video is different</li>
+        </ul>
+      </div>
+    </section>
+
+    <section data-background-color="#0a1626" data-background-image="assets/s06.png" data-background-size="contain">
+      <div class="panel pos-bottom">
+        <h3>Step by <span class="u">step</span></h3>
+        <ul>
+          <li class="fragment fade-up">Video → points of light</li>
+          <li class="fragment fade-up">Points → 3D shapes</li>
+          <li class="fragment fade-up">Shapes → real textures</li>
+          <li class="fragment fade-up">Into the game engine</li>
+        </ul>
+      </div>
+    </section>
+
+    <section data-background-color="#0a1626" data-background-image="assets/s07.png" data-background-size="contain">
+      <div class="panel pos-bottom">
+        <h3>One AI <span class="u">runs it all</span></h3>
+        <ul>
+          <li class="fragment fade-up">It works inside a container</li>
+          <li class="fragment fade-up">It checks, runs and fixes</li>
+          <li class="fragment fade-up">No person needed</li>
+        </ul>
+      </div>
+    </section>
+
+    <section data-background-color="#0a1626" data-background-image="assets/s08.png" data-background-size="contain">
+      <div class="panel pos-left acc-green">
+        <h3>Proof it <span class="u">works</span></h3>
+        <ul>
+          <li class="fragment fade-up">38% sharper images</li>
+          <li class="fragment fade-up">Best with 4K video</li>
+          <li class="fragment fade-up">Many objects, quickly</li>
+        </ul>
+      </div>
+    </section>
+
+    <section data-background-color="#0a1626" data-background-image="assets/s09.png" data-background-size="contain">
+      <div class="panel pos-bottom">
+        <h3>Many tools, <span class="u">one goal</span></h3>
+        <ul>
+          <li class="fragment fade-up">Splat or solid mesh</li>
+          <li class="fragment fade-up">Different object makers</li>
+          <li class="fragment fade-up">Always the best fit</li>
+        </ul>
+      </div>
+    </section>
+
+    <section data-background-color="#0a1626" data-background-image="assets/s10.png" data-background-size="contain">
+      <div class="panel pos-left acc-amber">
+        <h3>Explore your <span class="u">world</span></h3>
+        <ul>
+          <li class="fragment fade-up">Walk through it in VR</li>
+          <li class="fragment fade-up">Use it in any game</li>
+          <li class="fragment fade-up">Real places, brought back</li>
+        </ul>
+      </div>
+    </section>
+
   </div></div>
   <script src="https://cdn.jsdelivr.net/npm/reveal.js@5/dist/reveal.js"></script>
   <script>
     Reveal.initialize({
       hash: true, slideNumber: 'c/t', transition: 'fade', controls: true,
-      width: 1920, height: 1080, margin: 0
+      width: 1920, height: 1080, margin: 0,
+      fragments: true
     });
   </script>
 </body>
