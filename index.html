@@ -14,7 +14,6 @@
     html, body, .reveal { background:#0a1626; }
     .reveal .slides section { padding:0; height:100%; }
 
-    /* frosted glass content card */
     .panel { position:absolute; box-sizing:border-box; max-width:42%; padding:24px 30px;
       background:rgba(8,18,32,.58); -webkit-backdrop-filter:blur(10px) saturate(1.15);
       backdrop-filter:blur(10px) saturate(1.15);
@@ -56,6 +55,7 @@
         <div class="tagline">Turn a video of a room into a <span style="color:#2fd4e8">3D world you can use</span></div>
         <div class="credit">University of Salford · DreamLab AI</div>
       </div>
+      <aside class="notes">Headline stack: COLMAP → LichtFeld Studio (3D Gaussian Splatting) → SAM 3 → TRELLIS.2 / Hunyuan3D-2.1 → NVIDIA ArtiFixer → Unreal Engine 5.8 (Nanite + NanoGS). Driven by an in-container Claude Code agent + DiffusionGemma reasoner. ~30 named SOTA components, picked per video — not one fixed recipe.</aside>
     </section>
 
     <section data-background-color="#0a1626" data-background-image="assets/s02.png" data-background-size="contain">
@@ -67,6 +67,7 @@
           <li class="fragment fade-up">For history, games and VR</li>
         </ul>
       </div>
+      <aside class="notes">Capture: smartphone 4K (reference run used a Pixel 9 Pro); recommend 4K/60, 1/500s shutter. Routed variants: iPhone LiDAR / ARKit, event cameras. Ingest: rclone (Drive/cloud), PyAV + ffmpeg, SHA-256 integrity manifest, multi-sweep unified COLMAP. Partners: DreamLab AI · University of Salford (heritage / immersive MR).</aside>
     </section>
 
     <section data-background-color="#0a1626" data-background-image="assets/s03.png" data-background-size="contain">
@@ -78,6 +79,7 @@
           <li class="fragment fade-up">Going from one to the other is the hard part</li>
         </ul>
       </div>
+      <aside class="notes">Quality stack: MUSIQ (via pyiqa) no-reference image quality; Q-Align (alt); Variance-of-Laplacian (full-res 4K sharpness); structure-tensor λ₂ directional motion-blur metric → automatic recapture flag. The honest finding: the limit is motion blur in the capture, not the algorithms.</aside>
     </section>
 
     <section data-background-color="#0a1626" data-background-image="assets/s04.png" data-background-size="contain">
@@ -89,6 +91,7 @@
           <li class="fragment fade-up">Ready for a game engine</li>
         </ul>
       </div>
+      <aside class="notes">Delivery formats: FBX (baked-texture, Nanite) = the UE deliverable; GLB (PBR object intermediate); .ksplat for web (via @playcanvas/splat-transform); SOG / SPZ / compressed-PLY / PLY; USD/USDA archival only (LichtFeld's native ParticleField prim was dropped for UE). Targets: Unreal Engine 5.8, web viewers (SuperSplat / PlayCanvas).</aside>
     </section>
 
     <section data-background-color="#0a1626" data-background-image="assets/s05.png" data-background-size="contain">
@@ -100,6 +103,7 @@
           <li class="fragment fade-up">Every video is different</li>
         </ul>
       </div>
+      <aside class="notes">Diagnose: MUSIQ + Variance-of-Laplacian + structure-tensor λ₂ + SfM success + coverage / under-observed % + hardware profile. Router axes: sharpness · coverage · hardware · deliverable → selects the component combo (docs/asset-creation-decision-tree.md). Guardrails: quality gates (PASS/WARN/FAIL), SOTA preflight (sota_registry).</aside>
     </section>
 
     <section data-background-color="#0a1626" data-background-image="assets/s06.png" data-background-size="contain">
@@ -112,6 +116,7 @@
           <li class="fragment fade-up">Into the game engine</li>
         </ul>
       </div>
+      <aside class="notes">SfM: COLMAP 4.1 + ALIKED + LightGlue (SIFT is the live fallback); alts VGGT, DUSt3R, InstantSplat. 3DGS: LichtFeld Studio v0.5.3 — ImprovedGS+ with MRNF densification + PPISP; alts gsplat, 3DGUT/3DGRUT. Segmentation: SAM 3 (+ SAM 3.1 Object Multiplex), SAM 2; depth-aware mask projection. Objects (image→3D): TRELLIS.2-4B (primary) / Hunyuan3D-2.1 (fallback) / SAM-3D-Objects; view completion FLUX.2-dev (+ Mistral-3), Qwen-Image-Edit, MV-Adapter; DINOv3 conditioning; served on ComfyUI. Scene mesh: CoMe / gsplat-TSDF (Open3D) / MILo / 2DGS / PGSR / SuGaR. Cleanup+texture: MeshCleaner → xatlas → Blender Cycles bake. Engine: Unreal Engine 5.8 + Nanite + NanoGS.</aside>
     </section>
 
     <section data-background-color="#0a1626" data-background-image="assets/s07.png" data-background-size="contain">
@@ -123,6 +128,7 @@
           <li class="fragment fade-up">No person needed</li>
         </ul>
       </div>
+      <aside class="notes">Orchestrator: Claude Code inside the container (default oversight) — diagnose → select tool → drive → evaluate → recover; also visual artifact triage + object discovery. Local reasoner: DiffusionGemma-26B-A4B-it (Q8 GGUF via llama.cpp, host :8084); alts gemma-4 (vision), Qwen3-VL. Control surfaces (MCP): LichtFeld MCP :45677 (70+ tools, discovery-first); ComfyUI control :8188/:3001; UE Web Remote Control :30010 + UE MCP :8000 + unreal-mcp-bridge :9100. Harness guardrails: serial VRAM lifecycle (/free soft-unload + docker hard-stop), SOTA preflight, dependency preflight, quality gates. Containers: gaussian-toolkit (GPU0 brain), vitrine-comfyui (GPU0), milo (GPU1), come (GPU1), vitrine-unreal + bridge (GPU1); networks v2g-net + visionclaw_network; ~216 GB unified model store.</aside>
     </section>
 
     <section data-background-color="#0a1626" data-background-image="assets/s08.png" data-background-size="contain">
@@ -134,6 +140,7 @@
           <li class="fragment fade-up">Many objects, quickly</li>
         </ul>
       </div>
+      <aside class="notes">INPUT: 1× 4K/30 handheld walkthrough (Pixel 9 Pro), multi-pass; ~13,600 frames → ~1,650 kept (original run 1,200 → 600); RGB only. Footage MUSIQ ≈ 31 (below ~19 = abandon); 0% under-observed, ~90 cameras per point; blur-aware selection lifts bottom-quartile sharpness +20–38%. OUTPUT: SfM 600/600 registered (locked 750), ~290k–367k sparse points, ~1.0–1.16 px reproj; 3DGS 30,000 iterations → ~4.0M Gaussians → SuperSplat-clean 2.48M → pruned 1.55M for UE; SAM 3 found 8 objects → 3–4 reconstructed cleanly (TRELLIS.2 beat Hunyuan3D) at 4096px PBR, placed at real scale (chair 60cm, ladder 210cm); room TSDF cleaned to ~51k verts / 81k faces, 2048² albedo (planarity 72% CoMe vs 70% 2DGS — capture-limited, shipped as the NanoGS splat hero). Compute: RTX 6000 Ada 48GB; 3DGS ~25 min, CoMe ~59 min, ArtiFixer 14B peak 45.5GB. The clean win is the OBJECTS; the room is capture-limited → recapture (4K/60) is the lever.</aside>
     </section>
 
     <section data-background-color="#0a1626" data-background-image="assets/s09.png" data-background-size="contain">
@@ -145,6 +152,7 @@
           <li class="fragment fade-up">Always the best fit</li>
         </ul>
       </div>
+      <aside class="notes">Optionality matrix. SfM: COLMAP+ALIKED+LightGlue | SIFT | VGGT | DUSt3R | InstantSplat. Scene: NanoGS splat | TSDF | CoMe | MILo | 2DGS | PGSR | SuGaR. Objects: TRELLIS.2 | Hunyuan3D-2.1 | SAM-3D-Objects. View synth / inpaint: FLUX.2 | FLUX.1-Fill | Qwen-Image-Edit | MV-Adapter. Enhancers: NVIDIA ArtiFixer (coverage) | BAD-Gaussians / 3dgs-deblur (blur) | AGS-Mesh (LiDAR) | EBAD-Gaussian (event). Splat-in-UE: NanoGS | MLSLabs | LiDAR point-cloud | XScene-UE. Agent brain: Claude Code | DiffusionGemma | gemma-4 / Qwen3-VL.</aside>
     </section>
 
     <section data-background-color="#0a1626" data-background-image="assets/s10.png" data-background-size="contain">
@@ -156,15 +164,18 @@
           <li class="fragment fade-up">Real places, brought back</li>
         </ul>
       </div>
+      <aside class="notes">Unreal Engine 5.8, Nanite, NanoGS (real Gaussians in-engine), Lumen; web via SuperSplat / SplatTransform → .ksplat (PlayCanvas / 2Xplat viewers); MR/VR headset exploration; Web Remote Control driving the live scene. Say-it-carefully: ALIKED+LightGlue is intended but SIFT ran; UE overlay is built but not started yet (Blender proves scenes); SAM-3D-Objects staged but wiring incomplete; DiffusionGemma optional, Claude Code is the live orchestrator; ArtiFixer proven to RUN on the 48GB card but not applied to this room (it fixes coverage, not blur).</aside>
     </section>
 
   </div></div>
   <script src="https://cdn.jsdelivr.net/npm/reveal.js@5/dist/reveal.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5/plugin/notes/notes.js"></script>
   <script>
     Reveal.initialize({
       hash: true, slideNumber: 'c/t', transition: 'fade', controls: true,
       width: 1920, height: 1080, margin: 0,
-      fragments: true
+      fragments: true,
+      plugins: [ RevealNotes ]
     });
   </script>
 </body>
