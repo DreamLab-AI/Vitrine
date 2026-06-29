@@ -6,7 +6,7 @@
   <title>Vitrine — From video to a living 3D world</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5/dist/reveal.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5/dist/theme/black.css">
   <style>
@@ -14,31 +14,47 @@
     html, body, .reveal { background:#0a1626; }
     .reveal .slides section { padding:0; height:100%; }
 
-    .panel { position:absolute; box-sizing:border-box; max-width:42%; padding:24px 30px;
-      background:rgba(8,18,32,.58); -webkit-backdrop-filter:blur(10px) saturate(1.15);
-      backdrop-filter:blur(10px) saturate(1.15);
+    .panel { position:absolute; box-sizing:border-box; max-width:43%; padding:22px 28px;
+      background:rgba(8,18,32,.60); -webkit-backdrop-filter:blur(11px) saturate(1.15);
+      backdrop-filter:blur(11px) saturate(1.15);
       border:1px solid rgba(255,255,255,.10); border-left:5px solid var(--accent,#2fd4e8);
-      border-radius:16px; box-shadow:0 18px 50px rgba(0,0,0,.50);
-      text-align:left; opacity:0; transition:opacity .6s ease; }
+      border-radius:16px; box-shadow:0 18px 50px rgba(0,0,0,.52);
+      text-align:left; opacity:0; transition:opacity .55s ease; }
     .reveal .slides section.present .panel { opacity:1; }
 
-    .panel h3 { font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:36px; line-height:1.1;
-      margin:0 0 16px; color:#ffffff; letter-spacing:-.01em; }
+    /* inner wrapper carries the rise-in animation (panel transform is reserved for positioning) */
+    .panel .inner { opacity:0; transform:translateY(16px); transition:opacity .55s ease .06s, transform .55s ease .06s; }
+    .reveal .slides section.present .panel .inner { opacity:1; transform:none; }
+
+    .panel h3 { font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:34px; line-height:1.1;
+      margin:0 0 14px; color:#ffffff; letter-spacing:-.01em; }
     .panel h3 .u { color:var(--accent,#2fd4e8); }
     .panel ul { list-style:none; margin:0; padding:0; }
-    .panel li { font-family:'Inter',sans-serif; font-weight:600; font-size:26px; line-height:1.35;
-      color:#eaf2f8; margin:.40em 0; padding-left:1.25em; position:relative; }
+    .panel li { font-family:'Inter',sans-serif; font-weight:600; font-size:25px; line-height:1.32;
+      color:#eaf2f8; margin:.34em 0; padding-left:1.2em; position:relative; }
     .panel li::before { content:'▸'; position:absolute; left:0; color:var(--accent,#2fd4e8); font-weight:800; }
+
+    /* second list — the presenter talk-track (named tech / figures) */
+    .panel .more { margin-top:15px; padding-top:12px; border-top:1px solid rgba(255,255,255,.15);
+      opacity:0; transform:translateY(12px); transition:opacity .5s ease .40s, transform .5s ease .40s; }
+    .reveal .slides section.present .panel .more { opacity:1; transform:none; }
+    .panel .more .lbl { font-family:'Space Grotesk',sans-serif; font-size:12.5px; letter-spacing:.16em;
+      text-transform:uppercase; color:var(--accent,#2fd4e8); font-weight:700; margin:0 0 6px; }
+    .panel .more li { font-size:17.5px; font-weight:500; color:#c4d3e0; line-height:1.28; margin:.16em 0; padding-left:1em; }
+    .panel .more li::before { content:'·'; font-weight:800; }
+    .panel .more .line { font-family:'Inter',sans-serif; font-size:17px; font-weight:500; color:#c4d3e0; line-height:1.35; }
+
     .panel .tagline { font-family:'Space Grotesk',sans-serif; font-weight:500; font-size:30px; color:#eaf2f8; line-height:1.25; }
-    .panel .credit { font-family:'Inter',sans-serif; font-size:17px; color:#9fb3c8; margin-top:12px; letter-spacing:.02em; }
+    .panel .credit { font-family:'Inter',sans-serif; font-size:17px; color:#9fb3c8; margin-top:10px; letter-spacing:.02em; }
 
     .acc-amber { --accent:#ffc24b; }
     .acc-green { --accent:#46e08a; }
 
-    .pos-left   { left:5%;  top:50%; transform:translateY(-50%); }
-    .pos-right  { right:5%; top:50%; transform:translateY(-50%); }
-    .pos-bottom { left:50%; bottom:6%; transform:translateX(-50%); max-width:74%; }
+    .pos-left   { left:4.5%; top:50%; transform:translateY(-50%); }
+    .pos-right  { right:4.5%; top:50%; transform:translateY(-50%); }
+    .pos-bottom { left:50%; bottom:5.5%; transform:translateX(-50%); max-width:80%; }
     .pos-bottom.tag { text-align:center; }
+    .pos-bottom.tag .more { text-align:center; }
 
     .corner { position:fixed; right:12px; bottom:10px; z-index:40; font:600 12px/1 Inter,Arial,sans-serif;
       color:#9fb3c8; text-decoration:none; opacity:.55; }
@@ -52,119 +68,152 @@
 
     <section data-background-color="#0a1626" data-background-image="assets/s01.png" data-background-size="contain">
       <div class="panel pos-bottom tag">
-        <div class="tagline">Turn a video of a room into a <span style="color:#2fd4e8">3D world you can use</span></div>
-        <div class="credit">University of Salford · DreamLab AI</div>
+        <div class="inner">
+          <div class="tagline">Turn a video of a room into a <span style="color:#2fd4e8">3D world you can use</span></div>
+          <div class="credit">University of Salford · DreamLab AI</div>
+          <div class="more"><div class="line">COLMAP · LichtFeld 3DGS · SAM 3 · TRELLIS.2 / Hunyuan3D-2.1 · NVIDIA ArtiFixer · Unreal Engine 5.8 — run by an AI agent</div></div>
+        </div>
       </div>
-      <aside class="notes">Headline stack: COLMAP → LichtFeld Studio (3D Gaussian Splatting) → SAM 3 → TRELLIS.2 / Hunyuan3D-2.1 → NVIDIA ArtiFixer → Unreal Engine 5.8 (Nanite + NanoGS). Driven by an in-container Claude Code agent + DiffusionGemma reasoner. ~30 named SOTA components, picked per video — not one fixed recipe.</aside>
+      <aside class="notes">Headline stack: COLMAP → LichtFeld Studio (3D Gaussian Splatting) → SAM 3 → TRELLIS.2 / Hunyuan3D-2.1 → NVIDIA ArtiFixer → Unreal Engine 5.8 (Nanite + NanoGS). Driven by an in-container Claude Code agent + DiffusionGemma reasoner. ~30 named SOTA components, picked per video.</aside>
     </section>
 
     <section data-background-color="#0a1626" data-background-image="assets/s02.png" data-background-size="contain">
       <div class="panel pos-left acc-amber">
-        <h3>Save real <span class="u">places</span></h3>
-        <ul>
-          <li class="fragment fade-up">Film a real room or place</li>
-          <li class="fragment fade-up">Keep it forever in 3D</li>
-          <li class="fragment fade-up">For history, games and VR</li>
-        </ul>
+        <div class="inner">
+          <h3>Save real <span class="u">places</span></h3>
+          <ul><li>Film a real room or place</li><li>Keep it forever in 3D</li><li>For history, games and VR</li></ul>
+          <div class="more"><div class="lbl">How</div><ul>
+            <li>Capture: smartphone 4K (best at 4K/60)</li>
+            <li>Ingest: rclone · ffmpeg · frame hashing</li>
+            <li>Optional: iPhone LiDAR, event cameras</li>
+          </ul></div>
+        </div>
       </div>
-      <aside class="notes">Capture: smartphone 4K (reference run used a Pixel 9 Pro); recommend 4K/60, 1/500s shutter. Routed variants: iPhone LiDAR / ARKit, event cameras. Ingest: rclone (Drive/cloud), PyAV + ffmpeg, SHA-256 integrity manifest, multi-sweep unified COLMAP. Partners: DreamLab AI · University of Salford (heritage / immersive MR).</aside>
+      <aside class="notes">Capture: smartphone 4K (reference run used a Pixel 9 Pro); recommend 4K/60, 1/500s shutter. Routed variants: iPhone LiDAR / ARKit, event cameras. Ingest: rclone (Drive/cloud), PyAV + ffmpeg, SHA-256 integrity manifest, multi-sweep unified COLMAP. Partners: DreamLab AI · University of Salford.</aside>
     </section>
 
     <section data-background-color="#0a1626" data-background-image="assets/s03.png" data-background-size="contain">
       <div class="panel pos-left">
-        <h3>Why it is <span class="u">hard</span></h3>
-        <ul>
-          <li class="fragment fade-up">Phone video is shaky and blurry</li>
-          <li class="fragment fade-up">A 3D model must be clean</li>
-          <li class="fragment fade-up">Going from one to the other is the hard part</li>
-        </ul>
+        <div class="inner">
+          <h3>Why it is <span class="u">hard</span></h3>
+          <ul><li>Phone video is shaky and blurry</li><li>A 3D model must be clean</li><li>Bridging the two is the hard part</li></ul>
+          <div class="more"><div class="lbl">How we measure</div><ul>
+            <li>MUSIQ image-quality score</li>
+            <li>Full-resolution sharpness (Laplacian)</li>
+            <li>Motion-blur detector → recapture flag</li>
+          </ul></div>
+        </div>
       </div>
       <aside class="notes">Quality stack: MUSIQ (via pyiqa) no-reference image quality; Q-Align (alt); Variance-of-Laplacian (full-res 4K sharpness); structure-tensor λ₂ directional motion-blur metric → automatic recapture flag. The honest finding: the limit is motion blur in the capture, not the algorithms.</aside>
     </section>
 
     <section data-background-color="#0a1626" data-background-image="assets/s04.png" data-background-size="contain">
       <div class="panel pos-right">
-        <h3>What you <span class="u">get</span></h3>
-        <ul>
-          <li class="fragment fade-up">A full 3D room</li>
-          <li class="fragment fade-up">Each object on its own</li>
-          <li class="fragment fade-up">Ready for a game engine</li>
-        </ul>
+        <div class="inner">
+          <h3>What you <span class="u">get</span></h3>
+          <ul><li>A full 3D room</li><li>Each object on its own</li><li>Ready for a game engine</li></ul>
+          <div class="more"><div class="lbl">Formats</div><ul>
+            <li>FBX game assets (Nanite) for Unreal</li>
+            <li>GLB textured objects · .ksplat for web</li>
+            <li>USD kept only for archive</li>
+          </ul></div>
+        </div>
       </div>
       <aside class="notes">Delivery formats: FBX (baked-texture, Nanite) = the UE deliverable; GLB (PBR object intermediate); .ksplat for web (via @playcanvas/splat-transform); SOG / SPZ / compressed-PLY / PLY; USD/USDA archival only (LichtFeld's native ParticleField prim was dropped for UE). Targets: Unreal Engine 5.8, web viewers (SuperSplat / PlayCanvas).</aside>
     </section>
 
     <section data-background-color="#0a1626" data-background-image="assets/s05.png" data-background-size="contain">
       <div class="panel pos-left">
-        <h3>Smart by <span class="u">design</span></h3>
-        <ul>
-          <li class="fragment fade-up">First, check the video</li>
-          <li class="fragment fade-up">Then pick the best way</li>
-          <li class="fragment fade-up">Every video is different</li>
-        </ul>
+        <div class="inner">
+          <h3>Smart by <span class="u">design</span></h3>
+          <ul><li>First, check the video</li><li>Then pick the best way</li><li>Every video is different</li></ul>
+          <div class="more"><div class="lbl">Under the hood</div><ul>
+            <li>Checks quality · coverage · hardware</li>
+            <li>Picks splat vs mesh, and object maker</li>
+            <li>Quality gates: pass / warn / fail</li>
+          </ul></div>
+        </div>
       </div>
-      <aside class="notes">Diagnose: MUSIQ + Variance-of-Laplacian + structure-tensor λ₂ + SfM success + coverage / under-observed % + hardware profile. Router axes: sharpness · coverage · hardware · deliverable → selects the component combo (docs/asset-creation-decision-tree.md). Guardrails: quality gates (PASS/WARN/FAIL), SOTA preflight (sota_registry).</aside>
+      <aside class="notes">Diagnose: MUSIQ + Variance-of-Laplacian + structure-tensor λ₂ + SfM success + coverage / under-observed % + hardware profile. Router axes: sharpness · coverage · hardware · deliverable → selects the component combo. Guardrails: quality gates (PASS/WARN/FAIL), SOTA preflight (sota_registry).</aside>
     </section>
 
     <section data-background-color="#0a1626" data-background-image="assets/s06.png" data-background-size="contain">
       <div class="panel pos-bottom">
-        <h3>Step by <span class="u">step</span></h3>
-        <ul>
-          <li class="fragment fade-up">Video → points of light</li>
-          <li class="fragment fade-up">Points → 3D shapes</li>
-          <li class="fragment fade-up">Shapes → real textures</li>
-          <li class="fragment fade-up">Into the game engine</li>
-        </ul>
+        <div class="inner">
+          <h3>Step by <span class="u">step</span></h3>
+          <ul><li>Video → points of light → 3D shapes → real textures → game engine</li></ul>
+          <div class="more"><div class="lbl">Components</div><ul>
+            <li>Poses → splat: COLMAP + ALIKED + LightGlue → LichtFeld Studio</li>
+            <li>Objects: SAM 3 → TRELLIS.2 / Hunyuan3D-2.1 (textured GLB)</li>
+            <li>Mesh → FBX: CoMe / TSDF → xatlas bake → UE 5.8 (Nanite)</li>
+          </ul></div>
+        </div>
       </div>
       <aside class="notes">SfM: COLMAP 4.1 + ALIKED + LightGlue (SIFT is the live fallback); alts VGGT, DUSt3R, InstantSplat. 3DGS: LichtFeld Studio v0.5.3 — ImprovedGS+ with MRNF densification + PPISP; alts gsplat, 3DGUT/3DGRUT. Segmentation: SAM 3 (+ SAM 3.1 Object Multiplex), SAM 2; depth-aware mask projection. Objects (image→3D): TRELLIS.2-4B (primary) / Hunyuan3D-2.1 (fallback) / SAM-3D-Objects; view completion FLUX.2-dev (+ Mistral-3), Qwen-Image-Edit, MV-Adapter; DINOv3 conditioning; served on ComfyUI. Scene mesh: CoMe / gsplat-TSDF (Open3D) / MILo / 2DGS / PGSR / SuGaR. Cleanup+texture: MeshCleaner → xatlas → Blender Cycles bake. Engine: Unreal Engine 5.8 + Nanite + NanoGS.</aside>
     </section>
 
     <section data-background-color="#0a1626" data-background-image="assets/s07.png" data-background-size="contain">
       <div class="panel pos-bottom">
-        <h3>One AI <span class="u">runs it all</span></h3>
-        <ul>
-          <li class="fragment fade-up">It works inside a container</li>
-          <li class="fragment fade-up">It checks, runs and fixes</li>
-          <li class="fragment fade-up">No person needed</li>
-        </ul>
+        <div class="inner">
+          <h3>One AI <span class="u">runs it all</span></h3>
+          <ul><li>It works inside a container · checks, runs and fixes · no person needed</li></ul>
+          <div class="more"><div class="lbl">The system</div><ul>
+            <li>Brain: Claude Code + DiffusionGemma reasoner</li>
+            <li>Drives 70+ tools over MCP across the container stack</li>
+            <li>Loads models one at a time — fits one 48 GB GPU</li>
+          </ul></div>
+        </div>
       </div>
       <aside class="notes">Orchestrator: Claude Code inside the container (default oversight) — diagnose → select tool → drive → evaluate → recover; also visual artifact triage + object discovery. Local reasoner: DiffusionGemma-26B-A4B-it (Q8 GGUF via llama.cpp, host :8084); alts gemma-4 (vision), Qwen3-VL. Control surfaces (MCP): LichtFeld MCP :45677 (70+ tools, discovery-first); ComfyUI control :8188/:3001; UE Web Remote Control :30010 + UE MCP :8000 + unreal-mcp-bridge :9100. Harness guardrails: serial VRAM lifecycle (/free soft-unload + docker hard-stop), SOTA preflight, dependency preflight, quality gates. Containers: gaussian-toolkit (GPU0 brain), vitrine-comfyui (GPU0), milo (GPU1), come (GPU1), vitrine-unreal + bridge (GPU1); networks v2g-net + visionclaw_network; ~216 GB unified model store.</aside>
     </section>
 
     <section data-background-color="#0a1626" data-background-image="assets/s08.png" data-background-size="contain">
       <div class="panel pos-left acc-green">
-        <h3>Proof it <span class="u">works</span></h3>
-        <ul>
-          <li class="fragment fade-up">38% sharper images</li>
-          <li class="fragment fade-up">Best with 4K video</li>
-          <li class="fragment fade-up">Many objects, quickly</li>
-        </ul>
+        <div class="inner">
+          <h3>Proof it <span class="u">works</span></h3>
+          <ul><li>38% sharper images</li><li>Best with 4K video</li><li>Many objects, quickly</li></ul>
+          <div class="more"><div class="lbl">By the numbers</div><ul>
+            <li>In: ~13.6k frames → ~1,650 kept · MUSIQ ≈31</li>
+            <li>Splat: 30k steps → 4.0M → 1.55M Gaussians</li>
+            <li>Objects: 8 found → 3–4 clean (TRELLIS.2), 4K PBR</li>
+            <li>Room: ~81k-face mesh, 2048² texture</li>
+            <li>One 48 GB GPU · splat ~25 min</li>
+          </ul></div>
+        </div>
       </div>
-      <aside class="notes">INPUT: 1× 4K/30 handheld walkthrough (Pixel 9 Pro), multi-pass; ~13,600 frames → ~1,650 kept (original run 1,200 → 600); RGB only. Footage MUSIQ ≈ 31 (below ~19 = abandon); 0% under-observed, ~90 cameras per point; blur-aware selection lifts bottom-quartile sharpness +20–38%. OUTPUT: SfM 600/600 registered (locked 750), ~290k–367k sparse points, ~1.0–1.16 px reproj; 3DGS 30,000 iterations → ~4.0M Gaussians → SuperSplat-clean 2.48M → pruned 1.55M for UE; SAM 3 found 8 objects → 3–4 reconstructed cleanly (TRELLIS.2 beat Hunyuan3D) at 4096px PBR, placed at real scale (chair 60cm, ladder 210cm); room TSDF cleaned to ~51k verts / 81k faces, 2048² albedo (planarity 72% CoMe vs 70% 2DGS — capture-limited, shipped as the NanoGS splat hero). Compute: RTX 6000 Ada 48GB; 3DGS ~25 min, CoMe ~59 min, ArtiFixer 14B peak 45.5GB. The clean win is the OBJECTS; the room is capture-limited → recapture (4K/60) is the lever.</aside>
+      <aside class="notes">INPUT: 1× 4K/30 handheld walkthrough (Pixel 9 Pro), multi-pass; ~13,600 frames → ~1,650 kept (original run 1,200 → 600); RGB only. Footage MUSIQ ≈ 31 (below ~19 = abandon); 0% under-observed, ~90 cameras per point; blur-aware selection lifts bottom-quartile sharpness +20–38%. OUTPUT: SfM 600/600 registered (locked 750), ~290k–367k sparse points, ~1.0–1.16 px reproj; 3DGS 30,000 iterations → ~4.0M Gaussians → SuperSplat-clean 2.48M → pruned 1.55M for UE; SAM 3 found 8 objects → 3–4 reconstructed cleanly (TRELLIS.2 beat Hunyuan3D) at 4096px PBR, real scale (chair 60cm, ladder 210cm); room TSDF cleaned to ~51k verts / 81k faces, 2048² albedo (planarity 72% — capture-limited, shipped as NanoGS splat hero). Compute: RTX 6000 Ada 48GB; 3DGS ~25 min, CoMe ~59 min, ArtiFixer 14B peak 45.5GB. The clean win is the OBJECTS; the room is capture-limited → recapture (4K/60) is the lever.</aside>
     </section>
 
     <section data-background-color="#0a1626" data-background-image="assets/s09.png" data-background-size="contain">
-      <div class="panel pos-bottom">
-        <h3>Many tools, <span class="u">one goal</span></h3>
-        <ul>
-          <li class="fragment fade-up">Splat or solid mesh</li>
-          <li class="fragment fade-up">Different object makers</li>
-          <li class="fragment fade-up">Always the best fit</li>
-        </ul>
+      <div class="panel pos-left">
+        <div class="inner">
+          <h3>Many tools, <span class="u">one goal</span></h3>
+          <ul><li>Splat or solid mesh</li><li>Different object makers</li><li>Always the best fit</li></ul>
+          <div class="more"><div class="lbl">The menu</div><ul>
+            <li>SfM: COLMAP / VGGT / DUSt3R</li>
+            <li>Scene: NanoGS · TSDF · CoMe · 2DGS · PGSR</li>
+            <li>Objects: TRELLIS.2 · Hunyuan3D-2.1 · SAM-3D</li>
+            <li>Fixers: ArtiFixer · deblur · LiDAR · event</li>
+            <li>Brain: Claude Code · DiffusionGemma</li>
+          </ul></div>
+        </div>
       </div>
       <aside class="notes">Optionality matrix. SfM: COLMAP+ALIKED+LightGlue | SIFT | VGGT | DUSt3R | InstantSplat. Scene: NanoGS splat | TSDF | CoMe | MILo | 2DGS | PGSR | SuGaR. Objects: TRELLIS.2 | Hunyuan3D-2.1 | SAM-3D-Objects. View synth / inpaint: FLUX.2 | FLUX.1-Fill | Qwen-Image-Edit | MV-Adapter. Enhancers: NVIDIA ArtiFixer (coverage) | BAD-Gaussians / 3dgs-deblur (blur) | AGS-Mesh (LiDAR) | EBAD-Gaussian (event). Splat-in-UE: NanoGS | MLSLabs | LiDAR point-cloud | XScene-UE. Agent brain: Claude Code | DiffusionGemma | gemma-4 / Qwen3-VL.</aside>
     </section>
 
     <section data-background-color="#0a1626" data-background-image="assets/s10.png" data-background-size="contain">
       <div class="panel pos-left acc-amber">
-        <h3>Explore your <span class="u">world</span></h3>
-        <ul>
-          <li class="fragment fade-up">Walk through it in VR</li>
-          <li class="fragment fade-up">Use it in any game</li>
-          <li class="fragment fade-up">Real places, brought back</li>
-        </ul>
+        <div class="inner">
+          <h3>Explore your <span class="u">world</span></h3>
+          <ul><li>Walk through it in VR</li><li>Use it in any game</li><li>Real places, brought back</li></ul>
+          <div class="more"><div class="lbl">In the engine</div><ul>
+            <li>Unreal Engine 5.8 + Nanite</li>
+            <li>NanoGS: real splats in-engine</li>
+            <li>Web: SuperSplat → .ksplat</li>
+          </ul></div>
+        </div>
       </div>
-      <aside class="notes">Unreal Engine 5.8, Nanite, NanoGS (real Gaussians in-engine), Lumen; web via SuperSplat / SplatTransform → .ksplat (PlayCanvas / 2Xplat viewers); MR/VR headset exploration; Web Remote Control driving the live scene. Say-it-carefully: ALIKED+LightGlue is intended but SIFT ran; UE overlay is built but not started yet (Blender proves scenes); SAM-3D-Objects staged but wiring incomplete; DiffusionGemma optional, Claude Code is the live orchestrator; ArtiFixer proven to RUN on the 48GB card but not applied to this room (it fixes coverage, not blur).</aside>
+      <aside class="notes">Unreal Engine 5.8, Nanite, NanoGS (real Gaussians in-engine), Lumen; web via SuperSplat / SplatTransform → .ksplat (PlayCanvas / 2Xplat viewers); MR/VR headset exploration; Web Remote Control driving the live scene. Say-it-carefully: ALIKED+LightGlue intended but SIFT ran; UE overlay built but not started yet; SAM-3D-Objects staged but wiring incomplete; DiffusionGemma optional, Claude Code is the live orchestrator; ArtiFixer runs on the 48GB card but not applied to this room (fixes coverage, not blur).</aside>
     </section>
 
   </div></div>
@@ -174,7 +223,6 @@
     Reveal.initialize({
       hash: true, slideNumber: 'c/t', transition: 'fade', controls: true,
       width: 1920, height: 1080, margin: 0,
-      fragments: true,
       plugins: [ RevealNotes ]
     });
   </script>
