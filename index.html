@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vitrine — Capture-Adaptive Video → 3D → Unreal Engine 5.8</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5/dist/reveal.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5/dist/theme/black.css" id="theme">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5/plugin/highlight/monokai.css">
+  <style>
+    :root { --r-background-color:#0d1b2a; --r-main-font: Inter, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; --r-heading-font: var(--r-main-font); }
+    html, body { background:#0d1b2a; }
+    .reveal { color:#e8eef3; font-family: var(--r-main-font); }
+    .reveal h1, .reveal h2, .reveal h3, .reveal h4 { color:#ffffff; text-transform:none; font-weight:700; letter-spacing:-0.01em; }
+    .reveal h2 { color:#eaf6f8; }
+    .reveal em { color:#26c6da; font-style:normal; }
+    .reveal strong { color:#7fe3ef; }
+    .reveal a { color:#26c6da; }
+    .reveal small { color:#9fb3c8; }
+    .reveal section img { border:none; background:#fff; box-shadow:0 10px 36px rgba(0,0,0,.55); border-radius:10px; max-height:60vh; }
+    .reveal ul { width:92%; }
+    .reveal li { margin:0.18em 0; }
+    .reveal .deemph { color:#9fb3c8; font-size:0.85em; }
+    .reveal .tag { color:#0d1b2a; background:#26c6da; border-radius:6px; padding:0 .4em; font-size:.7em; font-weight:700; }
+    .reveal section h2 { border-bottom:2px solid #1b3a52; padding-bottom:.2em; margin-bottom:.45em; }
+    .footer { position:fixed; bottom:8px; left:14px; font-size:12px; color:#5e7a93; z-index:30; }
+  </style>
+</head>
+<body>
+  <div class="footer">Vitrine · DreamLab AI / University of Salford · 2026</div>
+  <div class="reveal"><div class="slides">
+    <section data-markdown
+             data-separator="\r?\n---\r?\n"
+             data-separator-vertical="\r?\n--\r?\n"
+             data-separator-notes="^Note:">
+<script type="text/template">
+
+## Vitrine
+#### A Capture-Adaptive Video → 3D-Scene Pipeline for *Unreal Engine 5.8*
+
+Point it at video of a room → an editable, textured 3D scene:
+**room mesh + object game-assets**, ready in UE 5.8.
+
+<small>Dr John O'Hare · University of Salford / DreamLab AI · 2026</small>
+
+Note: One sentence — real handheld video to a game-engine-ready scene.
+
+---
+
+## The problem
+
+- Turning ordinary handheld video into a *usable, editable* 3D scene is unsolved end-to-end
+- A pretty Gaussian splat **≠** a game-ready mesh an artist can drop into a level
+- Capture quality varies wildly — one fixed pipeline breaks on the next clip
+- Use cases: cultural-heritage preservation, immersive / MR, digital twins
+
+Note: The gap is between a research artifact and a production asset.
+
+---
+
+## What Vitrine produces
+
+- A **room mesh** + individually reconstructed, placed, **textured object meshes**
+- Imported to **UE 5.8** as **FBX game-assets** with baked-texture materials (Nanite)
+- Optional compressed **`.ksplat`** for the web
+- USD is optional / archival — *not* the deliverable
+
+![](assets/scene.jpg)
+
+Note: North star is game-style assets, not a research dump.
+
+---
+
+## The big idea — *capture-adaptive routing*
+
+![](assets/hero.png)
+
+**DIAGNOSE** the capture (frame-QA, SfM, coverage, hardware) → **ROUTE** to the right recipe: a **SCENE** branch (splat or mesh → UE) and an always-on **OBJECTS** branch.
+
+Note: "Route by bottleneck" is the core contribution; everything else is detail under this.
+
+---
+
+## End-to-end pipeline
+
+`video → frame-QA (MUSIQ) → COLMAP SfM → 3DGS (LichtFeld) →`
+`SAM3 segment → object recon → scene mesh → texture bake → FBX → UE 5.8`
+
+- Each stage is a **swappable SOTA component**, not bespoke glue
+- Optional `.ksplat` branches off after 3DGS for web
+- The router decides *which* stages and enhancers run per capture
+
+Note: Walk the chain once so the stage slides have a home.
+
+---
+
+## Stage · ingest & frame quality
+
+- Per-video **drop-and-flag** gate using **MUSIQ** NR-IQA (pyiqa)
+- **Blur-aware selection** — sharpness on *full-res* frames (downscaled blur metrics lie)
+- FIFO *sharpest-per-window* raises the floor; frame-integrity manifest + sha256
+- Garbage frames never reach SfM
+
+Note: Quality is gated up front — the theme returns on the bottleneck slide.
+
+---
+
+## Stage · structure-from-motion
+
+- **COLMAP** with modern features: **ALIKED** keypoints + **LightGlue** matching
+- Produces camera poses + a sparse point cloud
+- Robust to wide-baseline handheld capture where classic SIFT struggles
+- Poses are the shared coordinate frame for splats, meshes, and object placement
+
+Note: Everything downstream lives in this frame.
+
+---
+
+## Stage · 3D Gaussian Splatting
+
+- Native C++23 / CUDA **3DGS via LichtFeld Studio v0.5.3** (ImprovedGS+, unpruned)
+- Produces the scene radiance field
+- Optional **`.ksplat`** export for web viewing
+- Unpruned splats feed cleaner downstream meshing
+
+Note: LichtFeld does the heavy GPU lifting — but it is a *tool we call*.
+
+---
+
+## Architecture · LichtFeld is a *vendored tool*
+
+- **Vitrine is the product; LichtFeld is a pinned dependency** (submodule @ v0.5.3)
+- We never modify it — we update by bumping the tag
+- Driven through its **first-class MCP server (70+ tools)**, discovery-first
+- Keeps us on upstream SOTA with no fork-maintenance burden
+
+Note: This separation is a deliberate, load-bearing decision.
+
+---
+
+## Stage · scene mesh
+
+![](assets/mesh.jpg)
+
+- Backends: **CoMe** (target), **gsplat-TSDF** (stable, validated), **MILo** → MeshCleaner(smooth=0)
+- Honest caveat: room mesh fidelity is *capture-limited* — on poor captures the splat is fairer than the mesh
+
+Note: TSDF is the safe scene path today; CoMe is being brought up.
+
+---
+
+## Stage · object reconstruction
+
+![](assets/object.jpg)
+
+- **SAM3** concept segmentation → per-object **SAM crops**
+- Image-to-3D via **TRELLIS.2 / Hunyuan3D-2.1 / SAM3D** → textured GLB
+- Objects get the quality budget (the room is capture-limited); re-placed at their SfM location
+
+Note: This is where quality is routed.
+
+---
+
+## Stage · texture bake & FBX
+
+- MeshCleaner(smooth=0) → **xatlas** UV unwrap
+- **Texture bake from vertex colors** (Blender Cycles, GPU)
+- Export **FBX** with baked-texture materials — the UE-delivery path
+- Replaces native USD export (next slide)
+
+Note: Baking turns research geometry into an asset the engine accepts.
+
+---
+
+## Stage · Unreal Engine 5.8 assembly
+
+![](assets/scene.jpg)
+
+- **In-repo UE 5.8** (no Epic gate; ADR-016) — import room + object FBX as **Nanite** game-assets
+- Optional **NanoGS** plugin embeds *real* Gaussians; control via Web Remote Control + UE MCP
+
+Note: Blender proves/pre-scales the scene when live UE assembly is flaky.
+
+---
+
+## Decision · why *not* USD?
+
+- LichtFeld's native USD export emits a **`ParticleField` prim UE cannot import**
+- UE also **drops vertex colours / displayColor**
+- So the UE deliverable uses our **mesh → bake → FBX** path; USD stays optional/archival
+- *(ADR-019 · docs/ANTIPATTERNS.md)*
+
+Note: A representative "tried the obvious thing, it failed" decision.
+
+---
+
+## Capture-conditional enhancers
+
+- The router switches enhancers in *only when a capture needs them*:
+  - **ArtiFixer** — floaters / holes / under-observed regions (runs on a single 48 GB Ada)
+  - **deblur** — motion blur · **densification** — sparse coverage
+- ArtiFixer fixes *under-observation*, **not** motion blur — blur is a capture fix
+
+Note: Adaptive toolbox, not always-on.
+
+---
+
+## Infrastructure · containers & MCP
+
+- **gaussian-toolkit** (COLMAP / LichtFeld / MCP / Blender / SAM3)
+- **vitrine-comfyui** (FLUX.2 / TRELLIS.2 / Hunyuan3D-2.1 / SAM3D)
+- **milo** · **come** · **unreal** overlay + **unreal-mcp-bridge**
+- Buses: `v2g-net` + shared `visionclaw_network`; everything MCP-controllable
+
+Note: An engineered multi-GPU system, not a notebook.
+
+---
+
+## SOTA discipline
+
+- **Always run clean SOTA** — newest stable, never a stale default
+- **Version-check, then pin** — no HEAD clones, no floating `latest`
+- One unified **~216 GB model tree**; a **preflight idiot-check** validates weights / VRAM / pins / licence
+- *(`python -m pipeline.sota_registry check`)*
+
+Note: Why results are reproducible and the stack stays current.
+
+---
+
+## Status · dreamlab end-to-end
+
+- **Validated:** scene mesh → texture → UE recipe on **TSDF**
+- **In progress:** object set via TRELLIS.2 / Hunyuan3D; **CoMe** being brought up
+- Objects lead on quality; room is capture-limited
+- *Live state: see `docs/engineering-log.md` + `report/v5/sec_results.tex`*
+
+Note: Lead with what's proven; be candid about what's building.
+
+---
+
+## The dominant bottleneck — *capture*
+
+- The limiting factor is **capture quality, not algorithms**
+- Old footage: **MUSIQ ~19**, dominated by **motion blur** (dense, not under-observed)
+- The real lever is **recapture**: **4K60, short-shutter**, deliberate coverage
+- Mitigation: route quality to *objects*; *room* fidelity has a capture ceiling
+
+Note: Reframes "the room looks rough" from a bug to a capture limit.
+
+---
+
+## Roadmap & close
+
+- **Now:** fresh high-quality capture · finish **CoMe** · complete the object set · web **NanoGS / SuperSplat**
+- **Next:** LichtFeld-native parity · interactive elements + lighting *(stretch)*
+- Entry points: `README.md` · `CLAUDE.md` · `report/v5/main.pdf` · LichtFeld MCP (`AGENTS.md`)
+
+#### *Point it at video of a room → an editable, textured 3D scene in UE 5.8.*
+
+Note: End on the thesis from slide 1 — now earned.
+
+</script>
+    </section>
+  </div></div>
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5/dist/reveal.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5/plugin/markdown/markdown.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5/plugin/highlight/highlight.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5/plugin/notes/notes.js"></script>
+  <script>
+    Reveal.initialize({
+      hash: true,
+      slideNumber: 'c/t',
+      transition: 'slide',
+      width: 1280, height: 720, margin: 0.06,
+      plugins: [ RevealMarkdown, RevealHighlight, RevealNotes ]
+    });
+  </script>
+</body>
+</html>
