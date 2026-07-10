@@ -137,3 +137,30 @@ plugInfo.json
 # only creates merge-conflict churn).
 src/rendering/rasterizer/vulkan/shader/generated/*.spv
 src/rendering/rasterizer/vulkan/shader/radix_sort/*.spv
+
+# ---------------------------------------------------------------------------
+# LaTeX build intermediates (report/, poster/ — regenerate on every build)
+# ---------------------------------------------------------------------------
+*.aux
+*.lof
+*.lot
+*.toc
+*.log
+*.out
+*.bbl
+*.blg
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.idx
+*.ind
+*.ilg
+*.glo
+*.gls
+*.glg
+*.nav
+*.snm
+*.vrb
+*.run.xml
+*.bcf
+texput.log
