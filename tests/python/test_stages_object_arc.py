@@ -52,6 +52,40 @@ def trained_ply(tmp_path) -> Path:
     return p
 
 
+def test_gpu_env_picks_freest_gpu(monkeypatch):
+    import subprocess as _sp
+    import types as _t
+    # nvidia-smi: GPU 0 has 5000 MiB free, GPU 1 has 42000 -> pick 1.
+    monkeypatch.setattr(_sp, "run", lambda *a, **k: _t.SimpleNamespace(
+        stdout="0, 5000\n1, 42000\n"))
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    env = PipelineStages._gpu_env({})
+    assert env["CUDA_VISIBLE_DEVICES"] == "1"
+
+
+def test_gpu_env_respects_existing_pin(monkeypatch):
+    import subprocess as _sp
+    called = {"n": 0}
+
+    def _fake_run(*a, **k):
+        called["n"] += 1
+        raise AssertionError("nvidia-smi should not run when pinned")
+    monkeypatch.setattr(_sp, "run", _fake_run)
+    env = PipelineStages._gpu_env({"CUDA_VISIBLE_DEVICES": "0"})
+    assert env["CUDA_VISIBLE_DEVICES"] == "0"
+    assert called["n"] == 0
+
+
+def test_gpu_env_falls_back_when_nvidia_smi_absent(monkeypatch):
+    import subprocess as _sp
+    def _boom(*a, **k):
+        raise FileNotFoundError("nvidia-smi")
+    monkeypatch.setattr(_sp, "run", _boom)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    env = PipelineStages._gpu_env({"FOO": "bar"})
+    assert env == {"FOO": "bar"}          # inherited, no CVD added
+
+
 def test_object_crops_is_a_registered_stage():
     assert "object_crops" in STAGE_NAMES
     assert STAGE_NAMES.index("object_crops") == STAGE_NAMES.index("segment") + 1

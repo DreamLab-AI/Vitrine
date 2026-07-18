@@ -711,6 +711,33 @@ class PipelineStages:
             artifacts={"colmap_dir": str(dataset_dir)},
         )
 
+    @staticmethod
+    def _gpu_env(base: "dict | None" = None) -> dict:
+        """Env dict targeting the GPU with the most free VRAM for a GPU subprocess.
+
+        Respects an existing ``CUDA_VISIBLE_DEVICES`` pin; falls back to the
+        inherited env when nvidia-smi is unavailable. Prevents COLMAP SIFT and
+        training from defaulting to a GPU another workload (e.g. a resident LLM
+        server) has saturated — the failure mode that produces 0 COLMAP matches
+        and silently kills reconstruction (observed 2026-07-18).
+        """
+        env = dict(base if base is not None else os.environ)
+        if env.get("CUDA_VISIBLE_DEVICES"):
+            return env
+        try:
+            out = subprocess.run(
+                ["nvidia-smi", "--query-gpu=index,memory.free",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=10).stdout.strip()
+            rows = [r.split(",") for r in out.splitlines() if r.strip()]
+            best = max(rows, key=lambda p: int(p[1]))
+            env["CUDA_VISIBLE_DEVICES"] = best[0].strip()
+            logger.info("Auto-selected GPU %s (%s MiB free) for GPU subprocess",
+                        best[0].strip(), best[1].strip())
+        except Exception as exc:  # noqa: BLE001 — fall back to inherited env
+            logger.debug("GPU auto-select unavailable (%s); inherited env", exc)
+        return env
+
     def _run_colmap_direct(self, output_dir: Path, frame_dir: Path) -> None:
         """Default COLMAP path: feature_extractor → matcher → mapper → image_undistorter.
 
@@ -740,7 +767,9 @@ class PipelineStages:
         if colmap_masks.is_dir() and any(colmap_masks.iterdir()):
             feat_cmd += ["--ImageReader.mask_path", str(colmap_masks)]
             logger.info("COLMAP feature extraction using ignore-masks at %s", colmap_masks)
-        subprocess.run(feat_cmd, check=True, capture_output=True, timeout=300)
+        gpu_env = self._gpu_env()   # steer SIFT to the freest GPU
+        subprocess.run(feat_cmd, check=True, capture_output=True, timeout=300,
+                       env=gpu_env)
 
         matcher_type = self.config.reconstruct.matcher + "_matcher"
         matcher_cmd = [
@@ -753,7 +782,8 @@ class PipelineStages:
                 "--SequentialMatching.overlap", "30",
                 "--SequentialMatching.loop_detection", "1",
             ]
-        subprocess.run(matcher_cmd, check=True, capture_output=True, timeout=600)
+        subprocess.run(matcher_cmd, check=True, capture_output=True, timeout=600,
+                       env=gpu_env)
 
         subprocess.run([
             colmap, "mapper",
@@ -927,7 +957,7 @@ class PipelineStages:
             proc = subprocess.run(
                 train_cmd, capture_output=True, text=True,
                 timeout=3600,
-                env={**os.environ, "LD_LIBRARY_PATH": _ld},
+                env=self._gpu_env({**os.environ, "LD_LIBRARY_PATH": _ld}),
             )
             if proc.returncode != 0:
                 logger.warning("Training stderr: %s", proc.stderr[-500:] if proc.stderr else "none")
