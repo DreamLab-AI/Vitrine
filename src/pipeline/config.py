@@ -313,7 +313,10 @@ class Trellis2Config:
     # that many seed re-rolls and keeps the candidate whose FRONT silhouette
     # best matches the observed crop (+ mesh sanity); all candidate scores are
     # recorded in the winner's lineage. Default 1 = single-shot (unchanged).
-    best_of_n: int = 1
+    best_of_n: int = 3          # SOTA-quality default (R7a): 3 seed re-rolls,
+                                # keep the best by silhouette+sanity. Time is
+                                # not a constraint on the reference host; drop
+                                # to 1 for a fast single-shot run.
     seeds: list[int] = field(default_factory=list)  # explicit seeds; else derived
     # Rung (b) of the escalation ladder (ADR-025 D4 / PRD v4 R7): when the best
     # seed re-roll scores below ``escalation_threshold``, synthesize ONE
