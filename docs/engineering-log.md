@@ -2,6 +2,46 @@
 
 Development history for Vitrine (a standalone project that vendors LichtFeld Studio as a pinned tool; formerly a fork — see ADR-021).
 
+## 2026-07-18 — Feature trial on new data: 2 durable fixes + best-of-N/orientation validated live
+
+Trialled the new object-arc features on a fresh capture (public Drive share).
+The capture itself — 449 iPhone HEIC stills of a paper-collaged installation
+room — proved **unreconstructable by COLMAP** (repetitive book-page text
+creates catastrophic false matches; large dark/flat walls are textureless):
+~1% frame registration in every matcher configuration (exhaustive on 449:
+4/449; sequential+guided+capped: 2/346). This is a capture-quality limit
+(`docs/capture-methodology.md`'s "dominant bottleneck"), not a pipeline
+defect — confirmed after ruling out every pipeline-side cause.
+
+**Two durable fixes surfaced + committed (validated on the real 449 frames):**
+- **Native HEIC ingestion** (`pipeline/heic.py`) — the frame globbing accepted
+  only jpg/jpeg/png, so an iPhone HEIC capture silently ingested 0 frames. Now
+  auto-converts HEIC/HEIF → JPEG (EXIF orientation baked, pillow-heif backend
+  for the HDR gain-map aux images that break libheif) in reconstruct + segment.
+- **Automatic GPU selection** (`PipelineStages._gpu_env`) — COLMAP SIFT and
+  training defaulted to GPU 0, which the resident DiffusionGemma LLM saturates
+  (~44 GB), starving GPU SIFT into **0 matches** and silently killing
+  reconstruction. Now targets the freest GPU (respecting an explicit pin).
+  This was the root cause of the first two failed runs (3/52 on GPU 0).
+
+**Features validated live on the existing rawcapdev objects** (best path once
+the new capture proved unreconstructable — real objects, real reconstruction):
+- **R7a best-of-N=3** — 3 seed re-rolls per object, scored by the silhouette
+  proportion + sanity metric, best kept. metal_container → seed 44 (0.934);
+  bottle → seed 42 (0.997); wooden_block → seed 44 (0.969) with seed 43
+  correctly rejected at 0.701 (prop 0.40 — a distorted reconstruction the
+  scorer caught). 3/3 objects, 0 failures, 946 s for 9 generations @ 1024.
+- **R10 orientation** — yaw solved from each crop's COLMAP camera pose
+  (metal_container 130°, bottle 148°, wooden_block -8°), written to
+  placements.json and applied at USD assembly (135 MB USD, Blender-assembled,
+  previews rendered). Relative scale_ratios (vessel ~3× the bottle/block) are
+  physically correct.
+
+Verdict: the new features work end-to-end on real data; the pipeline is more
+robust than before this trial (HEIC + GPU auto-select). The Drive capture
+needs a re-shoot (dense continuous orbit, avoid large flat/repetitive
+surfaces) or neural SfM (VGGT) to reconstruct.
+
 ## 2026-07-10 — R&D frontier: 4 Fable teammates, branch `feat/object-rd-frontier`
 
 Ran a 4-agent Fable R&D fan-out on the open object-arc frontier; each teammate
