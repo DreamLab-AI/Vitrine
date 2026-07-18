@@ -84,3 +84,29 @@ def test_build_placements_tolerates_missing_glb_extent():
                                               "extent": [0.5, 0.5, 0.5]}}]
     out = build_placements(meshes)
     assert out["vase"]["scale_ratio"] == 1.0    # unknown normalized size
+
+
+def test_build_placements_solves_orientation_from_camera_pose():
+    # R10 orientation integration: a mesh carrying a crop camera pose gets a
+    # yaw-solved orientation quaternion in its placement (camera on +X_usd
+    # looking at origin -> object front faces +X, yaw 90deg).
+    meshes = [{
+        "label": "vase",
+        "placement": {"centroid": [0, 0, 0], "extent": [0.5, 0.5, 0.5]},
+        "glb_extent": [1.0, 1.0, 1.0],
+        "camera_pose": {"quaternion_wxyz": [0.7071, 0.0, 0.7071, 0.0],
+                        "translation": [0.0, 0.0, 2.0]},
+    }]
+    out = build_placements(meshes)["vase"]
+    assert out["orientation"] == "yaw-solved"
+    assert len(out["orientation_quat"]) == 4
+    assert out["orientation_yaw_deg"] == pytest.approx(90.0, abs=1.0)
+
+
+def test_build_placements_without_pose_stays_unsolved():
+    meshes = [{"label": "vase",
+               "placement": {"centroid": [0, 0, 0], "extent": [0.5, 0.5, 0.5]},
+               "glb_extent": [1.0, 1.0, 1.0]}]
+    out = build_placements(meshes)["vase"]
+    assert out["orientation"] == "unsolved"
+    assert "orientation_quat" not in out

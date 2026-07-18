@@ -649,6 +649,16 @@ def assemble_scene(
             wc = placement.get("world_centroid", [0.0, 0.0, 0.0])
             ux, uy, uz = colmap_to_usd_position(wc[0], wc[1], wc[2])
             xform.AddTranslateOp().Set(Gf.Vec3d(ux, uy, uz))
+            # R10 orientation: apply the solved upright yaw (TRS order; a pure-Y
+            # rotation commutes with uniform scale anyway). Absent/unsolved ->
+            # identity (no op), matching legacy placements.json.
+            oq = placement.get("orientation_quat")
+            if placement.get("orientation") == "yaw-solved" and oq and len(oq) == 4:
+                xform.AddOrientOp().Set(Gf.Quatf(oq[0], oq[1], oq[2], oq[3]))
+                prim.SetCustomDataByKey("v2g:orientation_yaw_deg",
+                                        float(placement.get("orientation_yaw_deg", 0.0)))
+                prim.SetCustomDataByKey("v2g:orientation_method",
+                                        placement.get("orientation_method", ""))
             # scale_ratio is in raw world units; USD positions carry SCENE_SCALE,
             # so the object's size must be scaled by the same factor to match.
             s = float(placement.get("scale_ratio", 1.0)) * SCENE_SCALE

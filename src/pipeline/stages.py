@@ -2636,6 +2636,9 @@ class PipelineStages:
                 "crop": str(crop_path),
                 "placement": placement,
                 "glb_extent": glb_extent,
+                # R10 orientation solve reads the crop's COLMAP camera pose
+                # (recorded in the object_crops manifest -> provenance here).
+                "camera_pose": provenance.get("camera_pose") if provenance else None,
             }
             if glb_low is not None:
                 low_path = mesh_glb_path.with_name(mesh_glb_path.stem + "_low.glb")
@@ -2649,6 +2652,27 @@ class PipelineStages:
             return info
 
         errors: list[str] = []
+
+        # PRD v4 R8: Pixal3D (MIT, TRELLIS.2 backbone) as an OPT-IN primary.
+        # Default-off, eval-gated; on any failure the chain falls through to
+        # TRELLIS.2 unchanged, so enabling only adds a candidate tier.
+        pixal3d_cfg = getattr(self.config, "pixal3d", None)
+        if pixal3d_cfg is not None and getattr(pixal3d_cfg, "enabled", False):
+            try:
+                from pipeline.pixal3d_client import Pixal3DClient
+                px = Pixal3DClient.from_config(pixal3d_cfg)
+                res = px.reconstruct_from_image(
+                    crop_path, seed=getattr(pixal3d_cfg, "seed", 42),
+                    label=label, provenance=provenance)
+                if res.glb_data:
+                    logger.info("Pixal3D object '%s': %d verts (%.0fs)",
+                                label, res.vertex_count, res.duration_seconds)
+                    return _persist(res.glb_data, "pixal3d", dict(res.lineage),
+                                    glb_low=res.glb_low_data, mesh=res.mesh)
+                errors.append(f"pixal3d: {res.error or 'no GLB'}")
+            except Exception as exc:  # noqa: BLE001 — fall through to TRELLIS.2
+                logger.warning("Pixal3D failed for '%s': %s", label, exc)
+                errors.append(f"pixal3d: {exc}")
 
         trellis2_cfg = getattr(self.config, "trellis2", None)
         if trellis2_cfg is not None and getattr(trellis2_cfg, "enabled", False):
@@ -2665,7 +2689,7 @@ class PipelineStages:
 
                 # Generate each seed; score by front-silhouette proportion +
                 # mesh sanity (R7). best_of_n==1 -> single shot, unchanged.
-                best = None
+                best = None            # (total, result, edit_lineage | None)
                 scoreboard: list[dict[str, Any]] = []
                 for seed in seeds:
                     res = t2.reconstruct_from_image(
@@ -2685,10 +2709,67 @@ class PipelineStages:
                                 "(prop=%.2f sanity=%.2f)", label, seed,
                                 res.vertex_count, cs.total, cs.proportion, cs.sanity)
                     if best is None or cs.total > best[0]:
-                        best = (cs.total, res)
+                        best = (cs.total, res, None)
+
+                # Escalation rung (b), ADR-025 D4 / PRD v4 R7: the best seed
+                # re-roll still scores poorly -> synthesize ONE image-edit
+                # alternate view and add it as an additional single-image
+                # candidate. Self-gating: a missing Qwen UNET degrades to
+                # rung (a) silently-but-logged; a rung-(b) failure never kills
+                # the seed-re-roll winner.
+                threshold = float(getattr(trellis2_cfg, "escalation_threshold", 0.55))
+                if (getattr(trellis2_cfg, "image_edit_escalation", False)
+                        and (best is None or best[0] < threshold)):
+                    try:
+                        from pipeline.image_edit_view import ImageEditView
+                        iev = ImageEditView.from_config(
+                            getattr(self.config, "image_edit", None))
+                        if iev.probe_edit_model() is None:
+                            logger.info("image-edit escalation skipped for '%s': "
+                                        "edit UNET not staged", label)
+                        else:
+                            edited = iev.edit_view(
+                                crop_path, label=label, provenance=provenance,
+                                output_path=mesh_glb_path.with_name(
+                                    mesh_glb_path.stem + "__editview.png"))
+                            if edited.image_path is None:
+                                errors.append(f"image-edit: {edited.error}")
+                            else:
+                                res2 = t2.reconstruct_from_image(
+                                    edited.image_path,
+                                    seed=getattr(trellis2_cfg, "seed", 42),
+                                    label=f"{label}_editview", provenance=provenance)
+                                if not res2.glb_data:
+                                    errors.append(f"trellis2(edit-view): "
+                                                  f"{res2.error or 'no GLB'}")
+                                else:
+                                    extent2 = list(res2.mesh.extents) if (
+                                        res2.mesh is not None and getattr(
+                                            res2.mesh, "extents", None) is not None
+                                    ) else None
+                                    wt2 = bool(getattr(
+                                        res2.mesh, "is_watertight", False)) \
+                                        if res2.mesh is not None else False
+                                    # A 180deg back view preserves the front
+                                    # silhouette's width/height for most objects,
+                                    # so proportion-vs-crop stays a fair score.
+                                    cs2 = ocs.score_candidate(
+                                        getattr(trellis2_cfg, "seed", 42), extent2,
+                                        crop_aspect, res2.face_count, wt2)
+                                    scoreboard.append(
+                                        {"view": "image-edit-back", **cs2.__dict__})
+                                    logger.info("TRELLIS.2 '%s' edit-view candidate:"
+                                                " %d verts, score=%.3f", label,
+                                                res2.vertex_count, cs2.total)
+                                    if best is None or cs2.total > best[0]:
+                                        best = (cs2.total, res2, edited.lineage)
+                    except Exception as exc:  # noqa: BLE001 — rung (b) optional
+                        logger.warning("image-edit escalation failed for '%s': %s",
+                                       label, exc)
+                        errors.append(f"image-edit: {exc}")
 
                 if best is not None:
-                    _, res = best
+                    _, res, edit_lineage = best
                     lineage = dict(res.lineage)
                     if n > 1:
                         lineage["best_of_n"] = n
@@ -2697,6 +2778,12 @@ class PipelineStages:
                             (c["seed"] for c in scoreboard
                              if c["total"] == max(s["total"] for s in scoreboard)),
                             res.lineage.get("seed"))
+                    if edit_lineage is not None:
+                        # Winner came from the synthesized view — flag it: the
+                        # entire conditioning image was model-inferred.
+                        lineage["escalation"] = {"rung": "image-edit-view",
+                                                 **edit_lineage}
+                        lineage["surface"] = "image-edit-inferred"
                     logger.info("TRELLIS.2 object '%s': kept best of %d (%.0fs)",
                                 label, len(scoreboard), res.duration_seconds)
                     return _persist(res.glb_data, "trellis2", lineage,

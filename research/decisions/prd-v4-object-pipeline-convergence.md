@@ -10,16 +10,18 @@
 > R5 ◐ (single-image client live on the ComfyUI executor; native service
 > scaffolded, env stand-up pending); R6 ✅ (verbatim GLB + lineage,
 > texture_bake skips generators); R6a ✅ (Hy3D21 graph in code, broken JSONs
-> deleted); R7 ◐ (2026-07-10: best-of-N seed re-rolls + a front-silhouette
-> proportion/sanity scorer landed — `object_candidate_score.py`, wired into the
-> TRELLIS.2 branch, all candidate scores recorded in lineage; the image-edit
-> second-view rung remains); R8 ⏳ (note: Pixal3D is MIT — see ADR-025
-> amendment); R9 ✅
+> deleted); R7 ✅ (best-of-N seed re-rolls + front-silhouette scorer +
+> 2026-07-10 the image-edit "show the back" rung (b) — `image_edit_view.py`,
+> Qwen-Image-Edit, self-gated + eval-scored; a winning edit rewrites `surface`
+> to `image-edit-inferred`); R8 ◐ (2026-07-10: `pixal3d_client.py` drop-in
+> scaffold + `--generator pixal3d` eval + head-to-head plan; MIT gate passes;
+> weights not staged so VERIFY-ON-ENV-BUILD, not live-run); R9 ✅
 > (harness + 3-object baseline committed, live run: vessel 492k faces/441s,
-> bottle 483k/158s, block 466k/130s, 0 regressions); R10 ◐ (2026-07-10:
-> position + uniform scale SOLVED and applied at assembly via
-> `object_placement.py` → `usd/placements.json`; orientation flagged
-> `unsolved` — a crop-pose orientation solve remains). Proof assets:
+> bottle 483k/158s, block 466k/130s, 0 regressions); R10 ✅ (2026-07-10:
+> position + uniform scale + **upright yaw orientation** all solved and applied
+> at assembly — `object_placement.py` + `object_orientation.py` →
+> `usd/placements.json` → assembler `AddOrientOp`, live-verified; roll/pitch
+> pinned upright per the single-view constraint). Proof assets:
 > `docs/renders/object-pipeline-2026-07-09/`.
 **Supersedes scope**: the object-generation half of [prd-v3-e2e-closure.md](prd-v3-e2e-closure.md)
 (selection + recovery); does **not** reopen ingest/provenance/annotation (v3 scope) or

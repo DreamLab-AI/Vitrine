@@ -315,12 +315,71 @@ class Trellis2Config:
     # recorded in the winner's lineage. Default 1 = single-shot (unchanged).
     best_of_n: int = 1
     seeds: list[int] = field(default_factory=list)  # explicit seeds; else derived
+    # Rung (b) of the escalation ladder (ADR-025 D4 / PRD v4 R7): when the best
+    # seed re-roll scores below ``escalation_threshold``, synthesize ONE
+    # image-edit alternate view ("show the back", Qwen-Image-Edit-2509) and add
+    # it as an additional single-image best-of-N candidate — never panel
+    # synthesis. Off by default (the Qwen edit UNET is not staged yet; the rung
+    # also self-gates at runtime via ImageEditView.probe_edit_model()).
+    image_edit_escalation: bool = False
+    escalation_threshold: float = 0.55
     ss_steps: int = 12                 # sparse-structure sampling steps
     shape_steps: int = 12              # shape diffusion steps
     tex_steps: int = 12                # texture diffusion steps
     # High/low asset pair (native service to_glb x2, PRD v4 R5).
     face_count_high: int = 500_000
     face_count_low: int = 20_000
+
+
+@dataclass
+class Pixal3DConfig:
+    """Pixal3D single-image object generation (PRD v4 R8 — gated eval).
+
+    Pixel-aligned generation on the TRELLIS.2 backbone (TencentARC, MIT —
+    ADR-025 amendment). DISABLED by default: weights not staged, no executor
+    stood up; the R8 head-to-head eval (research/2026-07-pixal3d-eval.md) gates
+    any promotion. When enabled, stages tries Pixal3D FIRST, falling through to
+    TRELLIS.2 on failure. ``native_url`` selects the thin HTTP service (mirrors
+    the TRELLIS.2 R5 contract); empty selects the ComfyUI workflow, which fails
+    fast until a verified node pack + workflow JSON exist (VERIFY-ON-ENV-BUILD).
+    """
+    enabled: bool = False
+    comfyui_url: str = "http://vitrine-comfyui:8188"
+    native_url: str = ""
+    resolution: str = "1536_cascade"   # VERIFY-ON-ENV-BUILD: assumed backbone ladder
+    texture_size: int = 4096
+    timeout: int = 1800
+    seed: int = 42
+    ss_steps: int = 12
+    shape_steps: int = 12
+    tex_steps: int = 12
+    face_count_high: int = 500_000
+    face_count_low: int = 20_000
+    workflow_path: str = ""            # "" = default (not authored yet)
+
+
+@dataclass
+class ImageEditConfig:
+    """Instruction-driven alternate-view edit (ADR-025 D4 / PRD v4 R7 rung b).
+
+    Qwen-Image-Edit-2509 (Apache-2.0, commercial-safe) on ComfyUI — a 2D stage,
+    in-scope per ADR-014 as narrowed by ADR-025. Loader filenames are the
+    canonical Comfy-Org release names; the diffusion UNET is NOT staged yet, so
+    ImageEditView.probe_edit_model() resolves/gates at runtime.
+    """
+    comfyui_url: str = "http://vitrine-comfyui:8188"
+    diffusion_model: str = "qwen_image_edit_2509_fp8_e4m3fn.safetensors"
+    clip_model: str = "qwen_2.5_vl_7b_fp8_scaled.safetensors"
+    vae_model: str = "qwen_image_vae.safetensors"
+    instruction: str = ""      # empty -> DEFAULT_BACK_INSTRUCTION (no import cycle)
+    negative: str = ""
+    steps: int = 20
+    cfg: float = 2.5
+    shift: float = 3.1
+    denoise: float = 1.0
+    timeout: int = 600
+    seed: int = 42
+    matte_output: bool = True  # rembg RGBA matte of the edited view
 
 
 @dataclass
@@ -444,6 +503,8 @@ class PipelineConfig:
     object_crops: ObjectCropsConfig = field(default_factory=ObjectCropsConfig)
     mesh: MeshConfig = field(default_factory=MeshConfig)
     trellis2: Trellis2Config = field(default_factory=Trellis2Config)
+    pixal3d: Pixal3DConfig = field(default_factory=Pixal3DConfig)
+    image_edit: ImageEditConfig = field(default_factory=ImageEditConfig)
     view_completion: ViewCompletionConfig = field(default_factory=ViewCompletionConfig)
     hunyuan3d: Hunyuan3DConfig = field(default_factory=Hunyuan3DConfig)
     inpaint: InpaintConfig = field(default_factory=InpaintConfig)
@@ -490,6 +551,8 @@ class PipelineConfig:
             "object_crops": ObjectCropsConfig,
             "mesh": MeshConfig,
             "trellis2": Trellis2Config,
+            "pixal3d": Pixal3DConfig,
+            "image_edit": ImageEditConfig,
             "view_completion": ViewCompletionConfig,
             "hunyuan3d": Hunyuan3DConfig,
             "inpaint": InpaintConfig,

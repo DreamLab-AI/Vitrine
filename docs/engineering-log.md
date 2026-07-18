@@ -2,6 +2,55 @@
 
 Development history for Vitrine (a standalone project that vendors LichtFeld Studio as a pinned tool; formerly a fork — see ADR-021).
 
+## 2026-07-10 — R&D frontier: 4 Fable teammates, branch `feat/object-rd-frontier`
+
+Ran a 4-agent Fable R&D fan-out on the open object-arc frontier; each teammate
+owned distinct new files and returned integration diffs, consolidated serially
+onto the branch. All integrations compile, the container pipeline suite is
+**209 passed** (+47), and both new geometry paths are live-verified in the USD
+assembler.
+
+- **Native TRELLIS.2 service (R5)** — `scripts/trellis2_native_service.py`
+  fleshed out: `/health` (liveness) vs `/ready` (pipeline loaded), a full error
+  taxonomy (400/413/503/500, all JSON), param hardening (unparseable→default,
+  out-of-range→clamp, `face_count_low ≤ high`), thread-safe lazy load, 64 MB
+  upload cap, complete lineage. This is the durable answer to the ComfyUI drtk
+  fragility (the native pipeline uses nvdiffrast, not the ABI-brittle drtk
+  path). 15 hermetic tests. VERIFY-ON-ENV-BUILD kept on the two upstream-API
+  wrappers (the ComfyUI-ported tree lacks the `pipelines/` module).
+- **R10 orientation solve** — `src/pipeline/object_orientation.py`: the mesh's
+  canonical front (+Z) corresponds to the observing crop camera's ray, so an
+  upright-object **yaw** is solved from the COLMAP camera pose (frame math
+  verified against `colmap_parser` + the assembler; COLMAP world→cam vs USD
+  Y/Z-flip handled). Wired through `object_placement.build_placements` →
+  `usd/placements.json` → the assembler's `AddOrientOp` (TRS order). Live USD
+  check: yaw-90 → `xformOp:orient=(0.7071,0,0.7071,0)`. Roll/pitch stay pinned
+  upright (single-view can't observe them); near-vertical views flagged
+  `degenerate`→unsolved. 17 solver tests + 2 integration tests.
+- **R7 rung (b) image-edit view** — `src/pipeline/image_edit_view.py` +
+  `qwen_image_edit_view.json`: for objects whose best seed scores below
+  `escalation_threshold`, synthesize ONE "show the back" alternate view
+  (Qwen-Image-Edit-2509, Apache-2.0) and add it as another single-image
+  best-of-N candidate (NOT panel-stitching). Self-gates via
+  `probe_edit_model()` (the edit UNET isn't staged), flattens input alpha
+  (avoids the LoadImage premultiplied-ghost trap), re-mattes the output. A
+  winning edit-view rewrites the asset's `surface` to `image-edit-inferred`.
+  18 tests.
+- **R8 Pixal3D** — `src/pipeline/pixal3d_client.py` mirrors the single-image
+  contract as a drop-in generator (opt-in, default-off, eval-gated), + the
+  `research/2026-07-pixal3d-eval.md` head-to-head plan. Pixal3D is **MIT** (the
+  ADR-025 correction), so its licence gate passes; weights are NOT staged, so
+  the client is a contract-validated scaffold (VERIFY-ON-ENV-BUILD), never
+  live-run. `eval/objects/run_eval.py --generator pixal3d` added. 13 tests.
+
+Integration hygiene: config.py gained `Pixal3DConfig` + `ImageEditConfig` +
+Trellis2Config escalation fields; stages `_generate_object_from_crop` gained a
+Pixal3D primary tier + the image-edit rung (best-of-N tuple widened, backward
+compatible — the default single-shot path is byte-identical). CI now runs all
+four new hermetic suites (+flask dep). One correction applied during
+integration: the orientation camera-pose reads from `provenance` (the crops
+manifest), not `crop_entry`, which the teammate's diff had assumed.
+
 ## 2026-07-10 — R7 best-of-N quality ladder + drtk self-heal hardened
 
 ### R7 — best-of-N seed re-rolls with a silhouette-consistency scorer

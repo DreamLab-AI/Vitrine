@@ -44,16 +44,21 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install light CPU test deps
-        # Covers the hermetic object-arc suite: numpy (object_crops), requests +
-        # trimesh (trellis2_client), opencv-headless (object_crops, cv2-gated).
-        # No torch / sam3 / gsplat — those tests defer or stub GPU deps.
-        run: pip install pytest pillow numpy requests trimesh opencv-python-headless
+        # Covers the hermetic object-arc + R&D suite: numpy (object_crops),
+        # requests + trimesh (generator clients), opencv-headless (object_crops,
+        # cv2-gated), flask (native service test). No torch/sam3/gsplat — those
+        # tests defer or stub GPU deps.
+        run: pip install pytest pillow numpy requests trimesh opencv-python-headless flask
       - name: Hermetic pipeline unit tests (no GPU/container)
         run: |
           pytest -q \
             tests/python/test_image_decoder.py \
             tests/python/test_object_placement.py \
             tests/python/test_object_candidate_score.py \
+            tests/python/test_object_orientation.py \
+            tests/python/test_trellis2_native_service.py \
+            tests/python/test_pixal3d_client.py \
+            tests/python/test_image_edit_view.py \
             tests/python/test_config_hull.py \
             tests/python/test_object_crops.py \
             tests/python/test_trellis2_client.py \

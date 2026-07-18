@@ -143,5 +143,26 @@ def build_placements(meshes: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
             placement.get("extent", [0, 0, 0]),
             m.get("glb_extent"),
         )
-        out[label] = p.to_dict()
+        d = p.to_dict()
+
+        # R10 orientation solve (PRD v4): when the crop's COLMAP camera pose is
+        # recorded, solve the upright yaw so the object faces the direction it
+        # was observed from. Additive + best-effort — a bad/absent pose leaves
+        # orientation "unsolved" (identity), which the assembler already handles.
+        pose = m.get("camera_pose")
+        if pose and pose.get("quaternion_wxyz") and pose.get("translation"):
+            try:
+                from pipeline.object_orientation import solve_yaw
+                o = solve_yaw(pose["quaternion_wxyz"], pose["translation"],
+                              object_centroid=placement.get("centroid"))
+                if o.get("method") != "degenerate":
+                    d["orientation"] = "yaw-solved"
+                    d["orientation_quat"] = o["quat_wxyz"]
+                    d["orientation_yaw_deg"] = o["yaw_deg"]
+                    d["orientation_method"] = o["method"]
+                    d["orientation_elevation_deg"] = o.get("elevation_deg")
+            except (ValueError, KeyError, ImportError):
+                pass  # stay "unsolved"
+
+        out[label] = d
     return out

@@ -142,6 +142,13 @@ def run_generation(crops_dir: Path, out_dir: Path, generator: str, seed: int) ->
                 client = Trellis2Client.from_config(cfg.trellis2)
                 res = client.reconstruct_from_image(crop, seed=seed, label=name)
                 glb = res.glb_data
+            elif generator == "pixal3d":
+                # R8 head-to-head: constructs the client directly, so the eval
+                # never needs the pipeline flag flipped (cfg.pixal3d.enabled).
+                from pipeline.pixal3d_client import Pixal3DClient
+                client = Pixal3DClient.from_config(cfg.pixal3d)
+                res = client.reconstruct_from_image(crop, seed=seed, label=name)
+                glb = res.glb_data
             else:
                 from pipeline.hunyuan3d_client import Hunyuan3DClient
                 client = Hunyuan3DClient.from_config(cfg.hunyuan3d)
@@ -171,7 +178,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--crops", type=Path, help="Directory of object crops (RGBA PNGs)")
     ap.add_argument("--out", type=Path, help="Output directory for GLBs + metrics")
-    ap.add_argument("--generator", choices=["trellis2", "hy3d21"], default="trellis2")
+    ap.add_argument("--generator", choices=["trellis2", "hy3d21", "pixal3d"],
+                    default="trellis2")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--stats-only", type=Path, metavar="GLB",
                     help="Grade one existing GLB and exit (no generation)")
