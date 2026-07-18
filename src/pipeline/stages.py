@@ -597,6 +597,12 @@ class PipelineStages:
                 error=f"Frames directory not found: {frames_dir}",
             )
 
+        # HEIC ingestion: Apple captures are HEIC by default, which COLMAP
+        # can't read — convert to JPEG (EXIF orientation baked) so a HEIC-only
+        # capture doesn't silently reconstruct nothing. No-op for JPEG/PNG.
+        from pipeline.heic import ensure_jpeg_frames
+        frames_path = ensure_jpeg_frames(frames_path)
+
         colmap_dir = self.job_dir / "colmap"
         colmap_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1679,6 +1685,9 @@ class PipelineStages:
                 success=False, stage="segment",
                 error=f"Frames directory not found: {frames_dir}",
             )
+        # HEIC ingestion (idempotent — reuses reconstruct's converted dir).
+        from pipeline.heic import ensure_jpeg_frames
+        frames_path = ensure_jpeg_frames(frames_path)
 
         frame_paths = sorted(
             p for p in frames_path.iterdir()
