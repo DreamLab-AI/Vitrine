@@ -1,0 +1,107 @@
+{
+  "_comment": "Qwen-Image-Edit-2509 alternate-view synthesis (ADR-025 D4 / PRD v4 R7 rung b): one object crop + an instruction ('show the back') -> ONE edited single image, fed to the 3D generator as an additional best-of-N candidate. NOT panel stitching. Graph mirrors the Comfy-Org Qwen-Image-Edit-2509 template: TextEncodeQwenImageEditPlus (runtime-verified installed, sota_registry 2026-06-19) conditions on clip+vae+image1; ModelSamplingAuraFlow(shift=3.1)+CFGNorm wrap the UNET; KSampler 20 steps cfg 2.5 denoise 1.0; input scaled to ~1MP. Placeholders: CROP_IMAGE_PLACEHOLDER, EDIT_INSTRUCTION_PLACEHOLDER; the client injects model filenames/seed/steps/cfg/shift at submit time.",
+  "_scaffold": "SCAFFOLD — NOT yet runtime-verified end-to-end: the Qwen-Image-Edit diffusion UNET is NOT staged in data/comfyui/models (registry ground truth 2026-06-19; UNETLoader lists no qwen). unet_name/clip_name below are the canonical Comfy-Org release filenames and MUST be validated against /object_info once the weights are pulled (ImageEditView.probe_edit_model() does the UNET half at runtime). Node input names for TextEncodeQwenImageEditPlus (clip, prompt, vae, image1) match the installed node per the registry note; sampler wiring follows the official template but has not been executed against the live server.",
+  "1": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "qwen_image_edit_2509_fp8_e4m3fn.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "2": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+      "type": "qwen_image",
+      "device": "default"
+    }
+  },
+  "3": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "qwen_image_vae.safetensors"
+    }
+  },
+  "10": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "CROP_IMAGE_PLACEHOLDER"
+    }
+  },
+  "12": {
+    "class_type": "ImageScaleToTotalPixels",
+    "inputs": {
+      "image": ["10", 0],
+      "upscale_method": "lanczos",
+      "megapixels": 1.0
+    }
+  },
+  "20": {
+    "class_type": "TextEncodeQwenImageEditPlus",
+    "inputs": {
+      "clip": ["2", 0],
+      "prompt": "EDIT_INSTRUCTION_PLACEHOLDER",
+      "vae": ["3", 0],
+      "image1": ["12", 0]
+    }
+  },
+  "21": {
+    "class_type": "TextEncodeQwenImageEditPlus",
+    "inputs": {
+      "clip": ["2", 0],
+      "prompt": "",
+      "vae": ["3", 0],
+      "image1": ["12", 0]
+    }
+  },
+  "30": {
+    "class_type": "VAEEncode",
+    "inputs": {
+      "pixels": ["12", 0],
+      "vae": ["3", 0]
+    }
+  },
+  "40": {
+    "class_type": "ModelSamplingAuraFlow",
+    "inputs": {
+      "model": ["1", 0],
+      "shift": 3.1
+    }
+  },
+  "41": {
+    "class_type": "CFGNorm",
+    "inputs": {
+      "model": ["40", 0],
+      "strength": 1.0
+    }
+  },
+  "50": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": 42,
+      "steps": 20,
+      "cfg": 2.5,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1.0,
+      "model": ["41", 0],
+      "positive": ["20", 0],
+      "negative": ["21", 0],
+      "latent_image": ["30", 0]
+    }
+  },
+  "60": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": ["50", 0],
+      "vae": ["3", 0]
+    }
+  },
+  "70": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": ["60", 0],
+      "filename_prefix": "vitrine_editview"
+    }
+  }
+}
